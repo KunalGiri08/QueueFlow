@@ -1,0 +1,152 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AppointmentStatus {
+  BOOKED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum TicketStatus {
+  WAITING
+  CALLED
+  SERVING
+  COMPLETED
+  SKIPPED
+  CANCELLED
+}
+
+enum OrganizationRole {
+  ADMIN
+  STAFF
+}
+
+model Organization {
+  id          String                   @id @default(cuid())
+  name        String
+  slug        String                   @unique
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+  memberships OrganizationMembership[]
+  services    Service[]
+  counters    Counter[]
+}
+
+model User {
+  id                 String                   @id @default(cuid())
+  name               String?
+  email              String                   @unique
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+  memberships        OrganizationMembership[]
+  tickets            Ticket[]
+  counterAssignments StaffCounterAssignment[]
+  appointments       Appointment[]
+  ticketsServed      Ticket[]                 @relation("TicketsServed")
+}
+
+model OrganizationMembership {
+  id             String           @id @default(cuid())
+  userId         String
+  organizationId String
+  role           OrganizationRole
+  createdAt      DateTime         @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+}
+
+model Service {
+  id             String   @id @default(cuid())
+  name           String
+  description    String?
+  organizationId String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  queues       Queue[]
+  appointments Appointment[]
+
+  @@unique([organizationId, name])
+}
+
+model Queue {
+  id        String   @id @default(cuid())
+  name      String
+  serviceId String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tickets   Ticket[]
+  service   Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceId, name])
+}
+
+model Ticket {
+  id         String       @id @default(cuid())
+  number     Int
+  status     TicketStatus @default(WAITING)
+  queueId    String
+  userId     String
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  servedById String?
+  counterId  String?
+
+  queue    Queue    @relation(fields: [queueId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  servedBy User?    @relation("TicketsServed", fields: [servedById], references: [id], onDelete: SetNull)
+  counter  Counter? @relation(fields: [counterId], references: [id], onDelete: SetNull)
+
+  @@unique([queueId, number])
+}
+
+model Appointment {
+  id          String            @id @default(cuid())
+  scheduledAt DateTime
+  status      AppointmentStatus @default(BOOKED)
+  serviceId   String
+  userId      String
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Counter {
+  id               String                   @id @default(cuid())
+  name             String
+  organizationId   String
+  isActive         Boolean                  @default(true)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  staffAssignments StaffCounterAssignment[]
+  tickets          Ticket[]
+  organization     Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, name])
+}
+
+model StaffCounterAssignment {
+  id        String   @id @default(cuid())
+  userId    String
+  counterId String
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  counter Counter @relation(fields: [counterId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, counterId])
+}
