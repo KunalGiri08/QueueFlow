@@ -85,16 +85,30 @@ export async function PATCH(
     );
   }
 
-  const updatedTicket = await prisma.ticket.update({
-    where: {
-      id,
-    },
-    data: {
-      status: "CALLED",
-      servedById: staffId,
-      counterId,
-    },
-  });
+ const result = await prisma.ticket.updateMany({
+  where: {
+    id,
+    status: "WAITING",
+  },
+  data: {
+    status: "CALLED",
+    servedById: staffId,
+    counterId,
+  },
+});
 
-  return Response.json(updatedTicket);
+if (result.count === 0) {
+  return Response.json(
+    { error: "Ticket is no longer waiting" },
+    { status: 409 }
+  );
+}
+
+const updatedTicket = await prisma.ticket.findUnique({
+  where: {
+    id,
+  },
+});
+
+return Response.json(updatedTicket);
 }
