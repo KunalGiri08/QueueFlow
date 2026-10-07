@@ -48,7 +48,12 @@ export async function PATCH(
       id: queueId,
     },
     data: {
-      isActive: result.data.isActive,
+      ...(result.data.name !== undefined && {
+        name: result.data.name,
+      }),
+      ...(result.data.isActive !== undefined && {
+        isActive: result.data.isActive,
+      }),
     },
   });
 
