@@ -48,3 +48,20 @@ export async function POST(request: Request) {
 
   return Response.json(appointment, { status: 201 });
 }
+
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const userId = searchParams.get("userId");
+  if (!userId) {
+    return Response.json({ error: "User ID is required" }, { status: 400 });
+  }
+  const appointments = await prisma.appointment.findMany({
+    where: {
+      userId,
+    },
+    orderBy: {
+      scheduledAt: "asc",
+    },
+  });
+  return Response.json(appointments);
+}
