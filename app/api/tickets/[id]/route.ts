@@ -36,12 +36,22 @@ export async function GET(
       status: "WAITING",
     },
   });
+  const currentlyServing = await prisma.ticket.findFirst({
+    where: {
+      queueId: ticket.queueId,
+      status: "SERVING",
+    },
+    select: {
+      number: true,
+    },
+  });
 
   return Response.json({
     id: ticket.id,
     ticketNumber: ticket.number,
     status: ticket.status,
     peopleAhead,
+    currentlyServing: currentlyServing?.number ?? null,
     queue: {
       id: ticket.queue.id,
       name: ticket.queue.name,
