@@ -1,8 +1,15 @@
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { reserveNextTicketNumber } from "@/lib/services/ticket.service";
 import { createTicketSchema } from "@/lib/validations/ticket";
 
 export async function POST(request: Request) {
+  const currentUser = await getCurrentUser();
+
+  if (!currentUser) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const body = await request.json();
 
   const result = createTicketSchema.safeParse(body);
@@ -17,7 +24,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const { queueId, userId } = result.data;
+  const { queueId } = result.data;
+  const userId = currentUser.id;
 
   const ticket = await prisma.$transaction(async (tx) => {
     const queue = await tx.queue.findUnique({
@@ -25,20 +33,8 @@ export async function POST(request: Request) {
         id: queueId,
       },
     });
-    if (!queue) {
-      return null;
-    }
 
-    if (!queue.isActive) {
-      return null;
-    }
-    const user = await tx.user.findUnique({
-      where: {
-        id: userId,
-      },
-    });
-
-    if (!user) {
+    if (!queue || !queue.isActive) {
       return null;
     }
 
@@ -52,11 +48,13 @@ export async function POST(request: Request) {
       },
     });
   });
+
   if (!ticket) {
     return Response.json(
       { error: "Queue not found or inactive" },
       { status: 404 },
     );
   }
+
   return Response.json(ticket, { status: 201 });
 }
