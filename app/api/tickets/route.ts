@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { reserveNextTicketNumber } from "@/lib/services/ticket.service";
 import { createTicketSchema } from "@/lib/validations/ticket";
+import { randomBytes } from "node:crypto";
 
 export async function POST(request: Request) {
   const currentUser = await getCurrentUser();
@@ -45,6 +46,7 @@ export async function POST(request: Request) {
         number,
         queueId,
         userId,
+        trackingToken: randomBytes(32).toString("hex"),
       },
     });
   });

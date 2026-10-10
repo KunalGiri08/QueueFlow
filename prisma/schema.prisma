@@ -96,15 +96,16 @@ model Queue {
 }
 
 model Ticket {
-  id         String       @id @default(cuid())
-  number     Int
-  status     TicketStatus @default(WAITING)
-  queueId    String
-  userId     String
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
-  servedById String?
-  counterId  String?
+  id            String       @id @default(cuid())
+  trackingToken String?      @unique
+  number        Int
+  status        TicketStatus @default(WAITING)
+  queueId       String
+  userId        String
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  servedById    String?
+  counterId     String?
 
   queue    Queue    @relation(fields: [queueId], references: [id], onDelete: Cascade)
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
