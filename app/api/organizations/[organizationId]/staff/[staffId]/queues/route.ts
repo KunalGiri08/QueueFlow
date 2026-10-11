@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth/current-user";
 
 export async function GET(
   request: Request,
@@ -11,20 +12,53 @@ export async function GET(
     }>;
   },
 ) {
+  const currentUser = await getCurrentUser();
+
+  if (!currentUser) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { organizationId, staffId } = await params;
 
-  const membership = await prisma.organizationMembership.findFirst({
+  // The caller must belong to this organization.
+  const currentMembership = await prisma.organizationMembership.findUnique({
     where: {
-      userId: staffId,
-      organizationId,
-      role: "STAFF",
+      userId_organizationId: {
+        userId: currentUser.id,
+        organizationId,
+      },
     },
   });
 
-  if (!membership) {
+  if (!currentMembership) {
     return Response.json(
-      { error: "Staff member is not authorized" },
+      { error: "You are not a member of this organization" },
       { status: 403 },
+    );
+  }
+
+  // Staff may view their own queues; admins may view queues
+  // for staff members in their organization.
+  if (currentUser.id !== staffId && currentMembership.role !== "ADMIN") {
+    return Response.json(
+      { error: "You are not allowed to view this staff member's queues" },
+      { status: 403 },
+    );
+  }
+
+  const targetMembership = await prisma.organizationMembership.findUnique({
+    where: {
+      userId_organizationId: {
+        userId: staffId,
+        organizationId,
+      },
+    },
+  });
+
+  if (!targetMembership || targetMembership.role !== "STAFF") {
+    return Response.json(
+      { error: "Staff member not found in this organization" },
+      { status: 404 },
     );
   }
 
