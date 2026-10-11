@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { createCounterSchema } from "@/lib/validations/counter";
 
 export async function GET(
@@ -6,26 +7,39 @@ export async function GET(
   {
     params,
   }: {
-    params: Promise<{
-      organizationId: string;
-    }>;
+    params: Promise<{ organizationId: string }>;
   },
 ) {
+  const currentUser = await getCurrentUser();
+
+  if (!currentUser) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { organizationId } = await params;
 
-  const organization = await prisma.organization.findUnique({
+  const membership = await prisma.organizationMembership.findUnique({
     where: {
-      id: organizationId,
+      userId_organizationId: {
+        userId: currentUser.id,
+        organizationId,
+      },
     },
   });
-  if (!organization) {
-    return Response.json({ error: "Organization not found" }, { status: 404 });
+
+  if (!membership) {
+    return Response.json(
+      { error: "You are not a member of this organization" },
+      { status: 403 },
+    );
   }
+
   const counters = await prisma.counter.findMany({
     where: {
       organizationId,
     },
   });
+
   return Response.json(counters);
 }
 
@@ -34,14 +48,40 @@ export async function POST(
   {
     params,
   }: {
-    params: Promise<{
-      organizationId: string;
-    }>;
+    params: Promise<{ organizationId: string }>;
   },
 ) {
+  const currentUser = await getCurrentUser();
+
+  if (!currentUser) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { organizationId } = await params;
 
-  const body = await request.json();
+  const membership = await prisma.organizationMembership.findUnique({
+    where: {
+      userId_organizationId: {
+        userId: currentUser.id,
+        organizationId,
+      },
+    },
+  });
+
+  if (!membership || membership.role !== "ADMIN") {
+    return Response.json(
+      { error: "Only organization admins can create counters" },
+      { status: 403 },
+    );
+  }
+
+  let body: unknown;
+
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
 
   const result = createCounterSchema.safeParse(body);
 
@@ -57,34 +97,28 @@ export async function POST(
 
   const { name } = result.data;
 
-  const organization = await prisma.organization.findUnique({
-    where: {
-      id: organizationId,
-    },
-  });
-
-  if (!organization) {
-    return Response.json({ error: "Organization not found" }, { status: 404 });
-  }
-  const existingCounter = await prisma.counter.findUnique({
-    where: {
-      organizationId_name: {
-        organizationId,
+  try {
+    const counter = await prisma.counter.create({
+      data: {
         name,
+        organizationId,
       },
-    },
-  });
-  if (existingCounter) {
-    return Response.json(
-      { error: "Counter with this name already exists" },
-      { status: 409 },
-    );
+    });
+
+    return Response.json(counter, { status: 201 });
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2002"
+    ) {
+      return Response.json(
+        { error: "Counter with this name already exists" },
+        { status: 409 },
+      );
+    }
+
+    throw error;
   }
-  const counter = await prisma.counter.create({
-    data: {
-      name,
-      organizationId,
-    },
-  });
-  return Response.json(counter, { status: 201 });
 }
