@@ -1,15 +1,37 @@
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { createStaffSchema } from "@/lib/validations/staff";
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
+  const currentUser = await getCurrentUser();
 
+  if (!currentUser) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { searchParams } = new URL(request.url);
   const organizationId = searchParams.get("organizationId");
 
   if (!organizationId) {
     return Response.json(
       { error: "Organization ID is required" },
       { status: 400 },
+    );
+  }
+
+  const membership = await prisma.organizationMembership.findUnique({
+    where: {
+      userId_organizationId: {
+        userId: currentUser.id,
+        organizationId,
+      },
+    },
+  });
+
+  if (!membership || membership.role !== "ADMIN") {
+    return Response.json(
+      { error: "Organization admin access required" },
+      { status: 403 },
     );
   }
 
@@ -25,6 +47,11 @@ export async function GET(request: Request) {
           name: true,
           email: true,
           counterAssignments: {
+            where: {
+              counter: {
+                organizationId,
+              },
+            },
             include: {
               counter: {
                 select: {
@@ -54,7 +81,19 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const body = await request.json();
+  const currentUser = await getCurrentUser();
+
+  if (!currentUser) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let body: unknown;
+
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
 
   const result = createStaffSchema.safeParse(body);
 
@@ -70,81 +109,98 @@ export async function POST(request: Request) {
 
   const { organizationId, name, email } = result.data;
 
-  const organization = await prisma.organization.findUnique({
+  const membership = await prisma.organizationMembership.findUnique({
     where: {
-      id: organizationId,
+      userId_organizationId: {
+        userId: currentUser.id,
+        organizationId,
+      },
     },
+  });
+
+  if (!membership || membership.role !== "ADMIN") {
+    return Response.json(
+      { error: "Organization admin access required" },
+      { status: 403 },
+    );
+  }
+
+  const organization = await prisma.organization.findUnique({
+    where: { id: organizationId },
+    select: { id: true },
   });
 
   if (!organization) {
     return Response.json({ error: "Organization not found" }, { status: 404 });
   }
 
-  const existingUser = await prisma.user.findUnique({
-    where: {
-      email,
-    },
-  });
+  try {
+    const staff = await prisma.$transaction(async (tx) => {
+      let user = await tx.user.findUnique({
+        where: { email },
+      });
 
-  if (existingUser) {
-    const existingMembership = await prisma.organizationMembership.findUnique({
-      where: {
-        userId_organizationId: {
-          userId: existingUser.id,
+      if (user) {
+        const existingMembership = await tx.organizationMembership.findUnique({
+          where: {
+            userId_organizationId: {
+              userId: user.id,
+              organizationId,
+            },
+          },
+        });
+
+        if (existingMembership) {
+          throw new Error("USER_ALREADY_MEMBER");
+        }
+      } else {
+        user = await tx.user.create({
+          data: {
+            name,
+            email,
+          },
+        });
+      }
+
+      const newMembership = await tx.organizationMembership.create({
+        data: {
+          userId: user.id,
           organizationId,
+          role: "STAFF",
         },
-      },
+      });
+
+      return {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: newMembership.role,
+      };
     });
 
-    if (existingMembership) {
+    return Response.json(staff, { status: 201 });
+  } catch (error) {
+    if (error instanceof Error && error.message === "USER_ALREADY_MEMBER") {
       return Response.json(
         { error: "User is already a member of this organization" },
         { status: 409 },
       );
     }
 
-    const membership = await prisma.organizationMembership.create({
-      data: {
-        userId: existingUser.id,
-        organizationId,
-        role: "STAFF",
-      },
-    });
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2002"
+    ) {
+      return Response.json(
+        { error: "A user or membership with these details already exists" },
+        { status: 409 },
+      );
+    }
 
-    return Response.json(
-      {
-        id: existingUser.id,
-        name: existingUser.name,
-        email: existingUser.email,
-        role: membership.role,
-      },
-      { status: 201 },
-    );
+    console.error("Failed to create staff membership:", error);
+
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
-
-  const staff = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({
-      data: {
-        name,
-        email,
-      },
-    });
-
-    const membership = await tx.organizationMembership.create({
-      data: {
-        userId: user.id,
-        organizationId,
-        role: "STAFF",
-      },
-    });
-
-    return {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: membership.role,
-    };
-  });
-
-  return Response.json(staff, { status: 201 });
 }
