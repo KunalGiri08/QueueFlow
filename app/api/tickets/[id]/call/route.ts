@@ -33,7 +33,8 @@ export async function PATCH(
   }
 
   const { id } = await params;
-  const counterId = body.counterId;
+  const counterId = body.counterId.trim();
+  const staffId = currentUser.id;
 
   const ticket = await prisma.ticket.findUnique({
     where: { id },
@@ -59,7 +60,7 @@ export async function PATCH(
   const membership = await prisma.organizationMembership.findUnique({
     where: {
       userId_organizationId: {
-        userId: currentUser.id,
+        userId: staffId,
         organizationId,
       },
     },
@@ -76,7 +77,7 @@ export async function PATCH(
     prisma.staffCounterAssignment.findUnique({
       where: {
         userId_counterId: {
-          userId: currentUser.id,
+          userId: staffId,
           counterId,
         },
       },
@@ -97,28 +98,71 @@ export async function PATCH(
     );
   }
 
-  const result = await prisma.ticket.updateMany({
-    where: {
-      id,
-      status: "WAITING",
-    },
-    data: {
-      status: "CALLED",
-      servedById: currentUser.id,
-      counterId,
-    },
-  });
+  try {
+    const updatedTicket = await prisma.$transaction(async (tx) => {
+      // Use the same lock as the Call Next endpoint.
+      // Both endpoints must acquire this lock before checking availability.
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "User"
+        WHERE "id" = ${staffId}
+        FOR UPDATE
+      `;
 
-  if (result.count === 0) {
-    return Response.json(
-      { error: "Ticket is no longer waiting" },
-      { status: 409 },
-    );
+      const activeTicket = await tx.ticket.findFirst({
+        where: {
+          servedById: staffId,
+          status: { in: ["CALLED", "SERVING"] },
+        },
+        select: { id: true },
+      });
+
+      if (activeTicket) {
+        throw new Error("STAFF_HAS_ACTIVE_TICKET");
+      }
+
+      // Claim only if the ticket is still waiting.
+      const result = await tx.ticket.updateMany({
+        where: {
+          id,
+          status: "WAITING",
+        },
+        data: {
+          status: "CALLED",
+          servedById: staffId,
+          counterId,
+        },
+      });
+
+      if (result.count !== 1) {
+        throw new Error("TICKET_CLAIM_CONFLICT");
+      }
+
+      return tx.ticket.findUniqueOrThrow({
+        where: { id },
+      });
+    });
+
+    return Response.json(updatedTicket, { status: 200 });
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message === "STAFF_HAS_ACTIVE_TICKET") {
+        return Response.json(
+          { error: "Staff member already has an active ticket" },
+          { status: 409 },
+        );
+      }
+
+      if (error.message === "TICKET_CLAIM_CONFLICT") {
+        return Response.json(
+          { error: "Ticket is no longer waiting" },
+          { status: 409 },
+        );
+      }
+    }
+
+    console.error("Failed to call ticket:", error);
+
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
-
-  const updatedTicket = await prisma.ticket.findUnique({
-    where: { id },
-  });
-
-  return Response.json(updatedTicket);
 }

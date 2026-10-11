@@ -12,3 +12,7 @@ export const updateQueueSchema = z
   .refine((data) => data.name !== undefined || data.isActive !== undefined, {
     message: "At least one field is required",
   });
+
+export const callNextTicketSchema = z.object({
+  counterId: z.string().trim().min(1, "Counter ID is required"),
+});
