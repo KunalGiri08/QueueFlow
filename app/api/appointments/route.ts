@@ -10,7 +10,13 @@ export async function POST(request: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = await request.json();
+  let body: unknown;
+
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
 
   const result = createAppointmentSchema.safeParse(body);
 
@@ -34,6 +40,25 @@ export async function POST(request: Request) {
 
   if (!service) {
     return Response.json({ error: "Service not found" }, { status: 404 });
+  }
+  const existingAppointment = await prisma.appointment.findFirst({
+    where: {
+      userId: currentUser.id,
+      serviceId,
+      scheduledAt,
+      status: {
+        not: "CANCELLED",
+      },
+    },
+  });
+
+  if (existingAppointment) {
+    return Response.json(
+      {
+        error: "You already have an appointment for this service at this time",
+      },
+      { status: 409 },
+    );
   }
 
   // CHANGED: Use the authenticated user's database ID
