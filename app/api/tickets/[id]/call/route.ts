@@ -1,19 +1,42 @@
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth/current-user";
 
 export async function PATCH(
   request: Request,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const currentUser = await getCurrentUser();
+
+  if (!currentUser) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let body: unknown;
+
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  if (
+    typeof body !== "object" ||
+    body === null ||
+    !("counterId" in body) ||
+    typeof body.counterId !== "string" ||
+    !body.counterId.trim()
+  ) {
+    return Response.json(
+      { error: "A valid counterId is required" },
+      { status: 400 },
+    );
+  }
+
   const { id } = await params;
-
-  const body = await request.json();
-
-  const { staffId, counterId } = body;
+  const counterId = body.counterId;
 
   const ticket = await prisma.ticket.findUnique({
-    where: {
-      id,
-    },
+    where: { id },
     include: {
       queue: {
         include: {
@@ -24,91 +47,78 @@ export async function PATCH(
   });
 
   if (!ticket) {
-    return Response.json(
-      { error: "Ticket not found" },
-      { status: 404 }
-    );
+    return Response.json({ error: "Ticket not found" }, { status: 404 });
   }
 
   if (ticket.status !== "WAITING") {
-    return Response.json(
-      { error: "Ticket is not waiting" },
-      { status: 409 }
-    );
+    return Response.json({ error: "Ticket is not waiting" }, { status: 409 });
   }
 
   const organizationId = ticket.queue.service.organizationId;
 
-  const membership = await prisma.organizationMembership.findFirst({
+  const membership = await prisma.organizationMembership.findUnique({
     where: {
-      userId: staffId,
-      organizationId,
-      role: "STAFF",
-    },
-  });
-
-  if (!membership) {
-    return Response.json(
-      { error: "Staff member is not authorized" },
-      { status: 403 }
-    );
-  }
-
-  const assignment = await prisma.staffCounterAssignment.findUnique({
-    where: {
-      userId_counterId: {
-        userId: staffId,
-        counterId,
+      userId_organizationId: {
+        userId: currentUser.id,
+        organizationId,
       },
     },
   });
 
-  if (!assignment) {
+  if (!membership || membership.role !== "STAFF") {
     return Response.json(
-      { error: "Staff member is not assigned to this counter" },
-      { status: 403 }
+      { error: "Staff member is not authorized" },
+      { status: 403 },
     );
   }
 
-  const counter = await prisma.counter.findFirst({
+  const [assignment, counter] = await Promise.all([
+    prisma.staffCounterAssignment.findUnique({
+      where: {
+        userId_counterId: {
+          userId: currentUser.id,
+          counterId,
+        },
+      },
+    }),
+    prisma.counter.findFirst({
+      where: {
+        id: counterId,
+        organizationId,
+        isActive: true,
+      },
+    }),
+  ]);
+
+  if (!assignment || !counter) {
+    return Response.json(
+      { error: "Counter is invalid or staff is not assigned to it" },
+      { status: 403 },
+    );
+  }
+
+  const result = await prisma.ticket.updateMany({
     where: {
-      id: counterId,
-      organizationId,
-      isActive: true,
+      id,
+      status: "WAITING",
+    },
+    data: {
+      status: "CALLED",
+      servedById: currentUser.id,
+      counterId,
     },
   });
 
-  if (!counter) {
+  if (result.count === 0) {
     return Response.json(
-      { error: "Counter is invalid or inactive" },
-      { status: 403 }
+      { error: "Ticket is no longer waiting" },
+      { status: 409 },
     );
   }
 
- const result = await prisma.ticket.updateMany({
-  where: {
-    id,
-    status: "WAITING",
-  },
-  data: {
-    status: "CALLED",
-    servedById: staffId,
-    counterId,
-  },
-});
+  const updatedTicket = await prisma.ticket.findUnique({
+    where: { id },
+  });
 
-if (result.count === 0) {
-  return Response.json(
-    { error: "Ticket is no longer waiting" },
-    { status: 409 }
-  );
-}
-
-const updatedTicket = await prisma.ticket.findUnique({
-  where: {
-    id,
-  },
-});
-
-return Response.json(updatedTicket);
+  return Response.json(updatedTicket);
 }
