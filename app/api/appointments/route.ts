@@ -3,7 +3,6 @@ import { getCurrentUser } from "@/lib/auth/current-user";
 import { createAppointmentSchema } from "@/lib/validations/appointment";
 
 export async function POST(request: Request) {
-  // NEW: Identify the authenticated QueueFlow user
   const currentUser = await getCurrentUser();
 
   if (!currentUser) {
@@ -32,45 +31,69 @@ export async function POST(request: Request) {
 
   const { serviceId, scheduledAt } = result.data;
 
-  const service = await prisma.service.findUnique({
-    where: {
-      id: serviceId,
-    },
-  });
+  try {
+    const appointment = await prisma.$transaction(async (tx) => {
+      // Serialize booking attempts for this service.
+      const services = await tx.$queryRaw<{ id: string }[]>`
+        SELECT "id"
+        FROM "Service"
+        WHERE "id" = ${serviceId}
+        FOR UPDATE
+      `;
 
-  if (!service) {
-    return Response.json({ error: "Service not found" }, { status: 404 });
+      if (services.length === 0) {
+        throw new Error("SERVICE_NOT_FOUND");
+      }
+
+      const existingAppointment = await tx.appointment.findFirst({
+        where: {
+          userId: currentUser.id,
+          serviceId,
+          scheduledAt,
+          status: {
+            not: "CANCELLED",
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (existingAppointment) {
+        throw new Error("APPOINTMENT_ALREADY_EXISTS");
+      }
+
+      return tx.appointment.create({
+        data: {
+          serviceId,
+          userId: currentUser.id,
+          scheduledAt,
+        },
+      });
+    });
+
+    return Response.json(appointment, { status: 201 });
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message === "SERVICE_NOT_FOUND") {
+        return Response.json({ error: "Service not found" }, { status: 404 });
+      }
+
+      if (error.message === "APPOINTMENT_ALREADY_EXISTS") {
+        return Response.json(
+          {
+            error:
+              "You already have an appointment for this service at this time",
+          },
+          { status: 409 },
+        );
+      }
+    }
+
+    console.error("Failed to create appointment:", error);
+
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
-  const existingAppointment = await prisma.appointment.findFirst({
-    where: {
-      userId: currentUser.id,
-      serviceId,
-      scheduledAt,
-      status: {
-        not: "CANCELLED",
-      },
-    },
-  });
-
-  if (existingAppointment) {
-    return Response.json(
-      {
-        error: "You already have an appointment for this service at this time",
-      },
-      { status: 409 },
-    );
-  }
-
-  // CHANGED: Use the authenticated user's database ID
-  const appointment = await prisma.appointment.create({
-    data: {
-      serviceId,
-      userId: currentUser.id,
-      scheduledAt,
-    },
-  });
-
-  return Response.json(appointment, { status: 201 });
 }
 
 export async function GET() {
