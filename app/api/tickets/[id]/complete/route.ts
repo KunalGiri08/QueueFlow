@@ -92,28 +92,60 @@ export async function PATCH(
     );
   }
 
-  const result = await prisma.ticket.updateMany({
-    where: {
-      id,
-      status: "SERVING",
-      servedById: currentUser.id,
-      counterId: ticket.counterId,
-    },
-    data: {
-      status: "COMPLETED",
-    },
-  });
+  try {
+    const updatedTicket = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "Ticket"
+        WHERE "id" = ${id}
+        FOR UPDATE
+      `;
 
-  if (result.count === 0) {
-    return Response.json(
-      { error: "Ticket state changed; refresh and try again" },
-      { status: 409 },
-    );
+      const currentTicket = await tx.ticket.findUnique({
+        where: { id },
+      });
+
+      if (
+        !currentTicket ||
+        currentTicket.status !== "SERVING" ||
+        currentTicket.servedById !== currentUser.id ||
+        currentTicket.counterId !== ticket.counterId
+      ) {
+        throw new Error("TICKET_STATE_CONFLICT");
+      }
+
+      const result = await tx.ticket.updateMany({
+        where: {
+          id,
+          status: "SERVING",
+          servedById: currentUser.id,
+          counterId: ticket.counterId,
+        },
+        data: {
+          status: "COMPLETED",
+        },
+      });
+
+      if (result.count !== 1) {
+        throw new Error("TICKET_STATE_CONFLICT");
+      }
+
+      return tx.ticket.findUniqueOrThrow({
+        where: { id },
+      });
+    });
+
+    return Response.json(updatedTicket);
+  } catch (error) {
+    if (error instanceof Error && error.message === "TICKET_STATE_CONFLICT") {
+      return Response.json(
+        { error: "Ticket state changed; refresh and try again" },
+        { status: 409 },
+      );
+    }
+
+    console.error("Failed to complete ticket:", error);
+
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
-
-  const updatedTicket = await prisma.ticket.findUnique({
-    where: { id },
-  });
-
-  return Response.json(updatedTicket);
 }
