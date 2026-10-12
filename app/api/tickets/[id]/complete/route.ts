@@ -80,7 +80,6 @@ export async function PATCH(
       where: {
         id: ticket.counterId,
         organizationId,
-        isActive: true,
       },
     }),
   ]);

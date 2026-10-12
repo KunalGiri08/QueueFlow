@@ -68,55 +68,80 @@ export async function DELETE(
     );
   }
 
-  const assignment = await prisma.staffCounterAssignment.findUnique({
-    where: {
-      userId_counterId: {
-        userId: staffId,
-        counterId,
-      },
-    },
-  });
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Use the same staff lock used by ticket-claiming endpoints.
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "User"
+        WHERE "id" = ${staffId}
+        FOR UPDATE
+      `;
 
-  if (!assignment) {
-    return Response.json(
-      { error: "Staff member is not assigned to this counter" },
-      { status: 404 },
-    );
+      const assignment = await tx.staffCounterAssignment.findUnique({
+        where: {
+          userId_counterId: {
+            userId: staffId,
+            counterId,
+          },
+        },
+      });
+
+      if (!assignment) {
+        throw new Error("ASSIGNMENT_NOT_FOUND");
+      }
+
+      // Recheck after acquiring the lock.
+      const activeTicket = await tx.ticket.findFirst({
+        where: {
+          servedById: staffId,
+          counterId,
+          status: {
+            in: ["CALLED", "SERVING"],
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (activeTicket) {
+        throw new Error("STAFF_HAS_ACTIVE_TICKET");
+      }
+
+      await tx.staffCounterAssignment.delete({
+        where: {
+          userId_counterId: {
+            userId: staffId,
+            counterId,
+          },
+        },
+      });
+    });
+
+    return new Response(null, { status: 204 });
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message === "ASSIGNMENT_NOT_FOUND") {
+        return Response.json(
+          { error: "Staff member is not assigned to this counter" },
+          { status: 404 },
+        );
+      }
+
+      if (error.message === "STAFF_HAS_ACTIVE_TICKET") {
+        return Response.json(
+          {
+            error:
+              "Cannot remove assignment while the staff member has an active ticket",
+          },
+          { status: 409 },
+        );
+      }
+    }
+
+    console.error("Failed to remove staff counter assignment:", error);
+
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
-
-  // Don't revoke the assignment while the staff member has
-  // a ticket called or actively being served at this counter.
-  const activeTicket = await prisma.ticket.findFirst({
-    where: {
-      servedById: staffId,
-      counterId,
-      status: {
-        in: ["CALLED", "SERVING"],
-      },
-    },
-    select: {
-      id: true,
-    },
-  });
-
-  if (activeTicket) {
-    return Response.json(
-      {
-        error:
-          "Cannot remove assignment while the staff member has an active ticket",
-      },
-      { status: 409 },
-    );
-  }
-
-  await prisma.staffCounterAssignment.delete({
-    where: {
-      userId_counterId: {
-        userId: staffId,
-        counterId,
-      },
-    },
-  });
-
-  return new Response(null, { status: 204 });
 }
