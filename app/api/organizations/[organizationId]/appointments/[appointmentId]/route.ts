@@ -61,6 +61,13 @@ export async function PATCH(
     );
   }
 
+  if (membership.role !== "ADMIN" && membership.role !== "STAFF") {
+    return Response.json(
+      { error: "You are not allowed to manage appointments" },
+      { status: 403 },
+    );
+  }
+
   const appointment = await prisma.appointment.findFirst({
     where: {
       id: appointmentId,
