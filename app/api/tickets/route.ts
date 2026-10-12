@@ -4,6 +4,50 @@ import { reserveNextTicketNumber } from "@/lib/services/ticket.service";
 import { createTicketSchema } from "@/lib/validations/ticket";
 import { randomBytes } from "node:crypto";
 
+export async function GET() {
+  const currentUser = await getCurrentUser();
+
+  if (!currentUser) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const tickets = await prisma.ticket.findMany({
+    where: {
+      userId: currentUser.id,
+    },
+    select: {
+      id: true,
+      number: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
+      queue: {
+        select: {
+          id: true,
+          name: true,
+          service: {
+            select: {
+              id: true,
+              name: true,
+              organization: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+
+  return Response.json(tickets);
+}
+
 export async function POST(request: Request) {
   const currentUser = await getCurrentUser();
 
