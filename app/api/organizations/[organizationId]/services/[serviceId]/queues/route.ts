@@ -21,26 +21,14 @@ export async function GET(
 
   const { organizationId, serviceId } = await params;
 
-  const membership = await prisma.organizationMembership.findUnique({
-    where: {
-      userId_organizationId: {
-        userId: currentUser.id,
-        organizationId,
-      },
-    },
-  });
-
-  if (!membership) {
-    return Response.json(
-      { error: "You are not a member of this organization" },
-      { status: 403 },
-    );
-  }
-
+  // Verify that the service belongs to the requested organization.
   const service = await prisma.service.findFirst({
     where: {
       id: serviceId,
       organizationId,
+    },
+    select: {
+      id: true,
     },
   });
 
@@ -48,9 +36,11 @@ export async function GET(
     return Response.json({ error: "Service not found" }, { status: 404 });
   }
 
+  // Customers can discover queues without organization membership.
   const queues = await prisma.queue.findMany({
     where: {
       serviceId,
+      isActive: true,
     },
     orderBy: {
       createdAt: "asc",
