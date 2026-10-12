@@ -11,7 +11,13 @@ export async function POST(request: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = await request.json();
+  let body: unknown;
+
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
 
   const result = createTicketSchema.safeParse(body);
 
@@ -28,35 +34,71 @@ export async function POST(request: Request) {
   const { queueId } = result.data;
   const userId = currentUser.id;
 
-  const ticket = await prisma.$transaction(async (tx) => {
-    const queue = await tx.queue.findUnique({
-      where: {
-        id: queueId,
-      },
+  try {
+    const ticket = await prisma.$transaction(async (tx) => {
+      const queue = await tx.queue.findUnique({
+        where: { id: queueId },
+        select: { id: true, isActive: true },
+      });
+
+      if (!queue || !queue.isActive) {
+        throw new Error("QUEUE_NOT_FOUND_OR_INACTIVE");
+      }
+
+      // Acquire the queue-row lock before checking active tickets.
+      // Concurrent ticket creations for this queue must wait here.
+      const number = await reserveNextTicketNumber(tx, queueId);
+
+      const existingActiveTicket = await tx.ticket.findFirst({
+        where: {
+          queueId,
+          userId,
+          status: { in: ["WAITING", "CALLED", "SERVING"] },
+        },
+        select: { id: true },
+      });
+
+      if (existingActiveTicket) {
+        throw new Error("ACTIVE_TICKET_EXISTS");
+      }
+
+      return tx.ticket.create({
+        data: {
+          number,
+          queueId,
+          userId,
+          trackingToken: randomBytes(32).toString("hex"),
+        },
+      });
     });
 
-    if (!queue || !queue.isActive) {
-      return null;
+    return Response.json(ticket, { status: 201 });
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message === "ACTIVE_TICKET_EXISTS") {
+        return Response.json(
+          { error: "You already have an active ticket in this queue" },
+          { status: 409 },
+        );
+      }
+
+      if (error.message === "QUEUE_NOT_FOUND_OR_INACTIVE") {
+        return Response.json(
+          { error: "Queue not found or inactive" },
+          { status: 404 },
+        );
+      }
+
+      if (error.message === "Queue not found or inactive") {
+        return Response.json(
+          { error: "Queue not found or inactive" },
+          { status: 404 },
+        );
+      }
     }
 
-    const number = await reserveNextTicketNumber(tx, queueId);
+    console.error("Failed to create ticket:", error);
 
-    return tx.ticket.create({
-      data: {
-        number,
-        queueId,
-        userId,
-        trackingToken: randomBytes(32).toString("hex"),
-      },
-    });
-  });
-
-  if (!ticket) {
-    return Response.json(
-      { error: "Queue not found or inactive" },
-      { status: 404 },
-    );
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
-
-  return Response.json(ticket, { status: 201 });
 }

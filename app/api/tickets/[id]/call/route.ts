@@ -50,6 +50,9 @@ export async function PATCH(
   if (!ticket) {
     return Response.json({ error: "Ticket not found" }, { status: 404 });
   }
+  if (!ticket.queue.isActive) {
+    return Response.json({ error: "Queue is inactive" }, { status: 409 });
+  }
 
   if (ticket.status !== "WAITING") {
     return Response.json({ error: "Ticket is not waiting" }, { status: 409 });
