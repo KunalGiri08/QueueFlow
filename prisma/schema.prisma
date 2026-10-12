@@ -113,6 +113,9 @@ model Ticket {
   counter  Counter? @relation(fields: [counterId], references: [id], onDelete: SetNull)
 
   @@unique([queueId, number])
+  @@index([queueId, status, number])
+  @@index([servedById, status])
+  @@index([userId])
 }
 
 model Appointment {
@@ -126,6 +129,9 @@ model Appointment {
 
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, scheduledAt])
+  @@index([serviceId, scheduledAt])
 }
 
 model Counter {
