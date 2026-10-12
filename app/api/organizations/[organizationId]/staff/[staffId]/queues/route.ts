@@ -55,7 +55,10 @@ export async function GET(
     },
   });
 
-  if (!targetMembership || targetMembership.role !== "STAFF") {
+  if (
+    !targetMembership ||
+    (targetMembership.role !== "STAFF" && targetMembership.role !== "ADMIN")
+  ) {
     return Response.json(
       { error: "Staff member not found in this organization" },
       { status: 404 },

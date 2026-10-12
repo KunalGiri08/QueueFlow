@@ -84,12 +84,12 @@ describe("GET staff queues", () => {
     expect(mockMembershipFindUnique).toHaveBeenCalledTimes(1);
   });
 
-  it("returns 404 when the target user is not a staff member", async () => {
+  it("returns 404 when the target user is not a member of the organization", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: staffId });
 
     mockMembershipFindUnique
-      .mockResolvedValueOnce({ role: "STAFF" })
-      .mockResolvedValueOnce({ role: "ADMIN" });
+      .mockResolvedValueOnce({ role: "ADMIN" })
+      .mockResolvedValueOnce(null);
 
     const response = await GET(new Request("http://localhost"), createParams());
 
@@ -99,6 +99,49 @@ describe("GET staff queues", () => {
     });
 
     expect(mockQueueFindMany).not.toHaveBeenCalled();
+  });
+
+  it("returns active organization queues for an ADMIN target operator", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: staffId });
+
+    mockMembershipFindUnique
+      .mockResolvedValueOnce({ role: "ADMIN" })
+      .mockResolvedValueOnce({ role: "ADMIN" });
+
+    mockQueueFindMany.mockResolvedValue([
+      {
+        id: "queue-123",
+        name: "General Queue",
+        isActive: true,
+        service: {
+          id: "service-123",
+          name: "General Service",
+        },
+      },
+    ]);
+
+    const response = await GET(new Request("http://localhost"), createParams());
+
+    expect(response.status).toBe(200);
+    expect(mockQueueFindMany).toHaveBeenCalledWith({
+      where: {
+        service: {
+          organizationId,
+        },
+        isActive: true,
+      },
+      include: {
+        service: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "asc",
+      },
+    });
   });
 
   it("returns active organization queues without requiring existing ticket-counter assignments", async () => {

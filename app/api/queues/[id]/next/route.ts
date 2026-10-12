@@ -64,7 +64,10 @@ export async function PATCH(
     },
   });
 
-  if (!membership || membership.role !== "STAFF") {
+  if (
+    !membership ||
+    (membership.role !== "STAFF" && membership.role !== "ADMIN")
+  ) {
     return Response.json(
       { error: "Staff membership is required" },
       { status: 403 },

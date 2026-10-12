@@ -70,7 +70,10 @@ export async function POST(
     },
   });
 
-  if (!staffMembership || staffMembership.role !== "STAFF") {
+  if (
+    !staffMembership ||
+    (staffMembership.role !== "STAFF" && staffMembership.role !== "ADMIN")
+  ) {
     return Response.json(
       { error: "Staff member does not belong to this organization" },
       { status: 403 },

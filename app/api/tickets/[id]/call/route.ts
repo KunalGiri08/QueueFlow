@@ -69,7 +69,10 @@ export async function PATCH(
     },
   });
 
-  if (!membership || membership.role !== "STAFF") {
+  if (
+    !membership ||
+    (membership.role !== "STAFF" && membership.role !== "ADMIN")
+  ) {
     return Response.json(
       { error: "Staff member is not authorized" },
       { status: 403 },
