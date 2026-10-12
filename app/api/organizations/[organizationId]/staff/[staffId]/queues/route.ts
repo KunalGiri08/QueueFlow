@@ -67,6 +67,17 @@ export async function GET(
       service: {
         organizationId,
       },
+      tickets: {
+        some: {
+          counter: {
+            staffAssignments: {
+              some: {
+                userId: staffId,
+              },
+            },
+          },
+        },
+      },
     },
     include: {
       service: {
