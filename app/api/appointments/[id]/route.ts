@@ -136,7 +136,6 @@ export async function PATCH(
       const existingAppointment = await tx.appointment.findFirst({
         where: {
           id: { not: id },
-          userId: currentUser.id,
           serviceId: appointment.serviceId,
           scheduledAt: result.data.scheduledAt,
           status: { not: "CANCELLED" },
@@ -195,12 +194,25 @@ export async function PATCH(
       if (error.message === "APPOINTMENT_TIME_CONFLICT") {
         return Response.json(
           {
-            error:
-              "You already have an appointment for this service at this time",
+            error: "This appointment time slot is already booked",
           },
           { status: 409 },
         );
       }
+    }
+
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2002"
+    ) {
+      return Response.json(
+        {
+          error: "This appointment time slot is already booked",
+        },
+        { status: 409 },
+      );
     }
 
     console.error("Failed to reschedule appointment:", error);

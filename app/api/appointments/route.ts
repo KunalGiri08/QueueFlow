@@ -47,7 +47,6 @@ export async function POST(request: Request) {
 
       const existingAppointment = await tx.appointment.findFirst({
         where: {
-          userId: currentUser.id,
           serviceId,
           scheduledAt,
           status: {
@@ -82,12 +81,25 @@ export async function POST(request: Request) {
       if (error.message === "APPOINTMENT_ALREADY_EXISTS") {
         return Response.json(
           {
-            error:
-              "You already have an appointment for this service at this time",
+            error: "This appointment time slot is already booked",
           },
           { status: 409 },
         );
       }
+    }
+
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2002"
+    ) {
+      return Response.json(
+        {
+          error: "This appointment time slot is already booked",
+        },
+        { status: 409 },
+      );
     }
 
     console.error("Failed to create appointment:", error);
