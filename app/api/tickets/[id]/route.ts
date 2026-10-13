@@ -25,6 +25,12 @@ export async function GET(
           },
         },
       },
+      counter: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
     },
   });
 
@@ -32,8 +38,25 @@ export async function GET(
     return Response.json({ error: "Ticket not found" }, { status: 404 });
   }
 
-  if (ticket.userId !== currentUser.id) {
-    return Response.json({ error: "Forbidden" }, { status: 403 });
+  const isOwner = ticket.userId === currentUser.id;
+
+  if (!isOwner) {
+    const organizationId = ticket.queue.service.organizationId;
+    const membership = await prisma.organizationMembership.findUnique({
+      where: {
+        userId_organizationId: {
+          userId: currentUser.id,
+          organizationId,
+        },
+      },
+    });
+
+    if (
+      !membership ||
+      (membership.role !== "STAFF" && membership.role !== "ADMIN")
+    ) {
+      return Response.json({ error: "Ticket not found" }, { status: 404 });
+    }
   }
 
   const peopleAhead = await prisma.ticket.count({
@@ -70,5 +93,11 @@ export async function GET(
       id: ticket.queue.service.organization.id,
       name: ticket.queue.service.organization.name,
     },
+    counter: ticket.counter
+      ? {
+          id: ticket.counter.id,
+          name: ticket.counter.name,
+        }
+      : null,
   });
 }

@@ -20,6 +20,11 @@ export async function GET(
           },
         },
       },
+      counter: {
+        select: {
+          name: true,
+        },
+      },
     },
   });
 
@@ -61,5 +66,10 @@ export async function GET(
     organization: {
       name: ticket.queue.service.organization.name,
     },
+    counter: ticket.counter
+      ? {
+          name: ticket.counter.name,
+        }
+      : null,
   });
 }
