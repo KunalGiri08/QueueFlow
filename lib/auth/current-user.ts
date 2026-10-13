@@ -2,6 +2,7 @@ import { auth, clerkClient } from "@clerk/nextjs/server";
 import { verifyToken } from "@clerk/backend";
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
+import { env } from "@/lib/env.server";
 
 function isUniqueConstraintError(error: unknown): boolean {
   return (
@@ -32,7 +33,7 @@ export async function getCurrentUser() {
 
     try {
       const verifiedToken = await verifyToken(token, {
-        secretKey: process.env.CLERK_SECRET_KEY!,
+        secretKey: env.CLERK_SECRET_KEY,
       });
 
       clerkUserId = verifiedToken.sub;
