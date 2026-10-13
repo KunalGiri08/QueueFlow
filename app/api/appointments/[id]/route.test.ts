@@ -119,6 +119,128 @@ describe("PATCH /api/appointments/[id]", () => {
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
+  it("rejects past appointment timestamps with 400", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
+
+    const pastDate = new Date(Date.now() - 60_000).toISOString();
+    const response = await PATCH(
+      new Request("http://localhost/api/appointments/appointment-123", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduledAt: pastDate }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toBe("Invalid request body");
+    expect(data.details.fieldErrors.scheduledAt).toContain(
+      "Appointment must be scheduled in the future",
+    );
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects timezone-less datetime strings with 400", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
+
+    const response = await PATCH(
+      new Request("http://localhost/api/appointments/appointment-123", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduledAt: "2026-10-20T10:00:00" }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toBe("Invalid request body");
+    expect(data.details.fieldErrors.scheduledAt).toContain(
+      "Invalid ISO datetime",
+    );
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects appointments scheduled more than 365 days in advance with 400", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
+
+    const farFutureDate = new Date(
+      Date.now() + 366 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const response = await PATCH(
+      new Request("http://localhost/api/appointments/appointment-123", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduledAt: farFutureDate }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toBe("Invalid request body");
+    expect(data.details.fieldErrors.scheduledAt).toContain(
+      "Appointment cannot be scheduled more than 365 days in advance",
+    );
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it("successfully reschedules when using explicit numeric timezone offset", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
+    mockQueryRaw.mockResolvedValue([{ id: "appointment-123" }]);
+    const currentAppointment = {
+      id: "appointment-123",
+      userId: "user-123",
+      status: "BOOKED",
+      serviceId: "svc-1",
+      scheduledAt: new Date(Date.now() + 10_000_000),
+    };
+    const offsetDate = "2026-10-20T15:30:00+05:30";
+    const parsedDate = new Date(offsetDate);
+    const updatedAppointment = {
+      ...currentAppointment,
+      scheduledAt: parsedDate,
+    };
+
+    mockFindUniqueOrThrow
+      .mockResolvedValueOnce(currentAppointment)
+      .mockResolvedValueOnce(updatedAppointment);
+    mockAppointmentFindFirst.mockResolvedValue(null);
+    mockAppointmentUpdateMany.mockResolvedValue({ count: 1 });
+
+    const response = await PATCH(
+      new Request("http://localhost/api/appointments/appointment-123", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduledAt: offsetDate }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockAppointmentFindFirst).toHaveBeenCalledWith({
+      where: {
+        id: { not: "appointment-123" },
+        serviceId: "svc-1",
+        scheduledAt: parsedDate,
+        status: { not: "CANCELLED" },
+      },
+      select: { id: true },
+    });
+    expect(mockAppointmentUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: "appointment-123",
+        userId: "user-123",
+        status: "BOOKED",
+      },
+      data: {
+        scheduledAt: parsedDate,
+      },
+    });
+  });
+
+
   it("returns 404 when the appointment does not exist", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
     mockQueryRaw.mockResolvedValue([]);
