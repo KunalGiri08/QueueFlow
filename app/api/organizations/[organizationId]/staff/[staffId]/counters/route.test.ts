@@ -86,7 +86,7 @@ describe("POST /api/organizations/[organizationId]/staff/[staffId]/counters", ()
     });
   });
 
-  it("returns 403 when the target user is not a member of the organization", async () => {
+  it("returns 404 when the target user is not a member of the organization", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
     mockMembershipFindUnique
       .mockResolvedValueOnce({ role: "ADMIN" }) // caller check
@@ -101,7 +101,7 @@ describe("POST /api/organizations/[organizationId]/staff/[staffId]/counters", ()
       createParams(),
     );
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       error: "Staff member does not belong to this organization",
     });
@@ -185,5 +185,31 @@ describe("POST /api/organizations/[organizationId]/staff/[staffId]/counters", ()
       staffId: targetStaffId,
       counter: { id: counterId, name: "Counter 1" },
     });
+  });
+
+  it("returns 500 without exposing internal error details on unexpected database failure", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique
+      .mockResolvedValueOnce({ role: "ADMIN" })
+      .mockResolvedValueOnce({ role: "STAFF" });
+    mockCounterFindFirst.mockResolvedValue({ id: counterId, organizationId });
+    mockCounterAssignmentCreate.mockRejectedValue(
+      new Error("FATAL: connection pool exhausted at postgresql://postgres:secret@db:5432"),
+    );
+
+    const response = await POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counterId }),
+      }),
+      createParams(),
+    );
+
+    expect(response.status).toBe(500);
+    const data = await response.json();
+    expect(data).toEqual({ error: "Internal server error" });
+    expect(JSON.stringify(data)).not.toContain("connection pool exhausted");
+    expect(JSON.stringify(data)).not.toContain("secret");
   });
 });

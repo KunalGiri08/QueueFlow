@@ -76,7 +76,7 @@ export async function POST(
   ) {
     return Response.json(
       { error: "Staff member does not belong to this organization" },
-      { status: 403 },
+      { status: 404 },
     );
   }
 
@@ -134,6 +134,8 @@ export async function POST(
       );
     }
 
-    throw error;
+    console.error("Failed to assign staff to counter:", error);
+
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
 }

@@ -119,6 +119,8 @@ export async function POST(
       );
     }
 
-    throw error;
+    console.error("Failed to create counter:", error);
+
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
 }
