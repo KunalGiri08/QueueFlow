@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
 
 export default function Home() {
@@ -15,9 +16,12 @@ export default function Home() {
             while customers track their position in real time.
           </p>
 
-          <button className="mt-8 rounded-lg bg-black px-6 py-3 text-white">
+          <Link
+            href="/sign-up"
+            className="mt-8 inline-flex items-center justify-center rounded-lg bg-black px-6 py-3 text-white shadow-sm transition-all hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
+          >
             Join Queue
-          </button>
+          </Link>
         </section>
 
         <section
