@@ -174,11 +174,11 @@ function OrganizationsContent() {
               </div>
               <div className="mt-6 flex items-center justify-end border-t border-gray-100 pt-4">
                 <Link
-                  href="/sign-up?redirect_url=%2Forganizations"
+                  href={`/organizations/${org.id}`}
                   className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
-                  aria-label={`Get started with ${org.name}`}
+                  aria-label={`View services at ${org.name}`}
                 >
-                  Get started
+                  View services
                 </Link>
               </div>
             </article>
