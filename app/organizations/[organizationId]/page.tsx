@@ -1,7 +1,8 @@
 "use client";
 
 import { use, useState, useEffect, useCallback, Suspense } from "react";
-import { useParams } from "next/navigation";
+import { useRouter, useParams } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
 
@@ -55,9 +56,9 @@ function ServicesLoadingSkeleton() {
             </div>
             <div className="mt-6 border-t border-gray-100 pt-4">
               <div className="mb-2 h-3 w-20 rounded bg-gray-100" />
-              <div className="flex gap-2">
-                <div className="h-6 w-20 rounded bg-gray-200" />
-                <div className="h-6 w-24 rounded bg-gray-200" />
+              <div className="space-y-2">
+                <div className="h-10 w-full rounded-lg bg-gray-100" />
+                <div className="h-10 w-full rounded-lg bg-gray-100" />
               </div>
             </div>
           </div>
@@ -72,14 +73,23 @@ function OrganizationServicesContent({
 }: {
   paramsPromise: Promise<{ organizationId: string }>;
 }) {
+  const router = useRouter();
+  const { isSignedIn } = useAuth();
   const resolvedParams = use(paramsPromise);
   const navParams = useParams<{ organizationId: string }>();
-  const organizationId = resolvedParams?.organizationId || navParams?.organizationId;
+  const organizationId =
+    resolvedParams?.organizationId || navParams?.organizationId;
 
   const [data, setData] = useState<OrganizationServicesData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isNotFound, setIsNotFound] = useState(false);
+
+  const [joiningQueueId, setJoiningQueueId] = useState<string | null>(null);
+  const [queueError, setQueueError] = useState<{
+    queueId: string;
+    message: string;
+  } | null>(null);
 
   const fetchServices = useCallback(async () => {
     if (!organizationId) return;
@@ -128,6 +138,111 @@ function OrganizationServicesContent({
     fetchServices();
   }, [fetchServices]);
 
+  const handleJoinQueue = async (queueId: string) => {
+    if (!organizationId) return;
+
+    if (!isSignedIn) {
+      router.push(
+        `/sign-in?redirect_url=${encodeURIComponent(`/organizations/${organizationId}`)}`,
+      );
+      return;
+    }
+
+    if (joiningQueueId === queueId) return;
+
+    setQueueError((prev) => (prev?.queueId === queueId ? null : prev));
+    setJoiningQueueId(queueId);
+
+    try {
+      const response = await fetch("/api/tickets", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ queueId }),
+      });
+
+      if (response.status === 201) {
+        const ticketData: unknown = await response.json();
+
+        if (
+          ticketData &&
+          typeof ticketData === "object" &&
+          "trackingToken" in ticketData &&
+          typeof (ticketData as { trackingToken: unknown }).trackingToken ===
+            "string" &&
+          (ticketData as { trackingToken: string }).trackingToken.trim() !== ""
+        ) {
+          router.push(
+            `/tickets/track/${encodeURIComponent(
+              (ticketData as { trackingToken: string }).trackingToken,
+            )}`,
+          );
+          return;
+        }
+
+        setQueueError({
+          queueId,
+          message: "Ticket created, but tracking information is unavailable.",
+        });
+        return;
+      }
+
+      if (response.status === 401) {
+        router.push(
+          `/sign-in?redirect_url=${encodeURIComponent(`/organizations/${organizationId}`)}`,
+        );
+        return;
+      }
+
+      if (response.status === 404) {
+        setQueueError({
+          queueId,
+          message:
+            "This queue is no longer active or could not be found. Please refresh the page.",
+        });
+        return;
+      }
+
+      if (response.status === 409) {
+        let errorMessage = "You already have an active ticket in this queue.";
+        try {
+          const errJson: unknown = await response.json();
+          if (
+            errJson &&
+            typeof errJson === "object" &&
+            "error" in errJson &&
+            typeof (errJson as { error: unknown }).error === "string" &&
+            (errJson as { error: string }).error.trim() !== ""
+          ) {
+            errorMessage = (errJson as { error: string }).error;
+          }
+        } catch {
+          // Fall back to default safe message
+        }
+
+        setQueueError({
+          queueId,
+          message: errorMessage,
+        });
+        return;
+      }
+
+      setQueueError({
+        queueId,
+        message: "Unable to join the queue at this time. Please try again.",
+      });
+    } catch {
+      setQueueError({
+        queueId,
+        message:
+          "Unable to join the queue at this time. Please check your connection and try again.",
+      });
+    } finally {
+      setJoiningQueueId(null);
+    }
+  };
+
   if (isLoading) {
     return <ServicesLoadingSkeleton />;
   }
@@ -138,7 +253,7 @@ function OrganizationServicesContent({
         <div className="mb-6">
           <Link
             href="/organizations"
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 rounded-md"
+            className="inline-flex items-center gap-1.5 rounded-md text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2"
           >
             <span aria-hidden="true">&larr;</span> Back to Organizations
           </Link>
@@ -169,7 +284,7 @@ function OrganizationServicesContent({
         <div className="mb-6">
           <Link
             href="/organizations"
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 rounded-md"
+            className="inline-flex items-center gap-1.5 rounded-md text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2"
           >
             <span aria-hidden="true">&larr;</span> Back to Organizations
           </Link>
@@ -200,7 +315,7 @@ function OrganizationServicesContent({
       <div className="mb-6">
         <Link
           href="/organizations"
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 rounded-md"
+          className="inline-flex items-center gap-1.5 rounded-md text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2"
         >
           <span aria-hidden="true">&larr;</span> Back to Organizations
         </Link>
@@ -256,23 +371,81 @@ function OrganizationServicesContent({
               </div>
 
               <div className="mt-6 border-t border-gray-100 pt-4">
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
                   Active Queues
                 </h3>
                 {service.queues.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {service.queues.map((queue) => (
-                      <span
-                        key={queue.id}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-green-200/60 bg-green-50 px-2.5 py-1 text-xs font-medium text-green-700"
-                      >
-                        <span
-                          className="h-1.5 w-1.5 rounded-full bg-green-500"
-                          aria-hidden="true"
-                        />
-                        {queue.name}
-                      </span>
-                    ))}
+                  <div className="space-y-2.5">
+                    {service.queues.map((queue) => {
+                      const isSubmitting = joiningQueueId === queue.id;
+                      const hasError = queueError?.queueId === queue.id;
+
+                      return (
+                        <div
+                          key={queue.id}
+                          className="flex flex-col rounded-lg border border-gray-200/80 bg-gray-50/60 p-3 transition-colors hover:border-gray-300"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span
+                                className="h-2 w-2 shrink-0 rounded-full bg-green-500"
+                                aria-hidden="true"
+                              />
+                              <span className="truncate text-sm font-medium text-gray-900">
+                                {queue.name}
+                              </span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleJoinQueue(queue.id)}
+                              disabled={
+                                isSubmitting || joiningQueueId !== null
+                              }
+                              aria-label={
+                                isSubmitting
+                                  ? `Joining ${queue.name}...`
+                                  : `Join ${queue.name}`
+                              }
+                              className="inline-flex shrink-0 items-center justify-center rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isSubmitting ? (
+                                <span className="inline-flex items-center gap-1.5">
+                                  <svg
+                                    className="h-3.5 w-3.5 animate-spin"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth="2.5"
+                                    stroke="currentColor"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"
+                                    />
+                                  </svg>
+                                  Joining...
+                                </span>
+                              ) : (
+                                "Join Queue"
+                              )}
+                            </button>
+                          </div>
+
+                          {hasError && (
+                            <div
+                              role="alert"
+                              className="mt-2.5 rounded-md border border-red-200 bg-red-50/80 p-2 text-xs text-red-700"
+                            >
+                              <p className="font-medium">
+                                {queueError.message}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
                   <p className="text-xs font-medium text-gray-500">
