@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState, useEffect, useCallback, Suspense } from "react";
+import { use, useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
@@ -36,6 +36,12 @@ interface PageProps {
   params: Promise<{ trackingToken: string }>;
 }
 
+const ACTIVE_STATUSES = new Set(["WAITING", "CALLED", "SERVING"]);
+
+function isActiveStatus(status: string): boolean {
+  return ACTIVE_STATUSES.has(status);
+}
+
 function getStatusBadgeConfig(status: string) {
   switch (status) {
     case "WAITING":
@@ -43,12 +49,14 @@ function getStatusBadgeConfig(status: string) {
         label: "Waiting in Line",
         badgeClasses: "bg-amber-50 text-amber-800 border-amber-200/80",
         dotClass: "bg-amber-500",
-        message: "You are currently in line. Please keep this page open to watch your position.",
+        message:
+          "You are currently in line. Please keep this page open to watch your position.",
       };
     case "CALLED":
       return {
         label: "Ticket Called",
-        badgeClasses: "bg-blue-50 text-blue-800 border-blue-200/80 animate-pulse",
+        badgeClasses:
+          "bg-blue-50 text-blue-800 border-blue-200/80 animate-pulse",
         dotClass: "bg-blue-600",
         message: "Your ticket has been called! Please head to the counter.",
       };
@@ -71,7 +79,8 @@ function getStatusBadgeConfig(status: string) {
         label: "Skipped",
         badgeClasses: "bg-orange-50 text-orange-800 border-orange-200/80",
         dotClass: "bg-orange-500",
-        message: "Your ticket was skipped. Please speak with staff if you need assistance.",
+        message:
+          "Your ticket was skipped. Please speak with staff if you need assistance.",
       };
     case "CANCELLED":
       return {
@@ -135,10 +144,24 @@ function TicketTrackingContent({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isNotFound, setIsNotFound] = useState(false);
+  const [pollKey, setPollKey] = useState(0);
+
+  const requestGenRef = useRef(0);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearPollTimer = useCallback(() => {
+    if (pollTimerRef.current !== null) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
 
   const fetchTicket = useCallback(
     async (isManualRefresh = false) => {
       if (!trackingToken) return;
+
+      clearPollTimer();
+      const currentGen = ++requestGenRef.current;
 
       if (isManualRefresh) {
         setIsRefreshing(true);
@@ -153,6 +176,8 @@ function TicketTrackingContent({
           `/api/tickets/track/${encodeURIComponent(trackingToken)}`,
         );
 
+        if (currentGen !== requestGenRef.current) return;
+
         if (response.status === 404) {
           setIsNotFound(true);
           setData(null);
@@ -164,6 +189,8 @@ function TicketTrackingContent({
         }
 
         const json: unknown = await response.json();
+
+        if (currentGen !== requestGenRef.current) return;
 
         if (
           !json ||
@@ -177,22 +204,123 @@ function TicketTrackingContent({
           throw new Error("Malformed response format");
         }
 
-        setData(json as PublicTicketTrackingData);
+        const trackingData = json as PublicTicketTrackingData;
+        setData(trackingData);
+        if (isActiveStatus(trackingData.status)) {
+          setPollKey((k) => k + 1);
+        }
       } catch {
-        setError(
-          "Unable to load ticket details at this time. Please try again.",
-        );
+        if (currentGen === requestGenRef.current) {
+          setError(
+            "Unable to load ticket details at this time. Please try again.",
+          );
+        }
       } finally {
-        setIsLoading(false);
-        setIsRefreshing(false);
+        if (currentGen === requestGenRef.current) {
+          setIsLoading(false);
+          setIsRefreshing(false);
+        }
       }
     },
-    [trackingToken],
+    [trackingToken, clearPollTimer],
   );
 
   useEffect(() => {
     fetchTicket();
   }, [fetchTicket]);
+
+  // Automatic background polling every 10 seconds while the ticket is active
+  useEffect(() => {
+    if (
+      !trackingToken ||
+      isNotFound ||
+      error ||
+      !data ||
+      !isActiveStatus(data.status)
+    ) {
+      clearPollTimer();
+      return;
+    }
+
+    let isCancelled = false;
+
+    const schedulePoll = () => {
+      if (isCancelled) return;
+      clearPollTimer();
+      pollTimerRef.current = setTimeout(async () => {
+        if (isCancelled) return;
+        await runPoll();
+      }, 10000);
+    };
+
+    const runPoll = async () => {
+      const pollGen = ++requestGenRef.current;
+      let shouldScheduleNext = true;
+
+      try {
+        const response = await fetch(
+          `/api/tickets/track/${encodeURIComponent(trackingToken)}`,
+        );
+
+        if (isCancelled || pollGen !== requestGenRef.current) {
+          shouldScheduleNext = false;
+          return;
+        }
+
+        if (response.status === 404) {
+          shouldScheduleNext = false;
+          setIsNotFound(true);
+          setData(null);
+          return; // Stop polling when ticket is not found
+        }
+
+        if (response.ok) {
+          const json: unknown = await response.json();
+
+          if (isCancelled || pollGen !== requestGenRef.current) {
+            shouldScheduleNext = false;
+            return;
+          }
+
+          if (
+            json &&
+            typeof json === "object" &&
+            "ticketNumber" in json &&
+            "status" in json &&
+            "queue" in json &&
+            "service" in json &&
+            "organization" in json
+          ) {
+            const updated = json as PublicTicketTrackingData;
+            setData(updated);
+
+            // If updated status is terminal (COMPLETED, SKIPPED, CANCELLED), halt polling
+            if (!isActiveStatus(updated.status)) {
+              shouldScheduleNext = false;
+              return;
+            }
+          }
+        }
+      } catch {
+        // Non-destructive: transient background errors do not overwrite UI
+      } finally {
+        if (
+          shouldScheduleNext &&
+          !isCancelled &&
+          pollGen === requestGenRef.current
+        ) {
+          schedulePoll();
+        }
+      }
+    };
+
+    schedulePoll();
+
+    return () => {
+      isCancelled = true;
+      clearPollTimer();
+    };
+  }, [trackingToken, data?.status, isNotFound, error, clearPollTimer, pollKey]);
 
   if (isLoading) {
     return <TicketTrackingSkeleton />;
@@ -221,7 +349,8 @@ function TicketTrackingContent({
           Ticket not found
         </h2>
         <p className="mt-2 text-sm text-gray-600">
-          We couldn&apos;t find an active ticket matching this tracking link. Please check your link or discover organizations to join a queue.
+          We couldn&apos;t find an active ticket matching this tracking link.
+          Please check your link or discover organizations to join a queue.
         </p>
         <div className="mt-6">
           <Link
@@ -258,7 +387,8 @@ function TicketTrackingContent({
   }
 
   const statusConfig = getStatusBadgeConfig(data.status);
-  const isWaitingOrCalled = data.status === "WAITING" || data.status === "CALLED";
+  const isWaitingOrCalled =
+    data.status === "WAITING" || data.status === "CALLED";
 
   return (
     <div>
@@ -398,7 +528,7 @@ function TicketTrackingContent({
 
         <Link
           href="/organizations"
-          className="text-xs font-medium text-gray-500 transition-colors hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 rounded"
+          className="rounded text-xs font-medium text-gray-500 transition-colors hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900"
         >
           Explore other organizations &rarr;
         </Link>
