@@ -5,11 +5,13 @@ const {
   mockMembershipFindUnique,
   mockCounterFindFirst,
   mockCounterAssignmentCreate,
+  mockCounterAssignmentFindMany,
 } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
   mockMembershipFindUnique: vi.fn(),
   mockCounterFindFirst: vi.fn(),
   mockCounterAssignmentCreate: vi.fn(),
+  mockCounterAssignmentFindMany: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/current-user", () => ({
@@ -26,11 +28,12 @@ vi.mock("@/lib/prisma", () => ({
     },
     staffCounterAssignment: {
       create: mockCounterAssignmentCreate,
+      findMany: mockCounterAssignmentFindMany,
     },
   },
 }));
 
-import { POST } from "./route";
+import { GET, POST } from "./route";
 
 const organizationId = "org-1";
 const targetStaffId = "user-target";
@@ -213,3 +216,218 @@ describe("POST /api/organizations/[organizationId]/staff/[staffId]/counters", ()
     expect(JSON.stringify(data)).not.toContain("secret");
   });
 });
+
+describe("GET /api/organizations/[organizationId]/staff/[staffId]/counters", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 401 when the user is unauthenticated", async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+
+    const response = await GET(new Request("http://localhost"), createParams());
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      error: "Unauthorized",
+    });
+
+    expect(mockMembershipFindUnique).not.toHaveBeenCalled();
+    expect(mockCounterAssignmentFindMany).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the caller is not a member of the organization", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-outside" });
+    mockMembershipFindUnique.mockResolvedValue(null);
+
+    const response = await GET(new Request("http://localhost"), createParams());
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "You are not a member of this organization",
+    });
+    expect(mockCounterAssignmentFindMany).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when a STAFF caller attempts to view another staff member's counters", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-staff" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "STAFF" });
+
+    const response = await GET(
+      new Request("http://localhost"),
+      createParams({ staffId: "another-staff" }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "You are not allowed to view this staff member's counters",
+    });
+    expect(mockCounterAssignmentFindMany).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the target user is not a member of the organization", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique
+      .mockResolvedValueOnce({ role: "ADMIN" })
+      .mockResolvedValueOnce(null);
+
+    const response = await GET(
+      new Request("http://localhost"),
+      createParams({ staffId: "target-not-member" }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: "Staff member does not belong to this organization",
+    });
+    expect(mockCounterAssignmentFindMany).not.toHaveBeenCalled();
+  });
+
+  it("successfully allows a STAFF member to retrieve their own counter assignments", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: targetStaffId });
+    mockMembershipFindUnique
+      .mockResolvedValueOnce({ role: "STAFF" })
+      .mockResolvedValueOnce({ role: "STAFF" });
+
+    const mockAssignments = [
+      {
+        id: "assign-1",
+        userId: targetStaffId,
+        counter: {
+          id: counterId,
+          name: "Desk 1",
+          isActive: true,
+          organizationId,
+        },
+      },
+    ];
+
+    mockCounterAssignmentFindMany.mockResolvedValue(mockAssignments);
+
+    const response = await GET(new Request("http://localhost"), createParams());
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([
+      {
+        id: "assign-1",
+        staffId: targetStaffId,
+        counter: {
+          id: counterId,
+          name: "Desk 1",
+          isActive: true,
+          organizationId,
+        },
+      },
+    ]);
+
+    expect(mockCounterAssignmentFindMany).toHaveBeenCalledWith({
+      where: {
+        userId: targetStaffId,
+        counter: {
+          organizationId,
+        },
+      },
+      include: {
+        counter: {
+          select: {
+            id: true,
+            name: true,
+            isActive: true,
+            organizationId: true,
+          },
+        },
+      },
+      orderBy: {
+        counter: {
+          name: "asc",
+        },
+      },
+    });
+  });
+
+  it("successfully allows an ADMIN to retrieve another staff member's counter assignments", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique
+      .mockResolvedValueOnce({ role: "ADMIN" })
+      .mockResolvedValueOnce({ role: "STAFF" });
+
+    const mockAssignments = [
+      {
+        id: "assign-1",
+        userId: targetStaffId,
+        counter: {
+          id: counterId,
+          name: "Desk 1",
+          isActive: true,
+          organizationId,
+        },
+      },
+    ];
+
+    mockCounterAssignmentFindMany.mockResolvedValue(mockAssignments);
+
+    const response = await GET(new Request("http://localhost"), createParams());
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([
+      {
+        id: "assign-1",
+        staffId: targetStaffId,
+        counter: {
+          id: counterId,
+          name: "Desk 1",
+          isActive: true,
+          organizationId,
+        },
+      },
+    ]);
+  });
+
+  it("enforces tenant isolation by scoping counter assignments to the organizationId", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: targetStaffId });
+    mockMembershipFindUnique
+      .mockResolvedValueOnce({ role: "STAFF" })
+      .mockResolvedValueOnce({ role: "STAFF" });
+
+    mockCounterAssignmentFindMany.mockResolvedValue([]);
+
+    const response = await GET(
+      new Request("http://localhost"),
+      createParams({ organizationId: "org-isolated", staffId: targetStaffId }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([]);
+
+    expect(mockCounterAssignmentFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId: targetStaffId,
+          counter: {
+            organizationId: "org-isolated",
+          },
+        },
+      }),
+    );
+  });
+
+  it("returns 500 without exposing internal error details on unexpected database failure during listing", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: targetStaffId });
+    mockMembershipFindUnique
+      .mockResolvedValueOnce({ role: "STAFF" })
+      .mockResolvedValueOnce({ role: "STAFF" });
+
+    mockCounterAssignmentFindMany.mockRejectedValue(
+      new Error("FATAL: connection pool exhausted at postgresql://postgres:secret@db:5432"),
+    );
+
+    const response = await GET(new Request("http://localhost"), createParams());
+
+    expect(response.status).toBe(500);
+    const data = await response.json();
+    expect(data).toEqual({ error: "Internal server error" });
+    expect(JSON.stringify(data)).not.toContain("connection pool exhausted");
+    expect(JSON.stringify(data)).not.toContain("secret");
+  });
+});
+

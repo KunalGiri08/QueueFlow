@@ -2,6 +2,110 @@ import { assignStaffToCounterSchema } from "@/lib/validations/staff";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { prisma } from "@/lib/prisma";
 
+export async function GET(
+  request: Request,
+  {
+    params,
+  }: {
+    params: Promise<{
+      organizationId: string;
+      staffId: string;
+    }>;
+  },
+) {
+  const currentUser = await getCurrentUser();
+
+  if (!currentUser) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { organizationId, staffId } = await params;
+
+  try {
+    const currentMembership = await prisma.organizationMembership.findUnique({
+      where: {
+        userId_organizationId: {
+          userId: currentUser.id,
+          organizationId,
+        },
+      },
+    });
+
+    if (!currentMembership) {
+      return Response.json(
+        { error: "You are not a member of this organization" },
+        { status: 403 },
+      );
+    }
+
+    if (currentUser.id !== staffId && currentMembership.role !== "ADMIN") {
+      return Response.json(
+        { error: "You are not allowed to view this staff member's counters" },
+        { status: 403 },
+      );
+    }
+
+    const staffMembership = await prisma.organizationMembership.findUnique({
+      where: {
+        userId_organizationId: {
+          userId: staffId,
+          organizationId,
+        },
+      },
+    });
+
+    if (
+      !staffMembership ||
+      (staffMembership.role !== "STAFF" && staffMembership.role !== "ADMIN")
+    ) {
+      return Response.json(
+        { error: "Staff member does not belong to this organization" },
+        { status: 404 },
+      );
+    }
+
+    const assignments = await prisma.staffCounterAssignment.findMany({
+      where: {
+        userId: staffId,
+        counter: {
+          organizationId,
+        },
+      },
+      include: {
+        counter: {
+          select: {
+            id: true,
+            name: true,
+            isActive: true,
+            organizationId: true,
+          },
+        },
+      },
+      orderBy: {
+        counter: {
+          name: "asc",
+        },
+      },
+    });
+
+    const response = assignments.map((assignment) => ({
+      id: assignment.id,
+      staffId: assignment.userId,
+      counter: {
+        id: assignment.counter.id,
+        name: assignment.counter.name,
+        isActive: assignment.counter.isActive,
+        organizationId: assignment.counter.organizationId,
+      },
+    }));
+
+    return Response.json(response);
+  } catch (error) {
+    console.error("Failed to fetch staff counter assignments:", error);
+    return Response.json({ error: "Internal server error" }, { status: 500 });
+  }
+}
+
 export async function POST(
   request: Request,
   {
