@@ -55,6 +55,7 @@ describe("GET /api/tickets", () => {
     mockFindMany.mockResolvedValue([
       {
         id: "ticket-123",
+        trackingToken: "token-abc-123",
         number: 1,
         status: "WAITING",
       },
@@ -66,6 +67,7 @@ describe("GET /api/tickets", () => {
     expect(await response.json()).toEqual([
       {
         id: "ticket-123",
+        trackingToken: "token-abc-123",
         number: 1,
         status: "WAITING",
       },
@@ -75,6 +77,7 @@ describe("GET /api/tickets", () => {
       where: { userId: "user-123" },
       select: {
         id: true,
+        trackingToken: true,
         number: true,
         status: true,
         createdAt: true,

@@ -17,6 +17,7 @@ export async function GET() {
     },
     select: {
       id: true,
+      trackingToken: true,
       number: true,
       status: true,
       createdAt: true,
