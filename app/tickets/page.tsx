@@ -129,55 +129,142 @@ export default function MyTicketsPage() {
   const [tickets, setTickets] = useState<CustomerTicket[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [cancellingTicketId, setCancellingTicketId] = useState<string | null>(
+    null,
+  );
+  const [actionError, setActionError] = useState<{
+    ticketId: string;
+    message: string;
+  } | null>(null);
 
-  const fetchTickets = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
+  const fetchTickets = useCallback(
+    async (showSkeleton = true) => {
+      if (showSkeleton) {
+        setIsLoading(true);
+      }
+      setError(null);
+
+      try {
+        const response = await fetch("/api/tickets");
+
+        if (response.status === 401) {
+          router.push(`/sign-in?redirect_url=${encodeURIComponent("/tickets")}`);
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(`Server returned status ${response.status}`);
+        }
+
+        const json: unknown = await response.json();
+
+        if (!Array.isArray(json)) {
+          throw new Error("Malformed response format");
+        }
+
+        const validTickets: CustomerTicket[] = json.filter(
+          (item): item is CustomerTicket =>
+            typeof item === "object" &&
+            item !== null &&
+            typeof item.id === "string" &&
+            typeof item.number === "number" &&
+            typeof item.status === "string" &&
+            typeof item.createdAt === "string" &&
+            typeof item.queue === "object" &&
+            item.queue !== null &&
+            typeof item.queue.name === "string" &&
+            typeof item.queue.service === "object" &&
+            item.queue.service !== null &&
+            typeof item.queue.service.name === "string" &&
+            typeof item.queue.service.organization === "object" &&
+            item.queue.service.organization !== null &&
+            typeof item.queue.service.organization.name === "string",
+        );
+
+        setTickets(validTickets);
+      } catch {
+        setError("Unable to load your tickets at this time. Please try again.");
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [router],
+  );
+
+  const handleCancelTicket = async (ticket: CustomerTicket) => {
+    if (cancellingTicketId) return;
+
+    const confirmed = window.confirm(
+      `Are you sure you want to cancel ticket #${ticket.number}? You will lose your position in line.`,
+    );
+    if (!confirmed) return;
+
+    setActionError(null);
+    setCancellingTicketId(ticket.id);
 
     try {
-      const response = await fetch("/api/tickets");
+      const response = await fetch(
+        `/api/tickets/${encodeURIComponent(ticket.id)}/cancel`,
+        {
+          method: "PATCH",
+        },
+      );
 
       if (response.status === 401) {
         router.push(`/sign-in?redirect_url=${encodeURIComponent("/tickets")}`);
         return;
       }
 
+      if (response.status === 409) {
+        setActionError({
+          ticketId: ticket.id,
+          message:
+            "This ticket can no longer be cancelled because its status has changed.",
+        });
+        await fetchTickets(false);
+        return;
+      }
+
       if (!response.ok) {
-        throw new Error(`Server returned status ${response.status}`);
+        let errorMessage =
+          "Unable to cancel ticket at this time. Please try again.";
+        try {
+          const json: unknown = await response.json();
+          if (
+            json &&
+            typeof json === "object" &&
+            "error" in json &&
+            typeof (json as { error: unknown }).error === "string"
+          ) {
+            errorMessage = (json as { error: string }).error;
+          }
+        } catch {
+          // Fallback to default errorMessage
+        }
+
+        setActionError({
+          ticketId: ticket.id,
+          message: errorMessage,
+        });
+        return;
       }
 
-      const json: unknown = await response.json();
-
-      if (!Array.isArray(json)) {
-        throw new Error("Malformed response format");
-      }
-
-      const validTickets: CustomerTicket[] = json.filter(
-        (item): item is CustomerTicket =>
-          typeof item === "object" &&
-          item !== null &&
-          typeof item.id === "string" &&
-          typeof item.number === "number" &&
-          typeof item.status === "string" &&
-          typeof item.createdAt === "string" &&
-          typeof item.queue === "object" &&
-          item.queue !== null &&
-          typeof item.queue.name === "string" &&
-          typeof item.queue.service === "object" &&
-          item.queue.service !== null &&
-          typeof item.queue.service.name === "string" &&
-          typeof item.queue.service.organization === "object" &&
-          item.queue.service.organization !== null &&
-          typeof item.queue.service.organization.name === "string",
+      // Update only that ticket's local status to CANCELLED
+      setTickets((prev) =>
+        prev.map((t) =>
+          t.id === ticket.id ? { ...t, status: "CANCELLED" } : t,
+        ),
       );
-
-      setTickets(validTickets);
     } catch {
-      setError("Unable to load your tickets at this time. Please try again.");
+      setActionError({
+        ticketId: ticket.id,
+        message:
+          "Unable to connect to the server to cancel your ticket. Please check your connection and try again.",
+      });
     } finally {
-      setIsLoading(false);
+      setCancellingTicketId(null);
     }
-  }, [router]);
+  };
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -214,7 +301,7 @@ export default function MyTicketsPage() {
               <p className="text-base font-medium">{error}</p>
               <button
                 type="button"
-                onClick={fetchTickets}
+                onClick={() => fetchTickets(true)}
                 className="mt-4 inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
               >
                 Retry
@@ -297,7 +384,7 @@ export default function MyTicketsPage() {
                         </p>
                       </div>
 
-                      <div className="flex sm:flex-col sm:items-end justify-between items-center gap-2 pt-3 sm:pt-0 border-t sm:border-t-0 border-gray-100">
+                      <div className="flex sm:flex-col sm:items-end justify-between items-center gap-2 pt-3 sm:pt-0 border-t sm:border-t-0 border-gray-100 flex-wrap">
                         {hasValidToken ? (
                           <Link
                             href={`/tickets/track/${encodeURIComponent(ticket.trackingToken!)}`}
@@ -310,8 +397,48 @@ export default function MyTicketsPage() {
                             Tracking unavailable
                           </span>
                         )}
+
+                        {ticket.status === "WAITING" && (
+                          <button
+                            type="button"
+                            onClick={() => handleCancelTicket(ticket)}
+                            disabled={cancellingTicketId === ticket.id}
+                            className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 shadow-sm transition-all hover:bg-red-50 hover:border-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {cancellingTicketId === ticket.id ? (
+                              <>
+                                <svg
+                                  className="mr-1.5 h-3.5 w-3.5 animate-spin"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  strokeWidth="2"
+                                  stroke="currentColor"
+                                  aria-hidden="true"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"
+                                  />
+                                </svg>
+                                Cancelling...
+                              </>
+                            ) : (
+                              "Cancel Ticket"
+                            )}
+                          </button>
+                        )}
                       </div>
                     </div>
+
+                    {actionError && actionError.ticketId === ticket.id && (
+                      <div
+                        role="alert"
+                        className="mt-3 rounded-lg border border-red-200 bg-red-50/80 p-2.5 text-xs font-medium text-red-800"
+                      >
+                        {actionError.message}
+                      </div>
+                    )}
                   </article>
                 );
               })}
