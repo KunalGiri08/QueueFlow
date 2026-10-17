@@ -115,6 +115,100 @@ function formatTimestamp(isoString: string): string {
   }
 }
 
+function parseActiveTicketResponse(ticketJson: unknown): ActiveTicket | null {
+  if (
+    !ticketJson ||
+    typeof ticketJson !== "object" ||
+    !("ticket" in ticketJson)
+  ) {
+    throw new Error("Malformed active-ticket response");
+  }
+
+  const rawTicket = (ticketJson as { ticket: unknown }).ticket;
+  if (rawTicket === null || typeof rawTicket !== "object") {
+    return null;
+  }
+
+  const ticketRec = rawTicket as Record<string, unknown>;
+  const rawQueue = ticketRec.queue;
+  const rawService = ticketRec.service;
+  const rawCounter = ticketRec.counter;
+
+  if (
+    typeof ticketRec.id === "string" &&
+    typeof ticketRec.number === "number" &&
+    (ticketRec.status === "CALLED" || ticketRec.status === "SERVING") &&
+    typeof ticketRec.queueId === "string" &&
+    typeof ticketRec.createdAt === "string" &&
+    typeof ticketRec.updatedAt === "string" &&
+    typeof rawQueue === "object" &&
+    rawQueue !== null &&
+    typeof (rawQueue as Record<string, unknown>).id === "string" &&
+    typeof (rawQueue as Record<string, unknown>).name === "string" &&
+    typeof rawService === "object" &&
+    rawService !== null &&
+    typeof (rawService as Record<string, unknown>).id === "string" &&
+    typeof (rawService as Record<string, unknown>).name === "string"
+  ) {
+    const counterObj =
+      typeof rawCounter === "object" &&
+      rawCounter !== null &&
+      typeof (rawCounter as Record<string, unknown>).id === "string" &&
+      typeof (rawCounter as Record<string, unknown>).name === "string"
+        ? {
+            id: (rawCounter as Record<string, unknown>).id as string,
+            name: (rawCounter as Record<string, unknown>).name as string,
+          }
+        : null;
+
+    return {
+      id: ticketRec.id,
+      number: ticketRec.number,
+      status: ticketRec.status as "CALLED" | "SERVING",
+      queueId: ticketRec.queueId,
+      counterId:
+        typeof ticketRec.counterId === "string"
+          ? ticketRec.counterId
+          : null,
+      createdAt: ticketRec.createdAt,
+      updatedAt: ticketRec.updatedAt,
+      queue: {
+        id: (rawQueue as Record<string, unknown>).id as string,
+        name: (rawQueue as Record<string, unknown>).name as string,
+      },
+      service: {
+        id: (rawService as Record<string, unknown>).id as string,
+        name: (rawService as Record<string, unknown>).name as string,
+      },
+      counter: counterObj,
+    };
+  }
+
+  return null;
+}
+
+function isValidCalledTicketResponse(data: unknown): data is {
+  id: string;
+  number: number;
+  status: string;
+  queueId: string;
+  counterId: string | null;
+  createdAt: string;
+  updatedAt: string;
+} {
+  if (typeof data !== "object" || data === null) return false;
+  const rec = data as Record<string, unknown>;
+  return (
+    typeof rec.id === "string" &&
+    typeof rec.number === "number" &&
+    typeof rec.status === "string" &&
+    typeof rec.queueId === "string" &&
+    (rec.counterId === null || typeof rec.counterId === "string") &&
+    typeof rec.createdAt === "string" &&
+    typeof rec.updatedAt === "string"
+  );
+}
+
 function StaffLoadingSkeleton() {
   return (
     <div aria-label="Loading staff console" className="space-y-6 animate-pulse">
@@ -188,6 +282,10 @@ export default function StaffOperatorPage() {
   const [isRefreshingQueues, setIsRefreshingQueues] = useState(false);
   const [queuesError, setQueuesError] = useState<string | null>(null);
   const selectedOrgIdRef = useRef<string | null>(null);
+
+  // Step 4 state: Calling next ticket state & mutation error
+  const [callingQueueId, setCallingQueueId] = useState<string | null>(null);
+  const [callActionError, setCallActionError] = useState<string | null>(null);
 
   useEffect(() => {
     selectedOrgIdRef.current = selectedOrgId;
@@ -393,6 +491,29 @@ export default function StaffOperatorPage() {
     [router],
   );
 
+  const fetchActiveTicketRecovery = useCallback(
+    async (orgId: string, staffId: string): Promise<ActiveTicket | null> => {
+      const ticketRes = await fetch(
+        `/api/organizations/${encodeURIComponent(orgId)}/staff/${encodeURIComponent(staffId)}/active-ticket`,
+      );
+
+      if (ticketRes.status === 401) {
+        router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
+        return null;
+      }
+
+      if (!ticketRes.ok) {
+        throw new Error(
+          `Failed to load active ticket (status ${ticketRes.status})`,
+        );
+      }
+
+      const ticketJson: unknown = await ticketRes.json();
+      return parseActiveTicketResponse(ticketJson);
+    },
+    [router],
+  );
+
   const fetchOrgOperatorData = useCallback(
     async (orgId: string, staffId: string) => {
       const [countersRes, ticketRes, queuesResult] = await Promise.all([
@@ -449,73 +570,7 @@ export default function StaffOperatorPage() {
         },
       );
 
-      if (
-        !ticketJson ||
-        typeof ticketJson !== "object" ||
-        !("ticket" in ticketJson)
-      ) {
-        throw new Error("Malformed active-ticket response");
-      }
-
-      const rawTicket = (ticketJson as { ticket: unknown }).ticket;
-      let validActiveTicket: ActiveTicket | null = null;
-
-      if (rawTicket !== null && typeof rawTicket === "object") {
-        const ticketRec = rawTicket as Record<string, unknown>;
-        const rawQueue = ticketRec.queue;
-        const rawService = ticketRec.service;
-        const rawCounter = ticketRec.counter;
-
-        if (
-          typeof ticketRec.id === "string" &&
-          typeof ticketRec.number === "number" &&
-          (ticketRec.status === "CALLED" || ticketRec.status === "SERVING") &&
-          typeof ticketRec.queueId === "string" &&
-          typeof ticketRec.createdAt === "string" &&
-          typeof ticketRec.updatedAt === "string" &&
-          typeof rawQueue === "object" &&
-          rawQueue !== null &&
-          typeof (rawQueue as Record<string, unknown>).id === "string" &&
-          typeof (rawQueue as Record<string, unknown>).name === "string" &&
-          typeof rawService === "object" &&
-          rawService !== null &&
-          typeof (rawService as Record<string, unknown>).id === "string" &&
-          typeof (rawService as Record<string, unknown>).name === "string"
-        ) {
-          const counterObj =
-            typeof rawCounter === "object" &&
-            rawCounter !== null &&
-            typeof (rawCounter as Record<string, unknown>).id === "string" &&
-            typeof (rawCounter as Record<string, unknown>).name === "string"
-              ? {
-                  id: (rawCounter as Record<string, unknown>).id as string,
-                  name: (rawCounter as Record<string, unknown>).name as string,
-                }
-              : null;
-
-          validActiveTicket = {
-            id: ticketRec.id,
-            number: ticketRec.number,
-            status: ticketRec.status as "CALLED" | "SERVING",
-            queueId: ticketRec.queueId,
-            counterId:
-              typeof ticketRec.counterId === "string"
-                ? ticketRec.counterId
-                : null,
-            createdAt: ticketRec.createdAt,
-            updatedAt: ticketRec.updatedAt,
-            queue: {
-              id: (rawQueue as Record<string, unknown>).id as string,
-              name: (rawQueue as Record<string, unknown>).name as string,
-            },
-            service: {
-              id: (rawService as Record<string, unknown>).id as string,
-              name: (rawService as Record<string, unknown>).name as string,
-            },
-            counter: counterObj,
-          };
-        }
-      }
+      const validActiveTicket = parseActiveTicketResponse(ticketJson);
 
       let determinedCounterId: string | null = null;
       let warning: string | null = null;
@@ -565,7 +620,7 @@ export default function StaffOperatorPage() {
     fetchSessionData();
   }, [isLoaded, isSignedIn, router, fetchSessionData]);
 
-  // Step 2 & 3 effect: Load assigned counters, active ticket, and assigned queues when selected organization changes
+  // Step 2, 3 & 4 effect: Load assigned counters, active ticket, and assigned queues when selected organization changes
   useEffect(() => {
     if (!selectedOrgId || !user?.id) return;
 
@@ -573,8 +628,10 @@ export default function StaffOperatorPage() {
     setIsOrgDataLoading(true);
     setOrgDataError(null);
     setQueuesError(null);
+    setCallActionError(null);
+    setCallingQueueId(null);
 
-    // Clear previous organization state immediately to satisfy requirements 6 & 7
+    // Clear previous organization state immediately to satisfy requirements 6, 7 & 9
     setAssignedCounters([]);
     setSelectedCounterId(null);
     setActiveTicket(null);
@@ -615,6 +672,8 @@ export default function StaffOperatorPage() {
     setCounterWarning(null);
     setAssignedQueues([]);
     setQueuesError(null);
+    setCallActionError(null);
+    setCallingQueueId(null);
     setOrgDataError(null);
     setSelectedOrgId(newOrgId);
   };
@@ -624,6 +683,8 @@ export default function StaffOperatorPage() {
     setIsOrgDataLoading(true);
     setOrgDataError(null);
     setQueuesError(null);
+    setCallActionError(null);
+    setCallingQueueId(null);
     fetchOrgOperatorData(selectedOrgId, user.id)
       .then((data) => {
         if (!data) return;
@@ -669,6 +730,208 @@ export default function StaffOperatorPage() {
     }
   };
 
+  const handleCallNext = async (queue: OperatorQueueItem) => {
+    if (
+      !selectedOrgId ||
+      !user?.id ||
+      !selectedCounterId ||
+      callingQueueId !== null ||
+      activeTicket !== null ||
+      queue.waitingCount <= 0
+    ) {
+      return;
+    }
+
+    const selectedCounterItem = assignedCounters.find(
+      (a) => a.counter.id === selectedCounterId && a.counter.isActive,
+    );
+    if (!selectedCounterItem) {
+      setCallActionError(
+        "Please select an active assigned counter before calling a ticket.",
+      );
+      return;
+    }
+
+    const currentOrg = selectedOrgId;
+    const currentStaff = user.id;
+
+    setCallingQueueId(queue.id);
+    setCallActionError(null);
+
+    try {
+      const res = await fetch(
+        `/api/queues/${encodeURIComponent(queue.id)}/next`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            counterId: selectedCounterId,
+          }),
+        },
+      );
+
+      if (res.status === 401) {
+        router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
+        return;
+      }
+
+      if (res.status === 409) {
+        let conflictMsg = "Unable to call next ticket due to a conflict.";
+        try {
+          const errJson: unknown = await res.json();
+          if (
+            errJson &&
+            typeof errJson === "object" &&
+            typeof (errJson as Record<string, unknown>).error === "string"
+          ) {
+            conflictMsg = (errJson as Record<string, unknown>).error as string;
+          }
+        } catch {
+          // fallback
+        }
+
+        if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
+          setCallActionError(conflictMsg);
+        }
+
+        // Recover active ticket state and refresh queue counts
+        try {
+          const recoveredTicket = await fetchActiveTicketRecovery(
+            currentOrg,
+            currentStaff,
+          );
+          if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
+            setActiveTicket(recoveredTicket);
+            if (recoveredTicket && recoveredTicket.counterId) {
+              const matching = assignedCounters.find(
+                (a) => a.counter.id === recoveredTicket.counterId,
+              );
+              if (matching && matching.counter.isActive) {
+                setSelectedCounterId(matching.counter.id);
+                setCounterWarning(null);
+              } else if (!matching) {
+                const cName = recoveredTicket.counter?.name || recoveredTicket.counterId;
+                setCounterWarning(
+                  `This active ticket is tied to Counter "${cName}", which is no longer assigned to your account in this organization.`,
+                );
+              } else {
+                setCounterWarning(
+                  `This active ticket is tied to Counter "${matching.counter.name}", which is currently inactive.`,
+                );
+              }
+            }
+          }
+        } catch {
+          // Ignore recovery error
+        }
+
+        try {
+          const refreshedQueues = await fetchQueueStatusesOnly(
+            currentOrg,
+            currentStaff,
+          );
+          if (
+            selectedOrgIdRef.current === currentOrg &&
+            user.id === currentStaff &&
+            refreshedQueues !== null
+          ) {
+            setAssignedQueues(refreshedQueues);
+          }
+        } catch {
+          // Ignore queue refresh error
+        }
+
+        return;
+      }
+
+      if (!res.ok) {
+        let errorMsg = `Failed to call next ticket (status ${res.status})`;
+        try {
+          const errJson: unknown = await res.json();
+          if (
+            errJson &&
+            typeof errJson === "object" &&
+            typeof (errJson as Record<string, unknown>).error === "string"
+          ) {
+            errorMsg = (errJson as Record<string, unknown>).error as string;
+          }
+        } catch {
+          // fallback
+        }
+
+        if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
+          setCallActionError(errorMsg);
+        }
+        return;
+      }
+
+      const ticketJson: unknown = await res.json();
+      if (!isValidCalledTicketResponse(ticketJson)) {
+        throw new Error("Malformed ticket response received from server.");
+      }
+
+      if (selectedOrgIdRef.current !== currentOrg || user.id !== currentStaff) {
+        return;
+      }
+
+      const newActiveTicket: ActiveTicket = {
+        id: ticketJson.id,
+        number: ticketJson.number,
+        status: ticketJson.status === "SERVING" ? "SERVING" : "CALLED",
+        queueId: ticketJson.queueId,
+        counterId: ticketJson.counterId ?? selectedCounterId,
+        createdAt: ticketJson.createdAt,
+        updatedAt: ticketJson.updatedAt,
+        queue: {
+          id: queue.id,
+          name: queue.name,
+        },
+        service: {
+          id: queue.service.id,
+          name: queue.service.name,
+        },
+        counter: {
+          id: selectedCounterItem.counter.id,
+          name: selectedCounterItem.counter.name,
+        },
+      };
+
+      setActiveTicket(newActiveTicket);
+      setCounterWarning(null);
+
+      // Refresh queue counts
+      try {
+        const refreshedQueues = await fetchQueueStatusesOnly(
+          currentOrg,
+          currentStaff,
+        );
+        if (
+          selectedOrgIdRef.current === currentOrg &&
+          user.id === currentStaff &&
+          refreshedQueues !== null
+        ) {
+          setAssignedQueues(refreshedQueues);
+        }
+      } catch {
+        // Refresh error can be handled quietly or ignored
+      }
+    } catch (err) {
+      if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : "Network error. Unable to call next ticket at this time.";
+        setCallActionError(msg);
+      }
+    } finally {
+      if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
+        setCallingQueueId(null);
+      }
+    }
+  };
+
   const selectedOrganization =
     organizations.find((org) => org.id === selectedOrgId) ?? null;
 
@@ -678,6 +941,22 @@ export default function StaffOperatorPage() {
   const inactiveAssignedCounters = assignedCounters.filter(
     (a) => !a.counter.isActive,
   );
+
+  const selectedCounterItem = assignedCounters.find(
+    (a) => a.counter.id === selectedCounterId,
+  );
+  const hasActiveCounterSelected = Boolean(
+    selectedCounterItem && selectedCounterItem.counter.isActive,
+  );
+
+  const canCallNext = (q: OperatorQueueItem) => {
+    return (
+      hasActiveCounterSelected &&
+      activeTicket === null &&
+      q.waitingCount > 0 &&
+      callingQueueId === null
+    );
+  };
 
   const activeBadgeConfig = activeTicket
     ? getStatusBadgeConfig(activeTicket.status)
@@ -1089,6 +1368,42 @@ export default function StaffOperatorPage() {
                       </div>
                     )}
 
+                    {callActionError && (
+                      <div
+                        role="alert"
+                        className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 shadow-sm flex items-start justify-between gap-3"
+                      >
+                        <div className="flex items-start gap-2.5">
+                          <svg
+                            className="h-5 w-5 text-red-600 mt-0.5 shrink-0"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            strokeWidth="1.5"
+                            stroke="currentColor"
+                            aria-hidden="true"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
+                            />
+                          </svg>
+                          <div>
+                            <p className="font-semibold">Unable to Call Next Ticket</p>
+                            <p className="mt-0.5 text-xs text-red-700">{callActionError}</p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setCallActionError(null)}
+                          className="text-red-700 hover:text-red-900 font-medium text-xs p-1"
+                          aria-label="Dismiss error"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )}
+
                     {assignedQueues.length === 0 ? (
                       <div className="rounded-xl border border-gray-200 bg-white p-8 text-center shadow-sm">
                         <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-gray-500">
@@ -1161,6 +1476,43 @@ export default function StaffOperatorPage() {
                                     : "None"}
                                 </span>
                               </div>
+                            </div>
+
+                            <div className="mt-4 pt-3 border-t border-gray-100">
+                              <button
+                                type="button"
+                                onClick={() => handleCallNext(q)}
+                                disabled={!canCallNext(q)}
+                                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 disabled:bg-gray-200 disabled:text-gray-500 disabled:cursor-not-allowed active:scale-[0.98]"
+                                aria-label={`Call next ticket for ${q.name}`}
+                              >
+                                {callingQueueId === q.id ? (
+                                  <>
+                                    <svg
+                                      className="h-4 w-4 animate-spin text-white"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                    >
+                                      <circle
+                                        className="opacity-25"
+                                        cx="12"
+                                        cy="12"
+                                        r="10"
+                                        stroke="currentColor"
+                                        strokeWidth="4"
+                                      />
+                                      <path
+                                        className="opacity-75"
+                                        fill="currentColor"
+                                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                      />
+                                    </svg>
+                                    <span>Calling Next Ticket...</span>
+                                  </>
+                                ) : (
+                                  <span>Call Next Ticket</span>
+                                )}
+                              </button>
                             </div>
                           </div>
                         ))}
