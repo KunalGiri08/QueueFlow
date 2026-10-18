@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest"
+    "test": "vitest",
+    "setup:local-staff": "tsx scripts/setup-local-staff.ts",
+    "setup:local-admin": "tsx scripts/setup-local-admin.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.12",
