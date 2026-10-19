@@ -1,20 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
-import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
+import { CustomerTicketCard } from "@/components/tickets/CustomerTicketCard";
+import { CustomerTicketsEmptyState } from "@/components/tickets/CustomerTicketsEmptyState";
+import type { TicketStatus } from "@/lib/formatters/ticket";
 
-export type TicketStatus =
-  | "WAITING"
-  | "CALLED"
-  | "SERVING"
-  | "COMPLETED"
-  | "SKIPPED"
-  | "CANCELLED";
+export type { TicketStatus };
 
-interface CustomerTicket {
+export interface CustomerTicket {
   id: string;
   trackingToken: string | null;
   number: number;
@@ -33,67 +29,6 @@ interface CustomerTicket {
       };
     };
   };
-}
-
-function getStatusBadgeConfig(status: string) {
-  switch (status) {
-    case "WAITING":
-      return {
-        label: "Waiting in Line",
-        badgeClasses: "bg-amber-50 text-amber-800 border-amber-200/80",
-        dotClass: "bg-amber-500",
-      };
-    case "CALLED":
-      return {
-        label: "Ticket Called",
-        badgeClasses:
-          "bg-blue-50 text-blue-800 border-blue-200/80 animate-pulse",
-        dotClass: "bg-blue-600",
-      };
-    case "SERVING":
-      return {
-        label: "Now Serving",
-        badgeClasses: "bg-green-50 text-green-800 border-green-200/80",
-        dotClass: "bg-green-600",
-      };
-    case "COMPLETED":
-      return {
-        label: "Completed",
-        badgeClasses: "bg-gray-100 text-gray-800 border-gray-200",
-        dotClass: "bg-gray-500",
-      };
-    case "SKIPPED":
-      return {
-        label: "Skipped",
-        badgeClasses: "bg-orange-50 text-orange-800 border-orange-200/80",
-        dotClass: "bg-orange-500",
-      };
-    case "CANCELLED":
-      return {
-        label: "Cancelled",
-        badgeClasses: "bg-red-50 text-red-800 border-red-200/80",
-        dotClass: "bg-red-500",
-      };
-    default:
-      return {
-        label: status,
-        badgeClasses: "bg-gray-100 text-gray-800 border-gray-200",
-        dotClass: "bg-gray-500",
-      };
-  }
-}
-
-function formatTicketDate(isoString: string): string {
-  try {
-    const date = new Date(isoString);
-    if (isNaN(date.getTime())) return isoString;
-    return new Intl.DateTimeFormat("en-US", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(date);
-  } catch {
-    return isoString;
-  }
 }
 
 function TicketsLoadingSkeleton() {
@@ -137,15 +72,30 @@ export default function MyTicketsPage() {
     message: string;
   } | null>(null);
 
+  const activeFetchControllerRef = useRef<AbortController | null>(null);
+  const fetchGenerationRef = useRef<number>(0);
+
   const fetchTickets = useCallback(
     async (showSkeleton = true) => {
+      if (activeFetchControllerRef.current) {
+        activeFetchControllerRef.current.abort();
+      }
+
+      const controller = new AbortController();
+      activeFetchControllerRef.current = controller;
+      const currentGen = ++fetchGenerationRef.current;
+
       if (showSkeleton) {
         setIsLoading(true);
       }
       setError(null);
 
       try {
-        const response = await fetch("/api/tickets");
+        const response = await fetch("/api/tickets", {
+          signal: controller.signal,
+        });
+
+        if (currentGen !== fetchGenerationRef.current) return;
 
         if (response.status === 401) {
           router.push(`/sign-in?redirect_url=${encodeURIComponent("/tickets")}`);
@@ -157,6 +107,8 @@ export default function MyTicketsPage() {
         }
 
         const json: unknown = await response.json();
+
+        if (currentGen !== fetchGenerationRef.current) return;
 
         if (!Array.isArray(json)) {
           throw new Error("Malformed response format");
@@ -181,11 +133,22 @@ export default function MyTicketsPage() {
             typeof item.queue.service.organization.name === "string",
         );
 
+        if (currentGen !== fetchGenerationRef.current) return;
         setTickets(validTickets);
-      } catch {
+      } catch (err: unknown) {
+        if (currentGen !== fetchGenerationRef.current) return;
+        if (
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError")
+        ) {
+          return;
+        }
         setError("Unable to load your tickets at this time. Please try again.");
       } finally {
-        setIsLoading(false);
+        if (currentGen === fetchGenerationRef.current) {
+          setIsLoading(false);
+          activeFetchControllerRef.current = null;
+        }
       }
     },
     [router],
@@ -274,7 +237,13 @@ export default function MyTicketsPage() {
       return;
     }
 
-    fetchTickets();
+    void Promise.resolve().then(() => fetchTickets());
+
+    return () => {
+      if (activeFetchControllerRef.current) {
+        activeFetchControllerRef.current.abort();
+      }
+    };
   }, [isLoaded, isSignedIn, router, fetchTickets]);
 
   return (
@@ -308,140 +277,22 @@ export default function MyTicketsPage() {
               </button>
             </div>
           ) : tickets.length === 0 ? (
-            <div className="rounded-xl border border-gray-200 bg-white p-12 text-center shadow-sm">
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-gray-500">
-                <svg
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  strokeWidth="1.5"
-                  stroke="currentColor"
-                  aria-hidden="true"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M16.5 6v.75m0 3v.75m0 3v.75m0 3V18m-9-5.25h5.25M7.5 15h3M3.375 5.25c-.621 0-1.125.504-1.125 1.125v3.026a2.999 2.999 0 0 1 0 5.198v3.026c0 .621.504 1.125 1.125 1.125h17.25c.621 0 1.125-.504 1.125-1.125v-3.026a2.999 2.999 0 0 1 0-5.198V6.375c0-.621-.504-1.125-1.125-1.125H3.375Z"
-                  />
-                </svg>
-              </div>
-              <h2 className="mt-4 text-lg font-semibold text-gray-900">
-                No tickets yet
-              </h2>
-              <p className="mt-2 text-sm text-gray-600">
-                You haven&apos;t joined any queues yet. Explore available
-                organizations and services to get your virtual ticket.
-              </p>
-              <div className="mt-6">
-                <Link
-                  href="/organizations"
-                  className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
-                >
-                  Explore Organizations
-                </Link>
-              </div>
-            </div>
+            <CustomerTicketsEmptyState />
           ) : (
             <div className="space-y-4">
-              {tickets.map((ticket) => {
-                const statusConfig = getStatusBadgeConfig(ticket.status);
-                const hasValidToken =
-                  typeof ticket.trackingToken === "string" &&
-                  ticket.trackingToken.trim() !== "";
-
-                return (
-                  <article
-                    key={ticket.id}
-                    className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md"
-                  >
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-3">
-                          <span className="text-2xl font-black tracking-tight text-gray-900 sm:text-3xl">
-                            #{ticket.number}
-                          </span>
-                          <span
-                            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusConfig.badgeClasses}`}
-                          >
-                            <span
-                              className={`h-1.5 w-1.5 rounded-full ${statusConfig.dotClass}`}
-                              aria-hidden="true"
-                            />
-                            {statusConfig.label}
-                          </span>
-                        </div>
-
-                        <p className="mt-1 text-sm font-semibold text-gray-800">
-                          {ticket.queue.service.organization.name}
-                        </p>
-
-                        <p className="mt-0.5 text-xs text-gray-500">
-                          {ticket.queue.service.name} &bull; {ticket.queue.name}
-                        </p>
-
-                        <p className="mt-2 text-xs text-gray-400">
-                          Joined {formatTicketDate(ticket.createdAt)}
-                        </p>
-                      </div>
-
-                      <div className="flex sm:flex-col sm:items-end justify-between items-center gap-2 pt-3 sm:pt-0 border-t sm:border-t-0 border-gray-100 flex-wrap">
-                        {hasValidToken ? (
-                          <Link
-                            href={`/tickets/track/${encodeURIComponent(ticket.trackingToken!)}`}
-                            className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
-                          >
-                            Track Status &rarr;
-                          </Link>
-                        ) : (
-                          <span className="text-xs text-gray-400 italic">
-                            Tracking unavailable
-                          </span>
-                        )}
-
-                        {ticket.status === "WAITING" && (
-                          <button
-                            type="button"
-                            onClick={() => handleCancelTicket(ticket)}
-                            disabled={cancellingTicketId === ticket.id}
-                            className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 shadow-sm transition-all hover:bg-red-50 hover:border-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {cancellingTicketId === ticket.id ? (
-                              <>
-                                <svg
-                                  className="mr-1.5 h-3.5 w-3.5 animate-spin"
-                                  fill="none"
-                                  viewBox="0 0 24 24"
-                                  strokeWidth="2"
-                                  stroke="currentColor"
-                                  aria-hidden="true"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"
-                                  />
-                                </svg>
-                                Cancelling...
-                              </>
-                            ) : (
-                              "Cancel Ticket"
-                            )}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {actionError && actionError.ticketId === ticket.id && (
-                      <div
-                        role="alert"
-                        className="mt-3 rounded-lg border border-red-200 bg-red-50/80 p-2.5 text-xs font-medium text-red-800"
-                      >
-                        {actionError.message}
-                      </div>
-                    )}
-                  </article>
-                );
-              })}
+              {tickets.map((ticket) => (
+                <CustomerTicketCard
+                  key={ticket.id}
+                  ticket={ticket}
+                  isCancelling={cancellingTicketId === ticket.id}
+                  actionError={
+                    actionError?.ticketId === ticket.id
+                      ? actionError.message
+                      : null
+                  }
+                  onCancel={handleCancelTicket}
+                />
+              ))}
             </div>
           )}
         </div>
