@@ -4,14 +4,16 @@ import { use, useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
+import { TrackingHeroCard } from "@/components/tickets/track/TrackingHeroCard";
+import { TrackingPositionMetrics } from "@/components/tickets/track/TrackingPositionMetrics";
+import { TrackingDetailsCard } from "@/components/tickets/track/TrackingDetailsCard";
+import {
+  getTicketStatusBadgeConfig,
+  isTicketActive,
+  type TicketStatus,
+} from "@/lib/formatters/ticket";
 
-export type TicketStatus =
-  | "WAITING"
-  | "CALLED"
-  | "SERVING"
-  | "COMPLETED"
-  | "SKIPPED"
-  | "CANCELLED";
+export type { TicketStatus };
 
 interface PublicTicketTrackingData {
   ticketNumber: number;
@@ -34,69 +36,6 @@ interface PublicTicketTrackingData {
 
 interface PageProps {
   params: Promise<{ trackingToken: string }>;
-}
-
-const ACTIVE_STATUSES = new Set(["WAITING", "CALLED", "SERVING"]);
-
-function isActiveStatus(status: string): boolean {
-  return ACTIVE_STATUSES.has(status);
-}
-
-function getStatusBadgeConfig(status: string) {
-  switch (status) {
-    case "WAITING":
-      return {
-        label: "Waiting in Line",
-        badgeClasses: "bg-amber-50 text-amber-800 border-amber-200/80",
-        dotClass: "bg-amber-500",
-        message:
-          "You are currently in line. Please keep this page open to watch your position.",
-      };
-    case "CALLED":
-      return {
-        label: "Ticket Called",
-        badgeClasses:
-          "bg-blue-50 text-blue-800 border-blue-200/80 animate-pulse",
-        dotClass: "bg-blue-600",
-        message: "Your ticket has been called! Please head to the counter.",
-      };
-    case "SERVING":
-      return {
-        label: "Now Serving",
-        badgeClasses: "bg-green-50 text-green-800 border-green-200/80",
-        dotClass: "bg-green-600",
-        message: "You are currently being served.",
-      };
-    case "COMPLETED":
-      return {
-        label: "Completed",
-        badgeClasses: "bg-gray-100 text-gray-800 border-gray-200",
-        dotClass: "bg-gray-500",
-        message: "This service session has been completed. Thank you!",
-      };
-    case "SKIPPED":
-      return {
-        label: "Skipped",
-        badgeClasses: "bg-orange-50 text-orange-800 border-orange-200/80",
-        dotClass: "bg-orange-500",
-        message:
-          "Your ticket was skipped. Please speak with staff if you need assistance.",
-      };
-    case "CANCELLED":
-      return {
-        label: "Cancelled",
-        badgeClasses: "bg-red-50 text-red-800 border-red-200/80",
-        dotClass: "bg-red-500",
-        message: "This ticket has been cancelled.",
-      };
-    default:
-      return {
-        label: status,
-        badgeClasses: "bg-gray-100 text-gray-800 border-gray-200",
-        dotClass: "bg-gray-500",
-        message: `Ticket status: ${status}`,
-      };
-  }
 }
 
 function TicketTrackingSkeleton() {
@@ -136,8 +75,8 @@ function TicketTrackingContent({
 }) {
   const resolvedParams = use(paramsPromise);
   const navParams = useParams<{ trackingToken: string }>();
-  const trackingToken =
-    resolvedParams?.trackingToken || navParams?.trackingToken;
+  const rawToken = resolvedParams?.trackingToken || navParams?.trackingToken;
+  const trackingToken = typeof rawToken === "string" ? rawToken.trim() : "";
 
   const [data, setData] = useState<PublicTicketTrackingData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -146,6 +85,7 @@ function TicketTrackingContent({
   const [isNotFound, setIsNotFound] = useState(false);
   const [pollKey, setPollKey] = useState(0);
 
+  const activeAbortRef = useRef<AbortController | null>(null);
   const requestGenRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -156,11 +96,26 @@ function TicketTrackingContent({
     }
   }, []);
 
+  useEffect(() => {
+    return () => {
+      activeAbortRef.current?.abort();
+      clearPollTimer();
+    };
+  }, [clearPollTimer]);
+
   const fetchTicket = useCallback(
     async (isManualRefresh = false) => {
-      if (!trackingToken) return;
+      if (!trackingToken) {
+        setIsLoading(false);
+        setIsNotFound(true);
+        setData(null);
+        return;
+      }
 
       clearPollTimer();
+      activeAbortRef.current?.abort();
+      const controller = new AbortController();
+      activeAbortRef.current = controller;
       const currentGen = ++requestGenRef.current;
 
       if (isManualRefresh) {
@@ -174,6 +129,7 @@ function TicketTrackingContent({
       try {
         const response = await fetch(
           `/api/tickets/track/${encodeURIComponent(trackingToken)}`,
+          { signal: controller.signal },
         );
 
         if (currentGen !== requestGenRef.current) return;
@@ -206,10 +162,13 @@ function TicketTrackingContent({
 
         const trackingData = json as PublicTicketTrackingData;
         setData(trackingData);
-        if (isActiveStatus(trackingData.status)) {
+        if (isTicketActive(trackingData.status)) {
           setPollKey((k) => k + 1);
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          return;
+        }
         if (currentGen === requestGenRef.current) {
           setError(
             "Unable to load ticket details at this time. Please try again.",
@@ -226,18 +185,14 @@ function TicketTrackingContent({
   );
 
   useEffect(() => {
-    fetchTicket();
+    void Promise.resolve().then(() => fetchTicket());
   }, [fetchTicket]);
 
-  // Automatic background polling every 10 seconds while the ticket is active
+  const isDataActive = Boolean(data && isTicketActive(data.status));
+
+  // Automatic background polling every 10 seconds while the ticket is active and tab is visible
   useEffect(() => {
-    if (
-      !trackingToken ||
-      isNotFound ||
-      error ||
-      !data ||
-      !isActiveStatus(data.status)
-    ) {
+    if (!trackingToken || isNotFound || error || !isDataActive) {
       clearPollTimer();
       return;
     }
@@ -254,12 +209,18 @@ function TicketTrackingContent({
     };
 
     const runPoll = async () => {
+      if (isCancelled) return;
+
+      activeAbortRef.current?.abort();
+      const controller = new AbortController();
+      activeAbortRef.current = controller;
       const pollGen = ++requestGenRef.current;
       let shouldScheduleNext = true;
 
       try {
         const response = await fetch(
           `/api/tickets/track/${encodeURIComponent(trackingToken)}`,
+          { signal: controller.signal },
         );
 
         if (isCancelled || pollGen !== requestGenRef.current) {
@@ -295,32 +256,64 @@ function TicketTrackingContent({
             setData(updated);
 
             // If updated status is terminal (COMPLETED, SKIPPED, CANCELLED), halt polling
-            if (!isActiveStatus(updated.status)) {
+            if (!isTicketActive(updated.status)) {
               shouldScheduleNext = false;
               return;
             }
           }
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          shouldScheduleNext = false;
+          return;
+        }
         // Non-destructive: transient background errors do not overwrite UI
       } finally {
         if (
           shouldScheduleNext &&
           !isCancelled &&
-          pollGen === requestGenRef.current
+          pollGen === requestGenRef.current &&
+          typeof document !== "undefined" &&
+          document.visibilityState === "visible"
         ) {
           schedulePoll();
         }
       }
     };
 
-    schedulePoll();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        clearPollTimer();
+      } else if (document.visibilityState === "visible") {
+        clearPollTimer();
+        void runPoll();
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+
+    // Only schedule initial poll if tab is currently visible
+    if (
+      typeof document === "undefined" ||
+      document.visibilityState === "visible"
+    ) {
+      schedulePoll();
+    }
 
     return () => {
       isCancelled = true;
+      activeAbortRef.current?.abort();
       clearPollTimer();
+      if (typeof document !== "undefined") {
+        document.removeEventListener(
+          "visibilitychange",
+          handleVisibilityChange,
+        );
+      }
     };
-  }, [trackingToken, data?.status, isNotFound, error, clearPollTimer, pollKey]);
+  }, [trackingToken, isDataActive, isNotFound, error, clearPollTimer, pollKey]);
 
   if (isLoading) {
     return <TicketTrackingSkeleton />;
@@ -386,120 +379,56 @@ function TicketTrackingContent({
     return null;
   }
 
-  const statusConfig = getStatusBadgeConfig(data.status);
+  const statusConfig = getTicketStatusBadgeConfig(data.status, "customer");
   const isWaitingOrCalled =
     data.status === "WAITING" || data.status === "CALLED";
 
+  const liveAnnouncement = [
+    `Ticket #${data.ticketNumber} status: ${statusConfig.label}.`,
+    isWaitingOrCalled
+      ? data.peopleAhead === 0
+        ? "You are next in line."
+        : `${data.peopleAhead} ${data.peopleAhead === 1 ? "person" : "people"} ahead of you.`
+      : null,
+    data.counter ? `Assigned to counter ${data.counter.name}.` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <div>
-      {/* Hero Ticket Card */}
-      <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-sm">
-        <p className="text-sm font-medium text-gray-500">
-          {data.organization.name} &bull; {data.service.name}
-        </p>
-
-        <div className="mt-4">
-          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-            Your Ticket Number
-          </span>
-          <h1 className="mt-1 text-6xl font-black tracking-tight text-gray-900 sm:text-7xl">
-            #{data.ticketNumber}
-          </h1>
-        </div>
-
-        <div className="mt-5 flex justify-center">
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${statusConfig.badgeClasses}`}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${statusConfig.dotClass}`}
-              aria-hidden="true"
-            />
-            {statusConfig.label}
-          </span>
-        </div>
-
-        <p className="mt-3 text-sm text-gray-600">{statusConfig.message}</p>
-
-        {data.counter && (
-          <div className="mt-5 rounded-lg border border-blue-200 bg-blue-50/80 p-3.5 text-center">
-            <span className="text-xs font-semibold uppercase tracking-wider text-blue-700">
-              Assigned Counter
-            </span>
-            <p className="mt-0.5 text-base font-bold text-blue-900">
-              {data.counter.name}
-            </p>
-          </div>
-        )}
+      {/* Screen reader live region for queue updates */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {liveAnnouncement}
       </div>
 
-      {/* Position Metrics (Visible when waiting or called) */}
-      {isWaitingOrCalled && (
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="rounded-xl border border-gray-200 bg-white p-5 text-center shadow-sm">
-            <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-              People Ahead
-            </p>
-            <p className="mt-2 text-3xl font-bold tracking-tight text-gray-900">
-              {data.peopleAhead}
-            </p>
-            <p className="mt-1 text-xs text-gray-500">
-              {data.peopleAhead === 0
-                ? "You are next in line!"
-                : data.peopleAhead === 1
-                  ? "1 person ahead of you"
-                  : `${data.peopleAhead} people ahead of you`}
-            </p>
-          </div>
+      <TrackingHeroCard
+        ticketNumber={data.ticketNumber}
+        status={data.status}
+        statusMessage={statusConfig.message}
+        organizationName={data.organization.name}
+        serviceName={data.service.name}
+        counter={data.counter}
+      />
 
-          <div className="rounded-xl border border-gray-200 bg-white p-5 text-center shadow-sm">
-            <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-              Currently Serving
-            </p>
-            <p className="mt-2 text-3xl font-bold tracking-tight text-gray-900">
-              {data.currentlyServing !== null
-                ? `#${data.currentlyServing}`
-                : "None"}
-            </p>
-            <p className="mt-1 text-xs text-gray-500">
-              {data.currentlyServing !== null
-                ? "Active ticket at counter"
-                : "No ticket being served yet"}
-            </p>
-          </div>
-        </div>
+      {isWaitingOrCalled && (
+        <TrackingPositionMetrics
+          peopleAhead={data.peopleAhead}
+          currentlyServing={data.currentlyServing}
+        />
       )}
 
-      {/* Details Card */}
-      <div className="mt-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-        <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-gray-500">
-          Queue Details
-        </h2>
-        <dl className="divide-y divide-gray-100 text-sm">
-          <div className="flex justify-between py-2.5">
-            <dt className="text-gray-500">Organization</dt>
-            <dd className="font-medium text-gray-900">
-              {data.organization.name}
-            </dd>
-          </div>
-          <div className="flex justify-between py-2.5">
-            <dt className="text-gray-500">Service</dt>
-            <dd className="font-medium text-gray-900">{data.service.name}</dd>
-          </div>
-          <div className="flex justify-between py-2.5">
-            <dt className="text-gray-500">Queue</dt>
-            <dd className="font-medium text-gray-900">{data.queue.name}</dd>
-          </div>
-          {data.counter && (
-            <div className="flex justify-between py-2.5">
-              <dt className="text-gray-500">Counter</dt>
-              <dd className="font-medium text-gray-900">
-                {data.counter.name}
-              </dd>
-            </div>
-          )}
-        </dl>
-      </div>
+      <TrackingDetailsCard
+        organizationName={data.organization.name}
+        serviceName={data.service.name}
+        queueName={data.queue.name}
+        counter={data.counter}
+      />
 
       {/* Manual Refresh Action */}
       <div className="mt-8 flex flex-col items-center gap-3">
