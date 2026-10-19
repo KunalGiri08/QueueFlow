@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
+import { StatusBadge } from "@/components/shared/StatusBadge";
+import { formatDateTime } from "@/lib/formatters/date";
 
 interface CurrentUser {
   id: string;
@@ -79,41 +81,6 @@ interface OperatorQueueItem {
   currentlyServing: number | null;
 }
 
-function getStatusBadgeConfig(status: string) {
-  switch (status) {
-    case "CALLED":
-      return {
-        label: "Called",
-        badgeClasses: "bg-blue-50 text-blue-800 border-blue-200/80 animate-pulse",
-        dotClass: "bg-blue-600",
-      };
-    case "SERVING":
-      return {
-        label: "Now Serving",
-        badgeClasses: "bg-green-50 text-green-800 border-green-200/80",
-        dotClass: "bg-green-600",
-      };
-    default:
-      return {
-        label: status,
-        badgeClasses: "bg-gray-100 text-gray-800 border-gray-200",
-        dotClass: "bg-gray-500",
-      };
-  }
-}
-
-function formatTimestamp(isoString: string): string {
-  try {
-    const date = new Date(isoString);
-    if (isNaN(date.getTime())) return isoString;
-    return new Intl.DateTimeFormat("en-US", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(date);
-  } catch {
-    return isoString;
-  }
-}
 
 function parseActiveTicketResponse(ticketJson: unknown): ActiveTicket | null {
   if (
@@ -623,7 +590,7 @@ export default function StaffOperatorPage() {
       return;
     }
 
-    fetchSessionData();
+    void Promise.resolve().then(() => fetchSessionData());
   }, [isLoaded, isSignedIn, router, fetchSessionData]);
 
   // Step 2, 3 & 4 effect: Load assigned counters, active ticket, and assigned queues when selected organization changes
@@ -631,41 +598,45 @@ export default function StaffOperatorPage() {
     if (!selectedOrgId || !user?.id) return;
 
     let isCurrent = true;
-    setIsOrgDataLoading(true);
-    setOrgDataError(null);
-    setQueuesError(null);
-    setCallActionError(null);
-    setCallingQueueId(null);
-    setActiveTicketAction(null);
-    setTicketActionError(null);
 
-    // Clear previous organization state immediately to satisfy requirements 6, 7 & 9
-    setAssignedCounters([]);
-    setSelectedCounterId(null);
-    setActiveTicket(null);
-    setCounterWarning(null);
-    setAssignedQueues([]);
+    void Promise.resolve().then(() => {
+      if (!isCurrent) return;
+      setIsOrgDataLoading(true);
+      setOrgDataError(null);
+      setQueuesError(null);
+      setCallActionError(null);
+      setCallingQueueId(null);
+      setActiveTicketAction(null);
+      setTicketActionError(null);
 
-    fetchOrgOperatorData(selectedOrgId, user.id)
-      .then((data) => {
-        if (!isCurrent || !data) return;
-        setAssignedCounters(data.assignments);
-        setActiveTicket(data.activeTicket);
-        setSelectedCounterId(data.counterId);
-        setCounterWarning(data.warning);
-        setAssignedQueues(data.queues);
-      })
-      .catch(() => {
-        if (!isCurrent) return;
-        setOrgDataError(
-          "Unable to load assigned counters, active ticket, and queues for this organization. Please try again.",
-        );
-      })
-      .finally(() => {
-        if (isCurrent) {
-          setIsOrgDataLoading(false);
-        }
-      });
+      // Clear previous organization state immediately to satisfy requirements 6, 7 & 9
+      setAssignedCounters([]);
+      setSelectedCounterId(null);
+      setActiveTicket(null);
+      setCounterWarning(null);
+      setAssignedQueues([]);
+
+      fetchOrgOperatorData(selectedOrgId, user.id)
+        .then((data) => {
+          if (!isCurrent || !data) return;
+          setAssignedCounters(data.assignments);
+          setActiveTicket(data.activeTicket);
+          setSelectedCounterId(data.counterId);
+          setCounterWarning(data.warning);
+          setAssignedQueues(data.queues);
+        })
+        .catch(() => {
+          if (!isCurrent) return;
+          setOrgDataError(
+            "Unable to load assigned counters, active ticket, and queues for this organization. Please try again.",
+          );
+        })
+        .finally(() => {
+          if (isCurrent) {
+            setIsOrgDataLoading(false);
+          }
+        });
+    });
 
     return () => {
       isCurrent = false;
@@ -1431,10 +1402,6 @@ export default function StaffOperatorPage() {
     );
   };
 
-  const activeBadgeConfig = activeTicket
-    ? getStatusBadgeConfig(activeTicket.status)
-    : null;
-
   return (
     <>
       <Navbar />
@@ -1762,19 +1729,13 @@ export default function StaffOperatorPage() {
                           <span className="text-sm font-semibold uppercase tracking-wider text-gray-500">
                             Current Active Ticket
                           </span>
-                          {activeBadgeConfig && (
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${activeBadgeConfig.badgeClasses}`}
-                            >
-                              <span
-                                className={`h-1.5 w-1.5 rounded-full ${activeBadgeConfig.dotClass}`}
-                              />
-                              {activeBadgeConfig.label}
-                            </span>
-                          )}
+                          <StatusBadge
+                            status={activeTicket.status}
+                            audience="staff"
+                          />
                         </div>
                         <span className="text-xs text-gray-500">
-                          Updated {formatTimestamp(activeTicket.updatedAt)}
+                          Updated {formatDateTime(activeTicket.updatedAt)}
                         </span>
                       </div>
 
