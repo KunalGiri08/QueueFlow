@@ -88,6 +88,19 @@ const mockQueueOrg2 = {
   },
 };
 
+const mockActiveCalledTicket = {
+  id: "ticket-55",
+  number: 55,
+  status: "CALLED",
+  queueId: "queue-1",
+  counterId: "counter-1",
+  createdAt: "2026-10-19T10:00:00.000Z",
+  updatedAt: "2026-10-19T10:00:00.000Z",
+  queue: { id: "queue-1", name: "General Line" },
+  service: { id: "service-1", name: "Check-in" },
+  counter: { id: "counter-1", name: "Desk 1" },
+};
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -98,6 +111,7 @@ function jsonResponse(data: unknown, status = 200): Response {
 describe("app/staff/page (Staff Operator Console)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let activeFetchHandler: (url: string, init?: RequestInit) => Promise<Response> | Response;
+  let mockConfirm: ReturnType<typeof vi.fn<() => boolean>>;
 
   // Canonical default handler supporting session, counter, queue, and active ticket endpoints
   function defaultFetchHandler(url: string, init?: RequestInit): Response {
@@ -172,6 +186,8 @@ describe("app/staff/page (Staff Operator Console)", () => {
       isLoaded: true,
     };
     mockPush.mockReset();
+    mockConfirm = vi.fn(() => true);
+    window.confirm = mockConfirm;
 
     activeFetchHandler = (url, init) => defaultFetchHandler(url, init);
     fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
@@ -183,6 +199,7 @@ describe("app/staff/page (Staff Operator Console)", () => {
 
   afterEach(() => {
     cleanup();
+    delete (window as unknown as { confirm?: unknown }).confirm;
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -328,6 +345,42 @@ describe("app/staff/page (Staff Operator Console)", () => {
       expect(screen.getByText("#77")).toBeDefined();
       expect(screen.getByText("Counter: Desk 99")).toBeDefined();
     });
+
+    it("displays an inactive-counters warning and disables Call Next when all assigned counters are inactive", async () => {
+      const mockInactiveCounter = {
+        id: "assign-inactive-1",
+        staffId: "user-staff-1",
+        counter: {
+          id: "counter-inactive-1",
+          name: "Desk Inactive",
+          isActive: false,
+          organizationId: "org-1",
+        },
+      };
+
+      activeFetchHandler = (url, init) => {
+        if (url === `/api/organizations/org-1/staff/user-staff-1/counters`) {
+          return jsonResponse([mockInactiveCounter]);
+        }
+        return defaultFetchHandler(url, init);
+      };
+
+      render(<StaffOperatorPage />);
+
+      // Warning heading appears
+      expect(
+        await screen.findByRole("heading", { name: "All Assigned Counters Inactive" }),
+      ).toBeDefined();
+      expect(
+        screen.getByText(/All counters assigned to your account in this organization are currently inactive/i),
+      ).toBeDefined();
+
+      // Call Next button is disabled
+      const callNextBtn = screen.getByRole("button", {
+        name: "Call next ticket for General Line",
+      });
+      expect(callNextBtn.hasAttribute("disabled")).toBe(true);
+    });
   });
 
   describe("4. Ticket Action Lifecycle Transitions", () => {
@@ -413,6 +466,156 @@ describe("app/staff/page (Staff Operator Console)", () => {
       ).toBeDefined();
       expect(screen.queryByText("#55")).toBeNull();
     });
+
+    it("skips the active ticket and refreshes queue metrics when the confirmation is accepted", async () => {
+      mockConfirm.mockReturnValue(true);
+      let skipEndpointCalled = false;
+      let queueRefreshed = false;
+
+      activeFetchHandler = (url, init) => {
+        const method = init?.method ?? "GET";
+
+        if (url === `/api/organizations/org-1/staff/user-staff-1/active-ticket`) {
+          return jsonResponse({ ticket: mockActiveCalledTicket });
+        }
+
+        if (url === `/api/tickets/ticket-55/skip` && method === "PATCH") {
+          skipEndpointCalled = true;
+          return jsonResponse({
+            id: "ticket-55",
+            number: 55,
+            status: "SKIPPED",
+            queueId: "queue-1",
+            counterId: "counter-1",
+            createdAt: "2026-10-19T10:00:00.000Z",
+            updatedAt: "2026-10-19T10:03:00.000Z",
+          });
+        }
+
+        if (url === `/api/queues/queue-1`) {
+          if (skipEndpointCalled) {
+            queueRefreshed = true;
+            return jsonResponse({
+              id: "queue-1",
+              waitingCount: 2,
+              currentlyServing: null,
+            });
+          }
+          return jsonResponse({
+            id: "queue-1",
+            waitingCount: 3,
+            currentlyServing: null,
+          });
+        }
+
+        return defaultFetchHandler(url, init);
+      };
+
+      render(<StaffOperatorPage />);
+
+      const skipBtn = await screen.findByRole("button", { name: "Skip ticket #55" });
+      expect(skipBtn).toBeDefined();
+      expect(screen.getByText("#55")).toBeDefined();
+
+      fireEvent.click(skipBtn);
+
+      expect(mockConfirm).toHaveBeenCalledWith(
+        "Are you sure you want to skip ticket #55? The ticket will leave the active queue and will no longer be served.",
+      );
+      expect(skipEndpointCalled).toBe(true);
+
+      // Active ticket is cleared and idle state shown
+      expect(
+        await screen.findByRole("heading", { name: "No Active Ticket" }),
+      ).toBeDefined();
+      expect(screen.queryByText("#55")).toBeNull();
+
+      // Queue metrics refreshed
+      expect(await screen.findByText("2")).toBeDefined();
+      expect(queueRefreshed).toBe(true);
+    });
+
+    it("preserves the active ticket and cancels the mutation when the skip confirmation is dismissed", async () => {
+      mockConfirm.mockReturnValue(false);
+      let skipEndpointCalled = false;
+
+      activeFetchHandler = (url, init) => {
+        const method = init?.method ?? "GET";
+
+        if (url === `/api/organizations/org-1/staff/user-staff-1/active-ticket`) {
+          return jsonResponse({ ticket: mockActiveCalledTicket });
+        }
+
+        if (url === `/api/tickets/ticket-55/skip` && method === "PATCH") {
+          skipEndpointCalled = true;
+          return jsonResponse({ error: "Should not be called" }, 500);
+        }
+
+        return defaultFetchHandler(url, init);
+      };
+
+      render(<StaffOperatorPage />);
+
+      expect(await screen.findByText("#55")).toBeDefined();
+      const skipBtn = screen.getByRole("button", { name: "Skip ticket #55" });
+
+      fireEvent.click(skipBtn);
+
+      expect(mockConfirm).toHaveBeenCalledWith(
+        "Are you sure you want to skip ticket #55? The ticket will leave the active queue and will no longer be served.",
+      );
+      expect(skipEndpointCalled).toBe(false);
+
+      // Ticket remains present and active
+      expect(screen.getByText("#55")).toBeDefined();
+      expect(screen.getByText("Called")).toBeDefined();
+      expect(screen.queryByRole("heading", { name: "No Active Ticket" })).toBeNull();
+    });
+
+    it("displays the action error banner when a ticket mutation fails and clears it on dismiss", async () => {
+      activeFetchHandler = (url, init) => {
+        const method = init?.method ?? "GET";
+
+        if (url === `/api/organizations/org-1/staff/user-staff-1/active-ticket`) {
+          return jsonResponse({ ticket: mockActiveCalledTicket });
+        }
+
+        if (url === `/api/tickets/ticket-55/start` && method === "PATCH") {
+          return jsonResponse(
+            { error: "Database lock conflict on ticket #55" },
+            500,
+          );
+        }
+
+        return defaultFetchHandler(url, init);
+      };
+
+      render(<StaffOperatorPage />);
+
+      expect(await screen.findByText("#55")).toBeDefined();
+      const startBtn = screen.getByRole("button", {
+        name: "Start service for ticket #55",
+      });
+
+      fireEvent.click(startBtn);
+
+      // Error alert appears with specific message
+      expect(await screen.findByText("Ticket Action Failed")).toBeDefined();
+      expect(
+        screen.getByText("Database lock conflict on ticket #55"),
+      ).toBeDefined();
+
+      // Dismiss button removes the banner
+      const dismissBtn = screen.getByRole("button", {
+        name: "Dismiss ticket action error",
+      });
+      fireEvent.click(dismissBtn);
+
+      expect(screen.queryByText("Ticket Action Failed")).toBeNull();
+      expect(
+        screen.queryByText("Database lock conflict on ticket #55"),
+      ).toBeNull();
+    });
   });
 
   describe("5. Calling Next Ticket & 409 Conflict Self-Healing", () => {
@@ -480,6 +683,101 @@ describe("app/staff/page (Staff Operator Console)", () => {
       expect(await screen.findByText("#88")).toBeDefined();
       expect(screen.getByText("Check-in")).toBeDefined();
       expect(screen.getByText("Counter: Desk 1")).toBeDefined();
+    });
+  });
+
+  describe("6. Manual Queue Refresh & Status Updates", () => {
+    it("shows loading state and updates queue metrics on manual refresh", async () => {
+      let isFirstLoad = true;
+      let resolveDeferredQueue: ((res: Response) => void) | null = null;
+
+      activeFetchHandler = (url, init) => {
+        if (url === `/api/queues/queue-1`) {
+          if (isFirstLoad) {
+            return jsonResponse({
+              id: "queue-1",
+              waitingCount: 3,
+              currentlyServing: null,
+            });
+          }
+          return new Promise<Response>((resolve) => {
+            resolveDeferredQueue = resolve;
+          });
+        }
+
+        return defaultFetchHandler(url, init);
+      };
+
+      render(<StaffOperatorPage />);
+
+      expect(await screen.findByText("General Line")).toBeDefined();
+      expect(screen.getByText("3")).toBeDefined();
+
+      const refreshBtn = screen.getByRole("button", { name: "Refresh queues" });
+      expect(refreshBtn).toBeDefined();
+
+      // Trigger manual refresh
+      isFirstLoad = false;
+      fireEvent.click(refreshBtn);
+
+      // Button transitions to loading state ("Refreshing..." and disabled)
+      expect(await screen.findByText("Refreshing...")).toBeDefined();
+      expect(refreshBtn.hasAttribute("disabled")).toBe(true);
+
+      // Resolve the queue fetch with updated counts
+      resolveDeferredQueue!(
+        jsonResponse({
+          id: "queue-1",
+          waitingCount: 7,
+          currentlyServing: null,
+        }),
+      );
+
+      // New waiting count is rendered and refresh button resets
+      expect(await screen.findByText("7")).toBeDefined();
+      expect(await screen.findByText("Refresh")).toBeDefined();
+      expect(refreshBtn.hasAttribute("disabled")).toBe(false);
+    });
+
+    it("displays an error alert with retry button when manual queue refresh fails", async () => {
+      let shouldFail = false;
+
+      activeFetchHandler = (url, init) => {
+        if (url === `/api/queues/queue-1` && shouldFail) {
+          return jsonResponse({ error: "Failed to load queue" }, 500);
+        }
+        return defaultFetchHandler(url, init);
+      };
+
+      render(<StaffOperatorPage />);
+
+      expect(await screen.findByText("General Line")).toBeDefined();
+      expect(screen.getByText("3")).toBeDefined();
+
+      const refreshBtn = screen.getByRole("button", { name: "Refresh queues" });
+
+      // Trigger failing refresh
+      shouldFail = true;
+      fireEvent.click(refreshBtn);
+
+      // Error alert appears with retry button
+      const errorAlert = await screen.findByRole("alert");
+      expect(errorAlert.textContent).toContain(
+        "Unable to refresh queue status at this time. Please try again.",
+      );
+      const retryBtn = screen.getByRole("button", { name: "Retry" });
+      expect(retryBtn).toBeDefined();
+
+      // Retry successfully
+      shouldFail = false;
+      fireEvent.click(retryBtn);
+
+      expect(await screen.findByText("General Line")).toBeDefined();
+      expect(
+        screen.queryByText(
+          "Unable to refresh queue status at this time. Please try again.",
+        ),
+      ).toBeNull();
     });
   });
 });
