@@ -26,89 +26,7 @@ import {
   useStaffSession,
   type CurrentUser,
 } from "@/hooks/useStaffSession";
-
-interface AssignedQueueItem {
-  id: string;
-  name: string;
-  isActive: boolean;
-  service: {
-    id: string;
-    name: string;
-  };
-}
-
-
-function parseActiveTicketResponse(ticketJson: unknown): ActiveTicket | null {
-  if (
-    !ticketJson ||
-    typeof ticketJson !== "object" ||
-    !("ticket" in ticketJson)
-  ) {
-    throw new Error("Malformed active-ticket response");
-  }
-
-  const rawTicket = (ticketJson as { ticket: unknown }).ticket;
-  if (rawTicket === null || typeof rawTicket !== "object") {
-    return null;
-  }
-
-  const ticketRec = rawTicket as Record<string, unknown>;
-  const rawQueue = ticketRec.queue;
-  const rawService = ticketRec.service;
-  const rawCounter = ticketRec.counter;
-
-  if (
-    typeof ticketRec.id === "string" &&
-    typeof ticketRec.number === "number" &&
-    (ticketRec.status === "CALLED" || ticketRec.status === "SERVING") &&
-    typeof ticketRec.queueId === "string" &&
-    typeof ticketRec.createdAt === "string" &&
-    typeof ticketRec.updatedAt === "string" &&
-    typeof rawQueue === "object" &&
-    rawQueue !== null &&
-    typeof (rawQueue as Record<string, unknown>).id === "string" &&
-    typeof (rawQueue as Record<string, unknown>).name === "string" &&
-    typeof rawService === "object" &&
-    rawService !== null &&
-    typeof (rawService as Record<string, unknown>).id === "string" &&
-    typeof (rawService as Record<string, unknown>).name === "string"
-  ) {
-    const counterObj =
-      typeof rawCounter === "object" &&
-      rawCounter !== null &&
-      typeof (rawCounter as Record<string, unknown>).id === "string" &&
-      typeof (rawCounter as Record<string, unknown>).name === "string"
-        ? {
-            id: (rawCounter as Record<string, unknown>).id as string,
-            name: (rawCounter as Record<string, unknown>).name as string,
-          }
-        : null;
-
-    return {
-      id: ticketRec.id,
-      number: ticketRec.number,
-      status: ticketRec.status as "CALLED" | "SERVING",
-      queueId: ticketRec.queueId,
-      counterId:
-        typeof ticketRec.counterId === "string"
-          ? ticketRec.counterId
-          : null,
-      createdAt: ticketRec.createdAt,
-      updatedAt: ticketRec.updatedAt,
-      queue: {
-        id: (rawQueue as Record<string, unknown>).id as string,
-        name: (rawQueue as Record<string, unknown>).name as string,
-      },
-      service: {
-        id: (rawService as Record<string, unknown>).id as string,
-        name: (rawService as Record<string, unknown>).name as string,
-      },
-      counter: counterObj,
-    };
-  }
-
-  return null;
-}
+import { useStaffOrgData } from "@/hooks/useStaffOrgData";
 
 function isValidCalledTicketResponse(data: unknown): data is {
   id: string;
@@ -195,22 +113,31 @@ export default function StaffOperatorPage() {
     retrySession,
   } = useStaffSession();
 
-  // Step 2 state: Assigned counters, selected counter, recovered active ticket
-  const [assignedCounters, setAssignedCounters] = useState<AssignedCounterItem[]>([]);
-  const [selectedCounterId, setSelectedCounterId] = useState<string | null>(null);
-  const [activeTicket, setActiveTicket] = useState<ActiveTicket | null>(null);
-  const [counterWarning, setCounterWarning] = useState<string | null>(null);
-  const [isOrgDataLoading, setIsOrgDataLoading] = useState(false);
-  const [orgDataError, setOrgDataError] = useState<string | null>(null);
+  const {
+    assignedCounters,
+    selectedCounterId,
+    activeTicket,
+    counterWarning,
+    assignedQueues,
+    isOrgDataLoading,
+    orgDataError,
+    isRefreshingQueues,
+    queuesError,
+    setSelectedCounterId,
+    setCounterWarning,
+    setActiveTicket,
+    setAssignedQueues,
+    retryOrgData,
+    refreshQueues,
+    fetchQueueStatuses,
+    recoverActiveTicket,
+    resetOrgData,
+  } = useStaffOrgData({
+    orgId: selectedOrgId,
+    staffId: user?.id ?? null,
+  });
 
-  // Step 3 state: Assigned queues, refresh status, and error state
-  const [assignedQueues, setAssignedQueues] = useState<OperatorQueueItem[]>([]);
-  const [isRefreshingQueues, setIsRefreshingQueues] = useState(false);
-  const [queuesError, setQueuesError] = useState<string | null>(null);
   const selectedOrgIdRef = useRef<string | null>(null);
-  const orgDataAbortControllerRef = useRef<AbortController | null>(null);
-  const orgDataGenerationRef = useRef(0);
-  const queueRefreshAbortControllerRef = useRef<AbortController | null>(null);
 
   // Step 4 state: Calling next ticket state & mutation error
   const [callingQueueId, setCallingQueueId] = useState<string | null>(null);
@@ -226,456 +153,14 @@ export default function StaffOperatorPage() {
     selectedOrgIdRef.current = selectedOrgId;
   }, [selectedOrgId]);
 
-  const fetchQueueStatusesOnly = useCallback(
-    async (
-      orgId: string,
-      staffId: string,
-      signal?: AbortSignal,
-    ): Promise<OperatorQueueItem[] | null> => {
-      const queuesRes = await fetch(
-        `/api/organizations/${encodeURIComponent(orgId)}/staff/${encodeURIComponent(staffId)}/queues`,
-        signal ? { signal } : undefined,
-      );
-
-      if (queuesRes.status === 401) {
-        router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
-        return null;
-      }
-
-      if (!queuesRes.ok) {
-        throw new Error(
-          `Failed to load assigned queues (status ${queuesRes.status})`,
-        );
-      }
-
-      const queuesJson: unknown = await queuesRes.json();
-      if (!Array.isArray(queuesJson)) {
-        throw new Error("Malformed assigned queues response");
-      }
-
-      const validQueues: AssignedQueueItem[] = queuesJson.filter(
-        (item): item is AssignedQueueItem => {
-          if (typeof item !== "object" || item === null) return false;
-          const rec = item as Record<string, unknown>;
-          if (
-            typeof rec.id !== "string" ||
-            typeof rec.name !== "string" ||
-            typeof rec.isActive !== "boolean"
-          ) {
-            return false;
-          }
-          if (typeof rec.service !== "object" || rec.service === null) {
-            return false;
-          }
-          const sRec = rec.service as Record<string, unknown>;
-          return (
-            typeof sRec.id === "string" && typeof sRec.name === "string"
-          );
-        },
-      );
-
-      const queueStatuses = await Promise.all(
-        validQueues.map(async (queue): Promise<OperatorQueueItem> => {
-          const statusRes = await fetch(
-            `/api/queues/${encodeURIComponent(queue.id)}`,
-            signal ? { signal } : undefined,
-          );
-
-          if (statusRes.status === 401) {
-            router.push(
-              `/sign-in?redirect_url=${encodeURIComponent("/staff")}`,
-            );
-            throw new Error("Unauthorized");
-          }
-
-          if (!statusRes.ok) {
-            throw new Error(
-              `Failed to load queue status for ${queue.name} (status ${statusRes.status})`,
-            );
-          }
-
-          const statusJson: unknown = await statusRes.json();
-          if (
-            !statusJson ||
-            typeof statusJson !== "object" ||
-            statusJson === null
-          ) {
-            throw new Error(
-              `Malformed queue status response for ${queue.name}`,
-            );
-          }
-
-          const rec = statusJson as Record<string, unknown>;
-          if (
-            typeof rec.id !== "string" ||
-            typeof rec.waitingCount !== "number" ||
-            (rec.currentlyServing !== null &&
-              typeof rec.currentlyServing !== "number")
-          ) {
-            throw new Error(
-              `Invalid queue status fields for ${queue.name}`,
-            );
-          }
-
-          return {
-            id: queue.id,
-            name: queue.name,
-            isActive: queue.isActive,
-            service: {
-              id: queue.service.id,
-              name: queue.service.name,
-            },
-            waitingCount: rec.waitingCount as number,
-            currentlyServing:
-              typeof rec.currentlyServing === "number"
-                ? (rec.currentlyServing as number)
-                : null,
-          };
-        }),
-      );
-
-      return queueStatuses;
-    },
-    [router],
-  );
-
-  const fetchActiveTicketRecovery = useCallback(
-    async (
-      orgId: string,
-      staffId: string,
-      signal?: AbortSignal,
-    ): Promise<ActiveTicket | null> => {
-      const ticketRes = await fetch(
-        `/api/organizations/${encodeURIComponent(orgId)}/staff/${encodeURIComponent(staffId)}/active-ticket`,
-        signal ? { signal } : undefined,
-      );
-
-      if (ticketRes.status === 401) {
-        router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
-        return null;
-      }
-
-      if (!ticketRes.ok) {
-        throw new Error(
-          `Failed to load active ticket (status ${ticketRes.status})`,
-        );
-      }
-
-      const ticketJson: unknown = await ticketRes.json();
-      return parseActiveTicketResponse(ticketJson);
-    },
-    [router],
-  );
-
-  const fetchOrgOperatorData = useCallback(
-    async (orgId: string, staffId: string, signal?: AbortSignal) => {
-      const [countersRes, ticketRes, queuesResult] = await Promise.all([
-        fetch(
-          `/api/organizations/${encodeURIComponent(orgId)}/staff/${encodeURIComponent(staffId)}/counters`,
-          signal ? { signal } : undefined,
-        ),
-        fetch(
-          `/api/organizations/${encodeURIComponent(orgId)}/staff/${encodeURIComponent(staffId)}/active-ticket`,
-          signal ? { signal } : undefined,
-        ),
-        fetchQueueStatusesOnly(orgId, staffId, signal),
-      ]);
-
-      if (countersRes.status === 401 || ticketRes.status === 401) {
-        router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
-        return null;
-      }
-
-      if (queuesResult === null) {
-        return null;
-      }
-
-      if (!countersRes.ok) {
-        throw new Error(
-          `Failed to load assigned counters (status ${countersRes.status})`,
-        );
-      }
-
-      if (!ticketRes.ok) {
-        throw new Error(
-          `Failed to load active ticket (status ${ticketRes.status})`,
-        );
-      }
-
-      const countersJson: unknown = await countersRes.json();
-      const ticketJson: unknown = await ticketRes.json();
-
-      if (!Array.isArray(countersJson)) {
-        throw new Error("Malformed counters response");
-      }
-
-      const validAssignments: AssignedCounterItem[] = countersJson.filter(
-        (item): item is AssignedCounterItem => {
-          if (typeof item !== "object" || item === null) return false;
-          const rec = item as Record<string, unknown>;
-          if (typeof rec.id !== "string" || typeof rec.staffId !== "string") return false;
-          if (typeof rec.counter !== "object" || rec.counter === null) return false;
-          const counterRec = rec.counter as Record<string, unknown>;
-          return (
-            typeof counterRec.id === "string" &&
-            typeof counterRec.name === "string" &&
-            typeof counterRec.isActive === "boolean" &&
-            typeof counterRec.organizationId === "string"
-          );
-        },
-      );
-
-      const validActiveTicket = parseActiveTicketResponse(ticketJson);
-
-      let determinedCounterId: string | null = null;
-      let warning: string | null = null;
-
-      if (validActiveTicket && validActiveTicket.counterId) {
-        const matchingAssignment = validAssignments.find(
-          (a) => a.counter.id === validActiveTicket!.counterId,
-        );
-
-        if (matchingAssignment && matchingAssignment.counter.isActive) {
-          determinedCounterId = matchingAssignment.counter.id;
-        } else if (!matchingAssignment) {
-          const counterName =
-            validActiveTicket.counter?.name || validActiveTicket.counterId;
-          warning = `This active ticket is tied to Counter "${counterName}", which is no longer assigned to your account in this organization.`;
-        } else {
-          warning = `This active ticket is tied to Counter "${matchingAssignment.counter.name}", which is currently inactive.`;
-        }
-      } else {
-        const activeCounters = validAssignments.filter(
-          (a) => a.counter.isActive,
-        );
-        if (activeCounters.length > 0) {
-          determinedCounterId = activeCounters[0].counter.id;
-        }
-      }
-
-      return {
-        assignments: validAssignments,
-        activeTicket: validActiveTicket,
-        counterId: determinedCounterId,
-        warning,
-        queues: queuesResult,
-      };
-    },
-    [router, fetchQueueStatusesOnly],
-  );
-
-
-
-  // Step 2, 3 & 4 effect: Load assigned counters, active ticket, and assigned queues when selected organization changes
-  useEffect(() => {
-    if (!selectedOrgId || !user?.id) return;
-
-    let isCurrent = true;
-    const currentGen = ++orgDataGenerationRef.current;
-
-    orgDataAbortControllerRef.current?.abort();
-    queueRefreshAbortControllerRef.current?.abort();
-
-    const controller = new AbortController();
-    orgDataAbortControllerRef.current = controller;
-
-    setIsOrgDataLoading(true);
-    setOrgDataError(null);
-    setQueuesError(null);
-    setCallActionError(null);
-    setCallingQueueId(null);
-    setActiveTicketAction(null);
-    setTicketActionError(null);
-
-    // Clear previous organization state immediately to satisfy requirements 6, 7 & 9
-    setAssignedCounters([]);
-    setSelectedCounterId(null);
-    setActiveTicket(null);
-    setCounterWarning(null);
-    setAssignedQueues([]);
-
-    fetchOrgOperatorData(selectedOrgId, user.id, controller.signal)
-      .then((data) => {
-        if (!isCurrent || currentGen !== orgDataGenerationRef.current || !data) return;
-        setAssignedCounters(data.assignments);
-        setActiveTicket(data.activeTicket);
-        setSelectedCounterId(data.counterId);
-        setCounterWarning(data.warning);
-        setAssignedQueues(data.queues);
-      })
-      .catch((err: unknown) => {
-        if (
-          (err instanceof DOMException && err.name === "AbortError") ||
-          (err instanceof Error && err.name === "AbortError") ||
-          (typeof err === "object" &&
-            err !== null &&
-            "name" in err &&
-            (err as { name: unknown }).name === "AbortError")
-        ) {
-          return;
-        }
-        if (!isCurrent || currentGen !== orgDataGenerationRef.current) return;
-        setOrgDataError(
-          "Unable to load assigned counters, active ticket, and queues for this organization. Please try again.",
-        );
-      })
-      .finally(() => {
-        if (isCurrent && currentGen === orgDataGenerationRef.current) {
-          setIsOrgDataLoading(false);
-          if (orgDataAbortControllerRef.current === controller) {
-            orgDataAbortControllerRef.current = null;
-          }
-        }
-      });
-
-    return () => {
-      isCurrent = false;
-      controller.abort();
-      if (orgDataAbortControllerRef.current === controller) {
-        orgDataAbortControllerRef.current = null;
-      }
-      queueRefreshAbortControllerRef.current?.abort();
-      queueRefreshAbortControllerRef.current = null;
-    };
-  }, [selectedOrgId, user?.id, fetchOrgOperatorData]);
-
-  // Global unmount cleanup for organization and queue-refresh controllers
-  useEffect(() => {
-    return () => {
-      orgDataAbortControllerRef.current?.abort();
-      queueRefreshAbortControllerRef.current?.abort();
-    };
-  }, []);
-
   const handleOrgChange = (newOrgId: string) => {
     if (newOrgId === selectedOrgId) return;
-    orgDataAbortControllerRef.current?.abort();
-    orgDataAbortControllerRef.current = null;
-    queueRefreshAbortControllerRef.current?.abort();
-    queueRefreshAbortControllerRef.current = null;
-    setIsRefreshingQueues(false);
-    setAssignedCounters([]);
-    setSelectedCounterId(null);
-    setActiveTicket(null);
-    setCounterWarning(null);
-    setAssignedQueues([]);
-    setQueuesError(null);
+    resetOrgData();
     setCallActionError(null);
     setCallingQueueId(null);
     setActiveTicketAction(null);
     setTicketActionError(null);
-    setOrgDataError(null);
     setSelectedOrgId(newOrgId);
-  };
-
-  const handleRetryOrgData = () => {
-    if (!selectedOrgId || !user?.id) return;
-    const currentGen = ++orgDataGenerationRef.current;
-    orgDataAbortControllerRef.current?.abort();
-    queueRefreshAbortControllerRef.current?.abort();
-
-    const controller = new AbortController();
-    orgDataAbortControllerRef.current = controller;
-
-    setIsOrgDataLoading(true);
-    setOrgDataError(null);
-    setQueuesError(null);
-    setCallActionError(null);
-    setCallingQueueId(null);
-    setActiveTicketAction(null);
-    setTicketActionError(null);
-
-    fetchOrgOperatorData(selectedOrgId, user.id, controller.signal)
-      .then((data) => {
-        if (currentGen !== orgDataGenerationRef.current || !data) return;
-        setAssignedCounters(data.assignments);
-        setActiveTicket(data.activeTicket);
-        setSelectedCounterId(data.counterId);
-        setCounterWarning(data.warning);
-        setAssignedQueues(data.queues);
-      })
-      .catch((err: unknown) => {
-        if (
-          (err instanceof DOMException && err.name === "AbortError") ||
-          (err instanceof Error && err.name === "AbortError") ||
-          (typeof err === "object" &&
-            err !== null &&
-            "name" in err &&
-            (err as { name: unknown }).name === "AbortError")
-        ) {
-          return;
-        }
-        if (currentGen !== orgDataGenerationRef.current) return;
-        setOrgDataError(
-          "Unable to load assigned counters, active ticket, and queues for this organization. Please try again.",
-        );
-      })
-      .finally(() => {
-        if (currentGen === orgDataGenerationRef.current) {
-          setIsOrgDataLoading(false);
-          if (orgDataAbortControllerRef.current === controller) {
-            orgDataAbortControllerRef.current = null;
-          }
-        }
-      });
-  };
-
-  const handleRefreshQueues = async () => {
-    if (!selectedOrgId || !user?.id || isRefreshingQueues) return;
-    const currentOrg = selectedOrgId;
-    const currentStaff = user.id;
-
-    queueRefreshAbortControllerRef.current?.abort();
-    const controller = new AbortController();
-    queueRefreshAbortControllerRef.current = controller;
-
-    setIsRefreshingQueues(true);
-    setQueuesError(null);
-
-    try {
-      const queues = await fetchQueueStatusesOnly(
-        currentOrg,
-        currentStaff,
-        controller.signal,
-      );
-      if (
-        selectedOrgIdRef.current === currentOrg &&
-        user.id === currentStaff &&
-        queueRefreshAbortControllerRef.current === controller &&
-        queues !== null
-      ) {
-        setAssignedQueues(queues);
-      }
-    } catch (err: unknown) {
-      if (
-        (err instanceof DOMException && err.name === "AbortError") ||
-        (err instanceof Error && err.name === "AbortError") ||
-        (typeof err === "object" &&
-          err !== null &&
-          "name" in err &&
-          (err as { name: unknown }).name === "AbortError")
-      ) {
-        return;
-      }
-      if (
-        selectedOrgIdRef.current === currentOrg &&
-        user.id === currentStaff &&
-        queueRefreshAbortControllerRef.current === controller
-      ) {
-        setQueuesError(
-          "Unable to refresh queue status at this time. Please try again.",
-        );
-      }
-    } finally {
-      if (
-        selectedOrgIdRef.current === currentOrg &&
-        user.id === currentStaff &&
-        queueRefreshAbortControllerRef.current === controller
-      ) {
-        setIsRefreshingQueues(false);
-        queueRefreshAbortControllerRef.current = null;
-      }
-    }
   };
 
   const handleCallNext = async (queue: OperatorQueueItem) => {
@@ -746,7 +231,7 @@ export default function StaffOperatorPage() {
 
         // Recover active ticket state and refresh queue counts
         try {
-          const recoveredTicket = await fetchActiveTicketRecovery(
+          const recoveredTicket = await recoverActiveTicket(
             currentOrg,
             currentStaff,
           );
@@ -776,7 +261,7 @@ export default function StaffOperatorPage() {
         }
 
         try {
-          const refreshedQueues = await fetchQueueStatusesOnly(
+          const refreshedQueues = await fetchQueueStatuses(
             currentOrg,
             currentStaff,
           );
@@ -851,7 +336,7 @@ export default function StaffOperatorPage() {
 
       // Refresh queue counts
       try {
-        const refreshedQueues = await fetchQueueStatusesOnly(
+        const refreshedQueues = await fetchQueueStatuses(
           currentOrg,
           currentStaff,
         );
@@ -933,7 +418,7 @@ export default function StaffOperatorPage() {
 
         // Recover active ticket state and refresh queue counts
         try {
-          const recovered = await fetchActiveTicketRecovery(
+          const recovered = await recoverActiveTicket(
             currentOrg,
             currentStaff,
           );
@@ -945,7 +430,7 @@ export default function StaffOperatorPage() {
         }
 
         try {
-          const refreshedQueues = await fetchQueueStatusesOnly(
+          const refreshedQueues = await fetchQueueStatuses(
             currentOrg,
             currentStaff,
           );
@@ -1006,7 +491,7 @@ export default function StaffOperatorPage() {
 
       // Refresh queue counts so currentlyServing updates on the queue card
       try {
-        const refreshedQueues = await fetchQueueStatusesOnly(
+        const refreshedQueues = await fetchQueueStatuses(
           currentOrg,
           currentStaff,
         );
@@ -1088,7 +573,7 @@ export default function StaffOperatorPage() {
 
         // Recover active ticket state and refresh queue counts
         try {
-          const recovered = await fetchActiveTicketRecovery(
+          const recovered = await recoverActiveTicket(
             currentOrg,
             currentStaff,
           );
@@ -1100,7 +585,7 @@ export default function StaffOperatorPage() {
         }
 
         try {
-          const refreshedQueues = await fetchQueueStatusesOnly(
+          const refreshedQueues = await fetchQueueStatuses(
             currentOrg,
             currentStaff,
           );
@@ -1155,7 +640,7 @@ export default function StaffOperatorPage() {
       setCounterWarning(null);
 
       try {
-        const refreshedQueues = await fetchQueueStatusesOnly(
+        const refreshedQueues = await fetchQueueStatuses(
           currentOrg,
           currentStaff,
         );
@@ -1244,7 +729,7 @@ export default function StaffOperatorPage() {
 
         // Recover active ticket state and refresh queue counts
         try {
-          const recovered = await fetchActiveTicketRecovery(
+          const recovered = await recoverActiveTicket(
             currentOrg,
             currentStaff,
           );
@@ -1256,7 +741,7 @@ export default function StaffOperatorPage() {
         }
 
         try {
-          const refreshedQueues = await fetchQueueStatusesOnly(
+          const refreshedQueues = await fetchQueueStatuses(
             currentOrg,
             currentStaff,
           );
@@ -1311,7 +796,7 @@ export default function StaffOperatorPage() {
       setCounterWarning(null);
 
       try {
-        const refreshedQueues = await fetchQueueStatusesOnly(
+        const refreshedQueues = await fetchQueueStatuses(
           currentOrg,
           currentStaff,
         );
@@ -1466,7 +951,7 @@ export default function StaffOperatorPage() {
                   <p className="text-sm font-medium">{orgDataError}</p>
                   <button
                     type="button"
-                    onClick={handleRetryOrgData}
+                    onClick={retryOrgData}
                     className="mt-3 inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-xs font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
                   >
                     Retry Loading
@@ -1500,7 +985,7 @@ export default function StaffOperatorPage() {
                     assignedQueues={assignedQueues}
                     isRefreshingQueues={isRefreshingQueues}
                     isRefreshDisabled={isRefreshingQueues || isOrgDataLoading}
-                    onRefreshQueues={handleRefreshQueues}
+                    onRefreshQueues={refreshQueues}
                     queuesError={queuesError}
                     callActionError={callActionError}
                     onDismissCallError={() => setCallActionError(null)}
