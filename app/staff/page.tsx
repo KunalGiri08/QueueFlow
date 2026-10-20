@@ -1,54 +1,14 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
-import {
-  StaffOrgSelector,
-  type OrganizationItem,
-} from "@/components/staff/StaffOrgSelector";
-import {
-  StaffCounterSelector,
-  type AssignedCounterItem,
-  type CounterData,
-} from "@/components/staff/StaffCounterSelector";
-import {
-  StaffActiveTicketCard,
-  type ActiveTicket,
-  type ActiveTicketAction,
-} from "@/components/staff/StaffActiveTicketCard";
-import {
-  StaffAssignedQueues,
-  type OperatorQueueItem,
-} from "@/components/staff/StaffAssignedQueues";
-import {
-  useStaffSession,
-  type CurrentUser,
-} from "@/hooks/useStaffSession";
+import { StaffOrgSelector } from "@/components/staff/StaffOrgSelector";
+import { StaffCounterSelector } from "@/components/staff/StaffCounterSelector";
+import { StaffActiveTicketCard } from "@/components/staff/StaffActiveTicketCard";
+import { StaffAssignedQueues } from "@/components/staff/StaffAssignedQueues";
+import { useStaffSession } from "@/hooks/useStaffSession";
 import { useStaffOrgData } from "@/hooks/useStaffOrgData";
-
-function isValidCalledTicketResponse(data: unknown): data is {
-  id: string;
-  number: number;
-  status: string;
-  queueId: string;
-  counterId: string | null;
-  createdAt: string;
-  updatedAt: string;
-} {
-  if (typeof data !== "object" || data === null) return false;
-  const rec = data as Record<string, unknown>;
-  return (
-    typeof rec.id === "string" &&
-    typeof rec.number === "number" &&
-    typeof rec.status === "string" &&
-    typeof rec.queueId === "string" &&
-    (rec.counterId === null || typeof rec.counterId === "string") &&
-    typeof rec.createdAt === "string" &&
-    typeof rec.updatedAt === "string"
-  );
-}
+import { useTicketActions } from "@/hooks/useTicketActions";
 
 function StaffLoadingSkeleton() {
   return (
@@ -101,7 +61,6 @@ function OrgDataSkeleton() {
 }
 
 export default function StaffOperatorPage() {
-  const router = useRouter();
   const {
     user,
     organizations,
@@ -137,695 +96,40 @@ export default function StaffOperatorPage() {
     staffId: user?.id ?? null,
   });
 
-  const selectedOrgIdRef = useRef<string | null>(null);
-
-  // Step 4 state: Calling next ticket state & mutation error
-  const [callingQueueId, setCallingQueueId] = useState<string | null>(null);
-  const [callActionError, setCallActionError] = useState<string | null>(null);
-
-  // Step 5 state: Active ticket lifecycle action state & error
-  const [activeTicketAction, setActiveTicketAction] = useState<
-    "start" | "complete" | "skip" | null
-  >(null);
-  const [ticketActionError, setTicketActionError] = useState<string | null>(null);
-
-  useEffect(() => {
-    selectedOrgIdRef.current = selectedOrgId;
-  }, [selectedOrgId]);
+  const {
+    callingQueueId,
+    activeTicketAction,
+    isActionDisabled,
+    callActionError,
+    ticketActionError,
+    dismissCallError,
+    dismissTicketActionError,
+    resetTicketActions,
+    callNext,
+    startService,
+    completeService,
+    skipTicket,
+    canCallNext,
+  } = useTicketActions({
+    orgId: selectedOrgId,
+    staffId: user?.id ?? null,
+    selectedCounterId,
+    assignedCounters,
+    activeTicket,
+    setActiveTicket,
+    setAssignedQueues,
+    setCounterWarning,
+    setSelectedCounterId,
+    fetchQueueStatuses,
+    recoverActiveTicket,
+  });
 
   const handleOrgChange = (newOrgId: string) => {
     if (newOrgId === selectedOrgId) return;
     resetOrgData();
-    setCallActionError(null);
-    setCallingQueueId(null);
-    setActiveTicketAction(null);
-    setTicketActionError(null);
+    resetTicketActions();
     setSelectedOrgId(newOrgId);
   };
-
-  const handleCallNext = async (queue: OperatorQueueItem) => {
-    if (
-      !selectedOrgId ||
-      !user?.id ||
-      !selectedCounterId ||
-      callingQueueId !== null ||
-      activeTicket !== null ||
-      queue.waitingCount <= 0
-    ) {
-      return;
-    }
-
-    const selectedCounterItem = assignedCounters.find(
-      (a) => a.counter.id === selectedCounterId && a.counter.isActive,
-    );
-    if (!selectedCounterItem) {
-      setCallActionError(
-        "Please select an active assigned counter before calling a ticket.",
-      );
-      return;
-    }
-
-    const currentOrg = selectedOrgId;
-    const currentStaff = user.id;
-
-    setCallingQueueId(queue.id);
-    setCallActionError(null);
-
-    try {
-      const res = await fetch(
-        `/api/queues/${encodeURIComponent(queue.id)}/next`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            counterId: selectedCounterId,
-          }),
-        },
-      );
-
-      if (res.status === 401) {
-        router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
-        return;
-      }
-
-      if (res.status === 409) {
-        let conflictMsg = "Unable to call next ticket due to a conflict.";
-        try {
-          const errJson: unknown = await res.json();
-          if (
-            errJson &&
-            typeof errJson === "object" &&
-            typeof (errJson as Record<string, unknown>).error === "string"
-          ) {
-            conflictMsg = (errJson as Record<string, unknown>).error as string;
-          }
-        } catch {
-          // fallback
-        }
-
-        if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-          setCallActionError(conflictMsg);
-        }
-
-        // Recover active ticket state and refresh queue counts
-        try {
-          const recoveredTicket = await recoverActiveTicket(
-            currentOrg,
-            currentStaff,
-          );
-          if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-            setActiveTicket(recoveredTicket);
-            if (recoveredTicket && recoveredTicket.counterId) {
-              const matching = assignedCounters.find(
-                (a) => a.counter.id === recoveredTicket.counterId,
-              );
-              if (matching && matching.counter.isActive) {
-                setSelectedCounterId(matching.counter.id);
-                setCounterWarning(null);
-              } else if (!matching) {
-                const cName = recoveredTicket.counter?.name || recoveredTicket.counterId;
-                setCounterWarning(
-                  `This active ticket is tied to Counter "${cName}", which is no longer assigned to your account in this organization.`,
-                );
-              } else {
-                setCounterWarning(
-                  `This active ticket is tied to Counter "${matching.counter.name}", which is currently inactive.`,
-                );
-              }
-            }
-          }
-        } catch {
-          // Ignore recovery error
-        }
-
-        try {
-          const refreshedQueues = await fetchQueueStatuses(
-            currentOrg,
-            currentStaff,
-          );
-          if (
-            selectedOrgIdRef.current === currentOrg &&
-            user.id === currentStaff &&
-            refreshedQueues !== null
-          ) {
-            setAssignedQueues(refreshedQueues);
-          }
-        } catch {
-          // Ignore queue refresh error
-        }
-
-        return;
-      }
-
-      if (!res.ok) {
-        let errorMsg = `Failed to call next ticket (status ${res.status})`;
-        try {
-          const errJson: unknown = await res.json();
-          if (
-            errJson &&
-            typeof errJson === "object" &&
-            typeof (errJson as Record<string, unknown>).error === "string"
-          ) {
-            errorMsg = (errJson as Record<string, unknown>).error as string;
-          }
-        } catch {
-          // fallback
-        }
-
-        if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-          setCallActionError(errorMsg);
-        }
-        return;
-      }
-
-      const ticketJson: unknown = await res.json();
-      if (!isValidCalledTicketResponse(ticketJson)) {
-        throw new Error("Malformed ticket response received from server.");
-      }
-
-      if (selectedOrgIdRef.current !== currentOrg || user.id !== currentStaff) {
-        return;
-      }
-
-      const newActiveTicket: ActiveTicket = {
-        id: ticketJson.id,
-        number: ticketJson.number,
-        status: ticketJson.status === "SERVING" ? "SERVING" : "CALLED",
-        queueId: ticketJson.queueId,
-        counterId: ticketJson.counterId ?? selectedCounterId,
-        createdAt: ticketJson.createdAt,
-        updatedAt: ticketJson.updatedAt,
-        queue: {
-          id: queue.id,
-          name: queue.name,
-        },
-        service: {
-          id: queue.service.id,
-          name: queue.service.name,
-        },
-        counter: {
-          id: selectedCounterItem.counter.id,
-          name: selectedCounterItem.counter.name,
-        },
-      };
-
-      setActiveTicket(newActiveTicket);
-      setCounterWarning(null);
-
-      // Refresh queue counts
-      try {
-        const refreshedQueues = await fetchQueueStatuses(
-          currentOrg,
-          currentStaff,
-        );
-        if (
-          selectedOrgIdRef.current === currentOrg &&
-          user.id === currentStaff &&
-          refreshedQueues !== null
-        ) {
-          setAssignedQueues(refreshedQueues);
-        }
-      } catch {
-        // Refresh error can be handled quietly or ignored
-      }
-    } catch (err) {
-      if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-        const msg =
-          err instanceof Error
-            ? err.message
-            : "Network error. Unable to call next ticket at this time.";
-        setCallActionError(msg);
-      }
-    } finally {
-      if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-        setCallingQueueId(null);
-      }
-    }
-  };
-
-  const handleStartService = async () => {
-    if (
-      !activeTicket ||
-      activeTicket.status !== "CALLED" ||
-      activeTicketAction !== null ||
-      callingQueueId !== null ||
-      !selectedOrgId ||
-      !user?.id
-    ) {
-      return;
-    }
-
-    const currentOrg = selectedOrgId;
-    const currentStaff = user.id;
-    const ticketId = activeTicket.id;
-
-    setActiveTicketAction("start");
-    setTicketActionError(null);
-
-    try {
-      const res = await fetch(
-        `/api/tickets/${encodeURIComponent(ticketId)}/start`,
-        {
-          method: "PATCH",
-        },
-      );
-
-      if (res.status === 401) {
-        router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
-        return;
-      }
-
-      if (res.status === 409) {
-        let conflictMsg = "Ticket state changed; refreshing status.";
-        try {
-          const errJson: unknown = await res.json();
-          if (
-            errJson &&
-            typeof errJson === "object" &&
-            typeof (errJson as Record<string, unknown>).error === "string"
-          ) {
-            conflictMsg = (errJson as Record<string, unknown>).error as string;
-          }
-        } catch {
-          // fallback
-        }
-
-        if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-          setTicketActionError(conflictMsg);
-        }
-
-        // Recover active ticket state and refresh queue counts
-        try {
-          const recovered = await recoverActiveTicket(
-            currentOrg,
-            currentStaff,
-          );
-          if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-            setActiveTicket(recovered);
-          }
-        } catch {
-          // Ignore
-        }
-
-        try {
-          const refreshedQueues = await fetchQueueStatuses(
-            currentOrg,
-            currentStaff,
-          );
-          if (
-            selectedOrgIdRef.current === currentOrg &&
-            user.id === currentStaff &&
-            refreshedQueues !== null
-          ) {
-            setAssignedQueues(refreshedQueues);
-          }
-        } catch {
-          // Ignore
-        }
-
-        return;
-      }
-
-      if (!res.ok) {
-        let errorMsg = `Failed to start service (status ${res.status})`;
-        try {
-          const errJson: unknown = await res.json();
-          if (
-            errJson &&
-            typeof errJson === "object" &&
-            typeof (errJson as Record<string, unknown>).error === "string"
-          ) {
-            errorMsg = (errJson as Record<string, unknown>).error as string;
-          }
-        } catch {
-          // fallback
-        }
-
-        if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-          setTicketActionError(errorMsg);
-        }
-        return;
-      }
-
-      const data: unknown = await res.json();
-      if (!isValidCalledTicketResponse(data) || data.status !== "SERVING") {
-        throw new Error(
-          "Malformed response from server after starting service.",
-        );
-      }
-
-      if (selectedOrgIdRef.current !== currentOrg || user.id !== currentStaff) {
-        return;
-      }
-
-      setActiveTicket((prev) => {
-        if (!prev || prev.id !== ticketId) return prev;
-        return {
-          ...prev,
-          status: "SERVING",
-          updatedAt: data.updatedAt,
-        };
-      });
-
-      // Refresh queue counts so currentlyServing updates on the queue card
-      try {
-        const refreshedQueues = await fetchQueueStatuses(
-          currentOrg,
-          currentStaff,
-        );
-        if (
-          selectedOrgIdRef.current === currentOrg &&
-          user.id === currentStaff &&
-          refreshedQueues !== null
-        ) {
-          setAssignedQueues(refreshedQueues);
-        }
-      } catch {
-        // Ignore
-      }
-    } catch (err) {
-      if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-        const msg =
-          err instanceof Error
-            ? err.message
-            : "Network error. Unable to start service at this time.";
-        setTicketActionError(msg);
-      }
-    } finally {
-      if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-        setActiveTicketAction(null);
-      }
-    }
-  };
-
-  const handleCompleteService = async () => {
-    if (
-      !activeTicket ||
-      activeTicket.status !== "SERVING" ||
-      activeTicketAction !== null ||
-      callingQueueId !== null ||
-      !selectedOrgId ||
-      !user?.id
-    ) {
-      return;
-    }
-
-    const currentOrg = selectedOrgId;
-    const currentStaff = user.id;
-    const ticketId = activeTicket.id;
-
-    setActiveTicketAction("complete");
-    setTicketActionError(null);
-
-    try {
-      const res = await fetch(
-        `/api/tickets/${encodeURIComponent(ticketId)}/complete`,
-        {
-          method: "PATCH",
-        },
-      );
-
-      if (res.status === 401) {
-        router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
-        return;
-      }
-
-      if (res.status === 409) {
-        let conflictMsg = "Ticket state changed; refreshing status.";
-        try {
-          const errJson: unknown = await res.json();
-          if (
-            errJson &&
-            typeof errJson === "object" &&
-            typeof (errJson as Record<string, unknown>).error === "string"
-          ) {
-            conflictMsg = (errJson as Record<string, unknown>).error as string;
-          }
-        } catch {
-          // fallback
-        }
-
-        if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-          setTicketActionError(conflictMsg);
-        }
-
-        // Recover active ticket state and refresh queue counts
-        try {
-          const recovered = await recoverActiveTicket(
-            currentOrg,
-            currentStaff,
-          );
-          if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-            setActiveTicket(recovered);
-          }
-        } catch {
-          // Ignore
-        }
-
-        try {
-          const refreshedQueues = await fetchQueueStatuses(
-            currentOrg,
-            currentStaff,
-          );
-          if (
-            selectedOrgIdRef.current === currentOrg &&
-            user.id === currentStaff &&
-            refreshedQueues !== null
-          ) {
-            setAssignedQueues(refreshedQueues);
-          }
-        } catch {
-          // Ignore
-        }
-
-        return;
-      }
-
-      if (!res.ok) {
-        let errorMsg = `Failed to complete service (status ${res.status})`;
-        try {
-          const errJson: unknown = await res.json();
-          if (
-            errJson &&
-            typeof errJson === "object" &&
-            typeof (errJson as Record<string, unknown>).error === "string"
-          ) {
-            errorMsg = (errJson as Record<string, unknown>).error as string;
-          }
-        } catch {
-          // fallback
-        }
-
-        if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-          setTicketActionError(errorMsg);
-        }
-        return;
-      }
-
-      const data: unknown = await res.json();
-      if (!isValidCalledTicketResponse(data) || data.status !== "COMPLETED") {
-        throw new Error(
-          "Malformed response from server after completing service.",
-        );
-      }
-
-      if (selectedOrgIdRef.current !== currentOrg || user.id !== currentStaff) {
-        return;
-      }
-
-      // Completing must clear the active ticket and refresh queue metrics
-      setActiveTicket(null);
-      setCounterWarning(null);
-
-      try {
-        const refreshedQueues = await fetchQueueStatuses(
-          currentOrg,
-          currentStaff,
-        );
-        if (
-          selectedOrgIdRef.current === currentOrg &&
-          user.id === currentStaff &&
-          refreshedQueues !== null
-        ) {
-          setAssignedQueues(refreshedQueues);
-        }
-      } catch {
-        // Ignore
-      }
-    } catch (err) {
-      if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-        const msg =
-          err instanceof Error
-            ? err.message
-            : "Network error. Unable to complete service at this time.";
-        setTicketActionError(msg);
-      }
-    } finally {
-      if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-        setActiveTicketAction(null);
-      }
-    }
-  };
-
-  const handleSkipTicket = async () => {
-    if (
-      !activeTicket ||
-      (activeTicket.status !== "CALLED" && activeTicket.status !== "SERVING") ||
-      activeTicketAction !== null ||
-      callingQueueId !== null ||
-      !selectedOrgId ||
-      !user?.id
-    ) {
-      return;
-    }
-
-    const confirmed = window.confirm(
-      `Are you sure you want to skip ticket #${activeTicket.number}? The ticket will leave the active queue and will no longer be served.`,
-    );
-    if (!confirmed) {
-      return;
-    }
-
-    const currentOrg = selectedOrgId;
-    const currentStaff = user.id;
-    const ticketId = activeTicket.id;
-
-    setActiveTicketAction("skip");
-    setTicketActionError(null);
-
-    try {
-      const res = await fetch(
-        `/api/tickets/${encodeURIComponent(ticketId)}/skip`,
-        {
-          method: "PATCH",
-        },
-      );
-
-      if (res.status === 401) {
-        router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
-        return;
-      }
-
-      if (res.status === 409) {
-        let conflictMsg = "Ticket state changed; refreshing status.";
-        try {
-          const errJson: unknown = await res.json();
-          if (
-            errJson &&
-            typeof errJson === "object" &&
-            typeof (errJson as Record<string, unknown>).error === "string"
-          ) {
-            conflictMsg = (errJson as Record<string, unknown>).error as string;
-          }
-        } catch {
-          // fallback
-        }
-
-        if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-          setTicketActionError(conflictMsg);
-        }
-
-        // Recover active ticket state and refresh queue counts
-        try {
-          const recovered = await recoverActiveTicket(
-            currentOrg,
-            currentStaff,
-          );
-          if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-            setActiveTicket(recovered);
-          }
-        } catch {
-          // Ignore
-        }
-
-        try {
-          const refreshedQueues = await fetchQueueStatuses(
-            currentOrg,
-            currentStaff,
-          );
-          if (
-            selectedOrgIdRef.current === currentOrg &&
-            user.id === currentStaff &&
-            refreshedQueues !== null
-          ) {
-            setAssignedQueues(refreshedQueues);
-          }
-        } catch {
-          // Ignore
-        }
-
-        return;
-      }
-
-      if (!res.ok) {
-        let errorMsg = `Failed to skip ticket (status ${res.status})`;
-        try {
-          const errJson: unknown = await res.json();
-          if (
-            errJson &&
-            typeof errJson === "object" &&
-            typeof (errJson as Record<string, unknown>).error === "string"
-          ) {
-            errorMsg = (errJson as Record<string, unknown>).error as string;
-          }
-        } catch {
-          // fallback
-        }
-
-        if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-          setTicketActionError(errorMsg);
-        }
-        return;
-      }
-
-      const data: unknown = await res.json();
-      if (!isValidCalledTicketResponse(data) || data.status !== "SKIPPED") {
-        throw new Error(
-          "Malformed response from server after skipping ticket.",
-        );
-      }
-
-      if (selectedOrgIdRef.current !== currentOrg || user.id !== currentStaff) {
-        return;
-      }
-
-      // Skipping must clear the active ticket and refresh queue metrics
-      setActiveTicket(null);
-      setCounterWarning(null);
-
-      try {
-        const refreshedQueues = await fetchQueueStatuses(
-          currentOrg,
-          currentStaff,
-        );
-        if (
-          selectedOrgIdRef.current === currentOrg &&
-          user.id === currentStaff &&
-          refreshedQueues !== null
-        ) {
-          setAssignedQueues(refreshedQueues);
-        }
-      } catch {
-        // Ignore
-      }
-    } catch (err) {
-      if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-        const msg =
-          err instanceof Error
-            ? err.message
-            : "Network error. Unable to skip ticket at this time.";
-        setTicketActionError(msg);
-      }
-    } finally {
-      if (selectedOrgIdRef.current === currentOrg && user.id === currentStaff) {
-        setActiveTicketAction(null);
-      }
-    }
-  };
-
-
 
   const handleCounterChange = (counterId: string) => {
     const isTargetActive = assignedCounters.some(
@@ -837,23 +141,6 @@ export default function StaffOperatorPage() {
         setCounterWarning(null);
       }
     }
-  };
-
-  const selectedCounterItem = assignedCounters.find(
-    (a) => a.counter.id === selectedCounterId,
-  );
-  const hasActiveCounterSelected = Boolean(
-    selectedCounterItem && selectedCounterItem.counter.isActive,
-  );
-
-  const canCallNext = (q: OperatorQueueItem) => {
-    return (
-      hasActiveCounterSelected &&
-      activeTicket === null &&
-      q.waitingCount > 0 &&
-      callingQueueId === null &&
-      activeTicketAction === null
-    );
   };
 
   return (
@@ -972,12 +259,12 @@ export default function StaffOperatorPage() {
                   <StaffActiveTicketCard
                     activeTicket={activeTicket}
                     activeTicketAction={activeTicketAction}
-                    isActionDisabled={callingQueueId !== null}
-                    onStartService={handleStartService}
-                    onCompleteService={handleCompleteService}
-                    onSkipTicket={handleSkipTicket}
+                    isActionDisabled={isActionDisabled}
+                    onStartService={startService}
+                    onCompleteService={completeService}
+                    onSkipTicket={skipTicket}
                     ticketActionError={ticketActionError}
-                    onDismissError={() => setTicketActionError(null)}
+                    onDismissError={dismissTicketActionError}
                   />
 
                   {/* Assigned Queues Section */}
@@ -988,9 +275,9 @@ export default function StaffOperatorPage() {
                     onRefreshQueues={refreshQueues}
                     queuesError={queuesError}
                     callActionError={callActionError}
-                    onDismissCallError={() => setCallActionError(null)}
+                    onDismissCallError={dismissCallError}
                     callingQueueId={callingQueueId}
-                    onCallNext={handleCallNext}
+                    onCallNext={callNext}
                     canCallNext={canCallNext}
                     organizationName={selectedOrganization?.name}
                   />
