@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
 import {
@@ -23,12 +22,10 @@ import {
   StaffAssignedQueues,
   type OperatorQueueItem,
 } from "@/components/staff/StaffAssignedQueues";
-
-interface CurrentUser {
-  id: string;
-  name: string | null;
-  email: string;
-}
+import {
+  useStaffSession,
+  type CurrentUser,
+} from "@/hooks/useStaffSession";
 
 interface AssignedQueueItem {
   id: string;
@@ -187,13 +184,16 @@ function OrgDataSkeleton() {
 
 export default function StaffOperatorPage() {
   const router = useRouter();
-  const { isSignedIn, isLoaded } = useAuth();
-
-  const [user, setUser] = useState<CurrentUser | null>(null);
-  const [organizations, setOrganizations] = useState<OrganizationItem[]>([]);
-  const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    user,
+    organizations,
+    selectedOrgId,
+    selectedOrganization,
+    isLoading,
+    error,
+    setSelectedOrgId,
+    retrySession,
+  } = useStaffSession();
 
   // Step 2 state: Assigned counters, selected counter, recovered active ticket
   const [assignedCounters, setAssignedCounters] = useState<AssignedCounterItem[]>([]);
@@ -225,96 +225,6 @@ export default function StaffOperatorPage() {
   useEffect(() => {
     selectedOrgIdRef.current = selectedOrgId;
   }, [selectedOrgId]);
-
-  const fetchSessionData = useCallback(
-    async (showSkeleton = true) => {
-      if (showSkeleton) {
-        setIsLoading(true);
-      }
-      setError(null);
-
-      try {
-        const [meRes, orgsRes] = await Promise.all([
-          fetch("/api/auth/me"),
-          fetch("/api/organizations"),
-        ]);
-
-        if (meRes.status === 401 || orgsRes.status === 401) {
-          router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
-          return;
-        }
-
-        if (!meRes.ok) {
-          throw new Error(`Failed to load profile (status ${meRes.status})`);
-        }
-
-        if (!orgsRes.ok) {
-          throw new Error(
-            `Failed to load organizations (status ${orgsRes.status})`,
-          );
-        }
-
-        const meJson: unknown = await meRes.json();
-        const orgsJson: unknown = await orgsRes.json();
-
-        if (
-          !meJson ||
-          typeof meJson !== "object" ||
-          !("id" in meJson) ||
-          typeof (meJson as { id: unknown }).id !== "string"
-        ) {
-          throw new Error("Malformed profile response");
-        }
-
-        if (!Array.isArray(orgsJson)) {
-          throw new Error("Malformed organizations response");
-        }
-
-        const validatedUser: CurrentUser = {
-          id: (meJson as { id: string }).id,
-          name:
-            "name" in meJson &&
-            typeof (meJson as { name: unknown }).name === "string"
-              ? (meJson as { name: string }).name
-              : null,
-          email:
-            "email" in meJson &&
-            typeof (meJson as { email: unknown }).email === "string"
-              ? (meJson as { email: string }).email
-              : "",
-        };
-
-        const validatedOrgs: OrganizationItem[] = orgsJson.filter(
-          (org): org is OrganizationItem =>
-            typeof org === "object" &&
-            org !== null &&
-            typeof (org as { id?: unknown }).id === "string" &&
-            typeof (org as { name?: unknown }).name === "string" &&
-            typeof (org as { slug?: unknown }).slug === "string",
-        );
-
-        setUser(validatedUser);
-        setOrganizations(validatedOrgs);
-
-        setSelectedOrgId((currentSelected) => {
-          if (
-            currentSelected &&
-            validatedOrgs.some((org) => org.id === currentSelected)
-          ) {
-            return currentSelected;
-          }
-          return validatedOrgs.length > 0 ? validatedOrgs[0].id : null;
-        });
-      } catch {
-        setError(
-          "Unable to load your operator session at this time. Please try again.",
-        );
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [router],
-  );
 
   const fetchQueueStatusesOnly = useCallback(
     async (
@@ -554,16 +464,7 @@ export default function StaffOperatorPage() {
     [router, fetchQueueStatusesOnly],
   );
 
-  useEffect(() => {
-    if (!isLoaded) return;
 
-    if (!isSignedIn) {
-      router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
-      return;
-    }
-
-    void Promise.resolve().then(() => fetchSessionData());
-  }, [isLoaded, isSignedIn, router, fetchSessionData]);
 
   // Step 2, 3 & 4 effect: Load assigned counters, active ticket, and assigned queues when selected organization changes
   useEffect(() => {
@@ -1439,8 +1340,7 @@ export default function StaffOperatorPage() {
     }
   };
 
-  const selectedOrganization =
-    organizations.find((org) => org.id === selectedOrgId) ?? null;
+
 
   const handleCounterChange = (counterId: string) => {
     const isTargetActive = assignedCounters.some(
@@ -1495,7 +1395,7 @@ export default function StaffOperatorPage() {
             )}
           </div>
 
-          {!isLoaded || (!isSignedIn && isLoaded) || isLoading ? (
+          {isLoading ? (
             <StaffLoadingSkeleton />
           ) : error ? (
             <div
@@ -1505,7 +1405,7 @@ export default function StaffOperatorPage() {
               <p className="text-base font-medium">{error}</p>
               <button
                 type="button"
-                onClick={() => fetchSessionData(true)}
+                onClick={retrySession}
                 className="mt-4 inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
               >
                 Retry
