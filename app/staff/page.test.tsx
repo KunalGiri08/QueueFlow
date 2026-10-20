@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import StaffOperatorPage from "./page";
 
 // 1. Mock Next.js navigation with a stable router object identity
@@ -100,6 +100,16 @@ const mockActiveCalledTicket = {
   service: { id: "service-1", name: "Check-in" },
   counter: { id: "counter-1", name: "Desk 1" },
 };
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -778,6 +788,174 @@ describe("app/staff/page (Staff Operator Console)", () => {
           "Unable to refresh queue status at this time. Please try again.",
         ),
       ).toBeNull();
+    });
+  });
+
+  describe("7. Concurrency Control, Request Cancellation & Stale-Response Protection", () => {
+    it("aborts in-flight Org A requests when switching to Org B and allows Org B to proceed", async () => {
+      const orgASignals: AbortSignal[] = [];
+      const orgBSignals: AbortSignal[] = [];
+
+      activeFetchHandler = (url: string, init?: RequestInit) => {
+        if (url === "/api/organizations") {
+          return jsonResponse([mockOrg1, mockOrg2]);
+        }
+
+        if (url.includes("/org-1/staff/user-staff-1/")) {
+          if (init?.signal) {
+            orgASignals.push(init.signal);
+          }
+          return createDeferred<Response>().promise;
+        }
+
+        if (url.includes("/org-2/staff/user-staff-1/")) {
+          if (init?.signal) {
+            orgBSignals.push(init.signal);
+          }
+          return defaultFetchHandler(url, init);
+        }
+
+        return defaultFetchHandler(url, init);
+      };
+
+      render(<StaffOperatorPage />);
+
+      // Wait for session to load and organization select to appear
+      const orgSelect = await screen.findByLabelText("Select Organization");
+      expect(orgSelect).toBeDefined();
+
+      // Org A's requests are in flight with active AbortSignals
+      expect(orgASignals.length).toBeGreaterThan(0);
+      expect(orgASignals.every((s) => !s.aborted)).toBe(true);
+
+      // Switch to Org B
+      fireEvent.change(orgSelect, { target: { value: "org-2" } });
+
+      // Org A's in-flight requests must receive aborted signals
+      expect(orgASignals.every((s) => s.aborted)).toBe(true);
+
+      // Org B requests proceed and render cleanly
+      expect(await screen.findByText("Triage Line")).toBeDefined();
+      expect(screen.getByText("Desk 2 (Active)")).toBeDefined();
+      expect(orgBSignals.length).toBeGreaterThan(0);
+      expect(orgBSignals.every((s) => !s.aborted)).toBe(true);
+    });
+
+    it("discards late-arriving Org A responses and prevents overwriting Org B state or clearing loading", async () => {
+      const deferredOrg1Counters = createDeferred<Response>();
+      const deferredOrg1Ticket = createDeferred<Response>();
+      const deferredOrg1Queues = createDeferred<Response>();
+
+      activeFetchHandler = (url: string, init?: RequestInit) => {
+        if (url === "/api/organizations") {
+          return jsonResponse([mockOrg1, mockOrg2]);
+        }
+
+        if (url === `/api/organizations/org-1/staff/user-staff-1/counters`) {
+          return deferredOrg1Counters.promise;
+        }
+        if (url === `/api/organizations/org-1/staff/user-staff-1/active-ticket`) {
+          return deferredOrg1Ticket.promise;
+        }
+        if (url === `/api/organizations/org-1/staff/user-staff-1/queues`) {
+          return deferredOrg1Queues.promise;
+        }
+
+        return defaultFetchHandler(url, init);
+      };
+
+      render(<StaffOperatorPage />);
+
+      const orgSelect = await screen.findByLabelText("Select Organization");
+
+      // Switch to Org B before Org A resolves
+      fireEvent.change(orgSelect, { target: { value: "org-2" } });
+
+      // Org B loads successfully
+      expect(await screen.findByText("Triage Line")).toBeDefined();
+      expect(screen.getByText("Desk 2 (Active)")).toBeDefined();
+
+      // Org A's stale responses now resolve late
+      deferredOrg1Counters.resolve(jsonResponse([mockCounterOrg1]));
+      deferredOrg1Ticket.resolve(jsonResponse({ ticket: mockActiveCalledTicket }));
+      deferredOrg1Queues.resolve(jsonResponse([mockQueueOrg1]));
+
+      // Verify Org A data does not overwrite Org B
+      await waitFor(() => {
+        expect(screen.queryByText("#55")).toBeNull();
+      });
+      expect(screen.queryByText("General Line")).toBeNull();
+      expect(screen.queryByText("Desk 1 (Active)")).toBeNull();
+      expect(screen.getByText("Triage Line")).toBeDefined();
+      expect(screen.getByText("Desk 2 (Active)")).toBeDefined();
+      expect(screen.queryByLabelText("Loading operator data")).toBeNull();
+    });
+
+    it("does not display a network-error alert when Org A requests are aborted during an organization switch", async () => {
+      activeFetchHandler = (url: string, init?: RequestInit) => {
+        if (url === "/api/organizations") {
+          return jsonResponse([mockOrg1, mockOrg2]);
+        }
+
+        if (url.includes("/org-1/staff/user-staff-1/")) {
+          return new Promise<Response>((_resolve, reject) => {
+            if (init?.signal) {
+              init.signal.addEventListener("abort", () => {
+                reject(new DOMException("The user aborted a request.", "AbortError"));
+              });
+            }
+          });
+        }
+
+        return defaultFetchHandler(url, init);
+      };
+
+      render(<StaffOperatorPage />);
+
+      const orgSelect = await screen.findByLabelText("Select Organization");
+
+      // Switch to Org B, aborting Org A
+      fireEvent.change(orgSelect, { target: { value: "org-2" } });
+
+      // Org B loads cleanly
+      expect(await screen.findByText("Triage Line")).toBeDefined();
+      expect(screen.getByText("Desk 2 (Active)")).toBeDefined();
+
+      // No error alert banner should appear
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(
+        screen.queryByText(
+          /Unable to load assigned counters, active ticket, and queues/i,
+        ),
+      ).toBeNull();
+    });
+
+    it("aborts in-flight read-only requests when the component unmounts", async () => {
+      const capturedSignals: AbortSignal[] = [];
+
+      activeFetchHandler = (url: string, init?: RequestInit) => {
+        if (url.includes("/org-1/staff/user-staff-1/")) {
+          if (init?.signal) {
+            capturedSignals.push(init.signal);
+          }
+          return createDeferred<Response>().promise;
+        }
+
+        return defaultFetchHandler(url, init);
+      };
+
+      const { unmount } = render(<StaffOperatorPage />);
+
+      // Wait until read-only requests have started
+      await waitFor(() => {
+        expect(capturedSignals.length).toBeGreaterThan(0);
+      });
+      expect(capturedSignals.every((s) => !s.aborted)).toBe(true);
+
+      unmount();
+
+      // All captured signals must be aborted on unmount
+      expect(capturedSignals.every((s) => s.aborted)).toBe(true);
     });
   });
 });

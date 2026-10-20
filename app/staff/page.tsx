@@ -249,6 +249,9 @@ export default function StaffOperatorPage() {
   const [isRefreshingQueues, setIsRefreshingQueues] = useState(false);
   const [queuesError, setQueuesError] = useState<string | null>(null);
   const selectedOrgIdRef = useRef<string | null>(null);
+  const orgDataAbortControllerRef = useRef<AbortController | null>(null);
+  const orgDataGenerationRef = useRef(0);
+  const queueRefreshAbortControllerRef = useRef<AbortController | null>(null);
 
   // Step 4 state: Calling next ticket state & mutation error
   const [callingQueueId, setCallingQueueId] = useState<string | null>(null);
@@ -358,9 +361,11 @@ export default function StaffOperatorPage() {
     async (
       orgId: string,
       staffId: string,
+      signal?: AbortSignal,
     ): Promise<OperatorQueueItem[] | null> => {
       const queuesRes = await fetch(
         `/api/organizations/${encodeURIComponent(orgId)}/staff/${encodeURIComponent(staffId)}/queues`,
+        signal ? { signal } : undefined,
       );
 
       if (queuesRes.status === 401) {
@@ -404,6 +409,7 @@ export default function StaffOperatorPage() {
         validQueues.map(async (queue): Promise<OperatorQueueItem> => {
           const statusRes = await fetch(
             `/api/queues/${encodeURIComponent(queue.id)}`,
+            signal ? { signal } : undefined,
           );
 
           if (statusRes.status === 401) {
@@ -465,9 +471,14 @@ export default function StaffOperatorPage() {
   );
 
   const fetchActiveTicketRecovery = useCallback(
-    async (orgId: string, staffId: string): Promise<ActiveTicket | null> => {
+    async (
+      orgId: string,
+      staffId: string,
+      signal?: AbortSignal,
+    ): Promise<ActiveTicket | null> => {
       const ticketRes = await fetch(
         `/api/organizations/${encodeURIComponent(orgId)}/staff/${encodeURIComponent(staffId)}/active-ticket`,
+        signal ? { signal } : undefined,
       );
 
       if (ticketRes.status === 401) {
@@ -488,15 +499,17 @@ export default function StaffOperatorPage() {
   );
 
   const fetchOrgOperatorData = useCallback(
-    async (orgId: string, staffId: string) => {
+    async (orgId: string, staffId: string, signal?: AbortSignal) => {
       const [countersRes, ticketRes, queuesResult] = await Promise.all([
         fetch(
           `/api/organizations/${encodeURIComponent(orgId)}/staff/${encodeURIComponent(staffId)}/counters`,
+          signal ? { signal } : undefined,
         ),
         fetch(
           `/api/organizations/${encodeURIComponent(orgId)}/staff/${encodeURIComponent(staffId)}/active-ticket`,
+          signal ? { signal } : undefined,
         ),
-        fetchQueueStatusesOnly(orgId, staffId),
+        fetchQueueStatusesOnly(orgId, staffId, signal),
       ]);
 
       if (countersRes.status === 401 || ticketRes.status === 401) {
@@ -598,53 +611,89 @@ export default function StaffOperatorPage() {
     if (!selectedOrgId || !user?.id) return;
 
     let isCurrent = true;
+    const currentGen = ++orgDataGenerationRef.current;
 
-    void Promise.resolve().then(() => {
-      if (!isCurrent) return;
-      setIsOrgDataLoading(true);
-      setOrgDataError(null);
-      setQueuesError(null);
-      setCallActionError(null);
-      setCallingQueueId(null);
-      setActiveTicketAction(null);
-      setTicketActionError(null);
+    orgDataAbortControllerRef.current?.abort();
+    queueRefreshAbortControllerRef.current?.abort();
 
-      // Clear previous organization state immediately to satisfy requirements 6, 7 & 9
-      setAssignedCounters([]);
-      setSelectedCounterId(null);
-      setActiveTicket(null);
-      setCounterWarning(null);
-      setAssignedQueues([]);
+    const controller = new AbortController();
+    orgDataAbortControllerRef.current = controller;
 
-      fetchOrgOperatorData(selectedOrgId, user.id)
-        .then((data) => {
-          if (!isCurrent || !data) return;
-          setAssignedCounters(data.assignments);
-          setActiveTicket(data.activeTicket);
-          setSelectedCounterId(data.counterId);
-          setCounterWarning(data.warning);
-          setAssignedQueues(data.queues);
-        })
-        .catch(() => {
-          if (!isCurrent) return;
-          setOrgDataError(
-            "Unable to load assigned counters, active ticket, and queues for this organization. Please try again.",
-          );
-        })
-        .finally(() => {
-          if (isCurrent) {
-            setIsOrgDataLoading(false);
+    setIsOrgDataLoading(true);
+    setOrgDataError(null);
+    setQueuesError(null);
+    setCallActionError(null);
+    setCallingQueueId(null);
+    setActiveTicketAction(null);
+    setTicketActionError(null);
+
+    // Clear previous organization state immediately to satisfy requirements 6, 7 & 9
+    setAssignedCounters([]);
+    setSelectedCounterId(null);
+    setActiveTicket(null);
+    setCounterWarning(null);
+    setAssignedQueues([]);
+
+    fetchOrgOperatorData(selectedOrgId, user.id, controller.signal)
+      .then((data) => {
+        if (!isCurrent || currentGen !== orgDataGenerationRef.current || !data) return;
+        setAssignedCounters(data.assignments);
+        setActiveTicket(data.activeTicket);
+        setSelectedCounterId(data.counterId);
+        setCounterWarning(data.warning);
+        setAssignedQueues(data.queues);
+      })
+      .catch((err: unknown) => {
+        if (
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError") ||
+          (typeof err === "object" &&
+            err !== null &&
+            "name" in err &&
+            (err as { name: unknown }).name === "AbortError")
+        ) {
+          return;
+        }
+        if (!isCurrent || currentGen !== orgDataGenerationRef.current) return;
+        setOrgDataError(
+          "Unable to load assigned counters, active ticket, and queues for this organization. Please try again.",
+        );
+      })
+      .finally(() => {
+        if (isCurrent && currentGen === orgDataGenerationRef.current) {
+          setIsOrgDataLoading(false);
+          if (orgDataAbortControllerRef.current === controller) {
+            orgDataAbortControllerRef.current = null;
           }
-        });
-    });
+        }
+      });
 
     return () => {
       isCurrent = false;
+      controller.abort();
+      if (orgDataAbortControllerRef.current === controller) {
+        orgDataAbortControllerRef.current = null;
+      }
+      queueRefreshAbortControllerRef.current?.abort();
+      queueRefreshAbortControllerRef.current = null;
     };
   }, [selectedOrgId, user?.id, fetchOrgOperatorData]);
 
+  // Global unmount cleanup for organization and queue-refresh controllers
+  useEffect(() => {
+    return () => {
+      orgDataAbortControllerRef.current?.abort();
+      queueRefreshAbortControllerRef.current?.abort();
+    };
+  }, []);
+
   const handleOrgChange = (newOrgId: string) => {
     if (newOrgId === selectedOrgId) return;
+    orgDataAbortControllerRef.current?.abort();
+    orgDataAbortControllerRef.current = null;
+    queueRefreshAbortControllerRef.current?.abort();
+    queueRefreshAbortControllerRef.current = null;
+    setIsRefreshingQueues(false);
     setAssignedCounters([]);
     setSelectedCounterId(null);
     setActiveTicket(null);
@@ -661,6 +710,13 @@ export default function StaffOperatorPage() {
 
   const handleRetryOrgData = () => {
     if (!selectedOrgId || !user?.id) return;
+    const currentGen = ++orgDataGenerationRef.current;
+    orgDataAbortControllerRef.current?.abort();
+    queueRefreshAbortControllerRef.current?.abort();
+
+    const controller = new AbortController();
+    orgDataAbortControllerRef.current = controller;
+
     setIsOrgDataLoading(true);
     setOrgDataError(null);
     setQueuesError(null);
@@ -668,22 +724,39 @@ export default function StaffOperatorPage() {
     setCallingQueueId(null);
     setActiveTicketAction(null);
     setTicketActionError(null);
-    fetchOrgOperatorData(selectedOrgId, user.id)
+
+    fetchOrgOperatorData(selectedOrgId, user.id, controller.signal)
       .then((data) => {
-        if (!data) return;
+        if (currentGen !== orgDataGenerationRef.current || !data) return;
         setAssignedCounters(data.assignments);
         setActiveTicket(data.activeTicket);
         setSelectedCounterId(data.counterId);
         setCounterWarning(data.warning);
         setAssignedQueues(data.queues);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        if (
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError") ||
+          (typeof err === "object" &&
+            err !== null &&
+            "name" in err &&
+            (err as { name: unknown }).name === "AbortError")
+        ) {
+          return;
+        }
+        if (currentGen !== orgDataGenerationRef.current) return;
         setOrgDataError(
           "Unable to load assigned counters, active ticket, and queues for this organization. Please try again.",
         );
       })
       .finally(() => {
-        setIsOrgDataLoading(false);
+        if (currentGen === orgDataGenerationRef.current) {
+          setIsOrgDataLoading(false);
+          if (orgDataAbortControllerRef.current === controller) {
+            orgDataAbortControllerRef.current = null;
+          }
+        }
       });
   };
 
@@ -692,23 +765,55 @@ export default function StaffOperatorPage() {
     const currentOrg = selectedOrgId;
     const currentStaff = user.id;
 
+    queueRefreshAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    queueRefreshAbortControllerRef.current = controller;
+
     setIsRefreshingQueues(true);
     setQueuesError(null);
 
     try {
-      const queues = await fetchQueueStatusesOnly(currentOrg, currentStaff);
-      if (selectedOrgIdRef.current === currentOrg && queues !== null) {
+      const queues = await fetchQueueStatusesOnly(
+        currentOrg,
+        currentStaff,
+        controller.signal,
+      );
+      if (
+        selectedOrgIdRef.current === currentOrg &&
+        user.id === currentStaff &&
+        queueRefreshAbortControllerRef.current === controller &&
+        queues !== null
+      ) {
         setAssignedQueues(queues);
       }
-    } catch {
-      if (selectedOrgIdRef.current === currentOrg) {
+    } catch (err: unknown) {
+      if (
+        (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error && err.name === "AbortError") ||
+        (typeof err === "object" &&
+          err !== null &&
+          "name" in err &&
+          (err as { name: unknown }).name === "AbortError")
+      ) {
+        return;
+      }
+      if (
+        selectedOrgIdRef.current === currentOrg &&
+        user.id === currentStaff &&
+        queueRefreshAbortControllerRef.current === controller
+      ) {
         setQueuesError(
           "Unable to refresh queue status at this time. Please try again.",
         );
       }
     } finally {
-      if (selectedOrgIdRef.current === currentOrg) {
+      if (
+        selectedOrgIdRef.current === currentOrg &&
+        user.id === currentStaff &&
+        queueRefreshAbortControllerRef.current === controller
+      ) {
         setIsRefreshingQueues(false);
+        queueRefreshAbortControllerRef.current = null;
       }
     }
   };
