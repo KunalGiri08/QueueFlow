@@ -36,6 +36,14 @@ import { GET, PATCH } from "./route";
 const params = Promise.resolve({ id: "appointment-123" });
 const futureDate = new Date(Date.now() + 86_400_000).toISOString();
 
+function getFutureOffsetDate(daysAhead = 1): { offsetDate: string; parsedDate: Date } {
+  const futureTime = new Date(Date.now() + daysAhead * 86_400_000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const local = new Date(Math.floor(futureTime.getTime() / 1000) * 1000 + 330 * 60 * 1000);
+  const offsetDate = `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}:${pad(local.getUTCSeconds())}+05:30`;
+  return { offsetDate, parsedDate: new Date(offsetDate) };
+}
+
 describe("GET /api/appointments/[id]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -72,6 +80,7 @@ describe("GET /api/appointments/[id]", () => {
 describe("PATCH /api/appointments/[id]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFindUniqueOrThrow.mockReset();
     mockTransaction.mockImplementation(async (callback) => {
       const mockTx = {
         $queryRaw: mockQueryRaw,
@@ -196,8 +205,7 @@ describe("PATCH /api/appointments/[id]", () => {
       serviceId: "svc-1",
       scheduledAt: new Date(Date.now() + 10_000_000),
     };
-    const offsetDate = "2026-10-20T15:30:00+05:30";
-    const parsedDate = new Date(offsetDate);
+    const { offsetDate, parsedDate } = getFutureOffsetDate();
     const updatedAppointment = {
       ...currentAppointment,
       scheduledAt: parsedDate,

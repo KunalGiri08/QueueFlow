@@ -33,6 +33,14 @@ import { GET, POST } from "./route";
 
 const futureDate = new Date(Date.now() + 86_400_000).toISOString();
 
+function getFutureOffsetDate(daysAhead = 1): { offsetDate: string; parsedDate: Date } {
+  const futureTime = new Date(Date.now() + daysAhead * 86_400_000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const local = new Date(Math.floor(futureTime.getTime() / 1000) * 1000 + 330 * 60 * 1000);
+  const offsetDate = `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}:${pad(local.getUTCSeconds())}+05:30`;
+  return { offsetDate, parsedDate: new Date(offsetDate) };
+}
+
 describe("POST /api/appointments", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -179,8 +187,7 @@ describe("POST /api/appointments", () => {
     mockQueryRaw.mockResolvedValue([{ id: "svc-1" }]);
     mockAppointmentFindFirst.mockResolvedValue(null);
 
-    const offsetDate = "2026-10-20T15:30:00+05:30";
-    const parsedDate = new Date(offsetDate);
+    const { offsetDate, parsedDate } = getFutureOffsetDate();
     const createdAppointment = {
       id: "appointment-new",
       serviceId: "svc-1",
