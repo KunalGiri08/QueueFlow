@@ -6,6 +6,7 @@ import { StaffOrgSelector } from "@/components/staff/StaffOrgSelector";
 import { StaffCounterSelector } from "@/components/staff/StaffCounterSelector";
 import { StaffActiveTicketCard } from "@/components/staff/StaffActiveTicketCard";
 import { StaffAssignedQueues } from "@/components/staff/StaffAssignedQueues";
+import { StaffAppointmentsManagement } from "@/components/staff/StaffAppointmentsManagement";
 import { useStaffSession } from "@/hooks/useStaffSession";
 import { useStaffOrgData } from "@/hooks/useStaffOrgData";
 import { useTicketActions } from "@/hooks/useTicketActions";
@@ -281,6 +282,14 @@ export default function StaffOperatorPage() {
                     canCallNext={canCallNext}
                     organizationName={selectedOrganization?.name}
                   />
+
+                  {/* Scheduled Appointments Section */}
+                  {selectedOrgId && (
+                    <StaffAppointmentsManagement
+                      organizationId={selectedOrgId}
+                      organizationName={selectedOrganization?.name}
+                    />
+                  )}
                 </div>
               )}
             </div>

@@ -159,6 +159,13 @@ describe("app/staff/page (Staff Operator Console)", () => {
       return jsonResponse([mockQueueOrg2]);
     }
 
+    if (
+      url === `/api/organizations/org-1/appointments` ||
+      url === `/api/organizations/org-2/appointments`
+    ) {
+      return jsonResponse([]);
+    }
+
     if (url === `/api/queues/queue-1`) {
       return jsonResponse({
         id: "queue-1",
