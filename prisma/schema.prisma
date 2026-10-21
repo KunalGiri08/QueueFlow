@@ -86,6 +86,7 @@ model Queue {
   name             String
   serviceId        String
   nextTicketNumber Int      @default(1)
+  lastResetDate    String?
   isActive         Boolean  @default(true)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -112,7 +113,7 @@ model Ticket {
   servedBy User?    @relation("TicketsServed", fields: [servedById], references: [id], onDelete: SetNull)
   counter  Counter? @relation(fields: [counterId], references: [id], onDelete: SetNull)
 
-  @@unique([queueId, number])
+  @@index([queueId, number])
   @@index([queueId, status, number])
   @@index([servedById, status])
   @@index([userId])

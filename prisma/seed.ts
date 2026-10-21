@@ -119,20 +119,22 @@ async function main() {
     },
   });
 
-  await prisma.ticket.upsert({
+  let ticket = await prisma.ticket.findFirst({
     where: {
-      queueId_number: {
-        queueId: queue.id,
-        number: 1,
-      },
-    },
-    update: {},
-    create: {
-      number: 1,
       queueId: queue.id,
-      userId: customer.id,
+      number: 1,
     },
   });
+
+  if (!ticket) {
+    ticket = await prisma.ticket.create({
+      data: {
+        number: 1,
+        queueId: queue.id,
+        userId: customer.id,
+      },
+    });
+  }
 
   const highestTicket = await prisma.ticket.aggregate({
     where: {
