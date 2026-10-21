@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
@@ -63,21 +63,47 @@ function OrganizationsContent() {
   const [organizations, setOrganizations] = useState<PublicOrganization[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [paginationAnnouncement, setPaginationAnnouncement] = useState("");
+
+  const activeControllerRef = useRef<AbortController | null>(null);
+  const requestGenRef = useRef<number>(0);
+  const prevAnnouncedPageRef = useRef<number>(currentPage);
+  const isMountedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const fetchOrganizations = useCallback(async (targetPage: number) => {
+    if (activeControllerRef.current) {
+      activeControllerRef.current.abort();
+    }
+
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
+    const currentGen = ++requestGenRef.current;
+
     setIsLoading(true);
     setError(null);
 
     try {
       const response = await fetch(
         `/api/public/organizations?page=${targetPage}&limit=${PAGE_SIZE}`,
+        { signal: controller.signal },
       );
+
+      if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
 
       if (!response.ok) {
         throw new Error(`Server returned status ${response.status}`);
       }
 
       const data: unknown = await response.json();
+
+      if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
 
       if (
         !data ||
@@ -99,17 +125,47 @@ function OrganizationsContent() {
           typeof org.slug === "string",
       );
 
+      if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
+
       setOrganizations(validOrganizations);
-    } catch {
+
+      if (prevAnnouncedPageRef.current !== targetPage) {
+        prevAnnouncedPageRef.current = targetPage;
+        setPaginationAnnouncement(
+          validOrganizations.length === 0
+            ? `Page ${targetPage} loaded with no organizations.`
+            : `Page ${targetPage} loaded. Showing ${validOrganizations.length} ${
+                validOrganizations.length === 1 ? "organization" : "organizations"
+              }.`,
+        );
+      }
+    } catch (err: unknown) {
+      if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
+      if (
+        (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error && err.name === "AbortError")
+      ) {
+        return;
+      }
       setError("Unable to load organizations at this time. Please try again.");
       setOrganizations([]);
     } finally {
-      setIsLoading(false);
+      if (currentGen === requestGenRef.current && isMountedRef.current) {
+        setIsLoading(false);
+        activeControllerRef.current = null;
+      }
     }
   }, []);
 
   useEffect(() => {
-    fetchOrganizations(currentPage);
+    void fetchOrganizations(currentPage);
+
+    return () => {
+      if (activeControllerRef.current) {
+        activeControllerRef.current.abort();
+        activeControllerRef.current = null;
+      }
+    };
   }, [currentPage, fetchOrganizations]);
 
   const handlePageChange = (newPage: number) => {
@@ -121,6 +177,16 @@ function OrganizationsContent() {
 
   return (
     <div>
+      {/* Screen reader live region for pagination announcements */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {paginationAnnouncement}
+      </div>
+
       {isLoading ? (
         <OrganizationsLoadingSkeleton />
       ) : error ? (
