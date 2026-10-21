@@ -17,7 +17,12 @@ type AdminAuthResult = "authorized" | "forbidden" | "error";
 
 function AdminSkeleton() {
   return (
-    <div aria-label="Loading admin dashboard" className="space-y-6 animate-pulse">
+    <div
+      role="status"
+      aria-busy="true"
+      aria-label="Loading admin dashboard"
+      className="space-y-6 animate-pulse"
+    >
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-2">
@@ -38,6 +43,8 @@ function AdminSkeleton() {
 function VerifyingSkeleton({ orgName }: { orgName: string }) {
   return (
     <div
+      role="status"
+      aria-busy="true"
       aria-label={`Verifying administrator permissions for ${orgName}`}
       className="space-y-6 animate-pulse"
     >
@@ -85,6 +92,7 @@ export default function OrganizationAdminPage() {
   const activeOrgControllerRef = useRef<AbortController | null>(null);
   const orgFetchGenerationRef = useRef<number>(0);
   const activeVerifyControllerRef = useRef<AbortController | null>(null);
+  const verifyGenerationRef = useRef<number>(0);
 
   const fetchOrganizations = useCallback(async (signal?: AbortSignal) => {
     if (signal?.aborted) return;
@@ -135,11 +143,24 @@ export default function OrganizationAdminPage() {
         ) {
           return currentSelected;
         }
-        return validatedOrgs.length > 0 ? validatedOrgs[0].id : null;
+        const nextId = validatedOrgs.length > 0 ? validatedOrgs[0].id : null;
+        if (nextId !== currentSelected) {
+          setVerifiedOrgId(null);
+          setAdminAuthResult(null);
+          setAdminError(null);
+        }
+        return nextId;
       });
     } catch (err: unknown) {
       if (signal?.aborted || orgFetchGenerationRef.current !== fetchGen) return;
-      if (err instanceof DOMException && err.name === "AbortError") {
+      const isAbort =
+        (err instanceof Error && err.name === "AbortError") ||
+        (typeof err === "object" &&
+          err !== null &&
+          "name" in err &&
+          (err as { name: string }).name === "AbortError") ||
+        Boolean(signal?.aborted);
+      if (isAbort) {
         return;
       }
       setSessionError(
@@ -173,13 +194,22 @@ export default function OrganizationAdminPage() {
       controller.abort();
       activeOrgControllerRef.current?.abort();
       activeOrgControllerRef.current = null;
+      activeVerifyControllerRef.current?.abort();
+      activeVerifyControllerRef.current = null;
     };
   }, [isLoaded, isSignedIn, router, fetchOrganizations]);
 
   const handleRetryOrganizations = () => {
+    if (activeVerifyControllerRef.current) {
+      activeVerifyControllerRef.current.abort();
+      activeVerifyControllerRef.current = null;
+    }
     if (activeOrgControllerRef.current) {
       activeOrgControllerRef.current.abort();
     }
+    setVerifiedOrgId(null);
+    setAdminAuthResult(null);
+    setAdminError(null);
     const controller = new AbortController();
     activeOrgControllerRef.current = controller;
     void fetchOrganizations(controller.signal);
@@ -187,12 +217,18 @@ export default function OrganizationAdminPage() {
 
   // Verification effect: triggers whenever selected organization changes or retry is triggered
   useEffect(() => {
-    if (!selectedOrgId) return;
+    if (!selectedOrgId) {
+      setVerifiedOrgId(null);
+      setAdminAuthResult(null);
+      setAdminError(null);
+      return;
+    }
 
     if (activeVerifyControllerRef.current) {
       activeVerifyControllerRef.current.abort();
     }
 
+    const verifyGen = ++verifyGenerationRef.current;
     let isCurrent = true;
     const controller = new AbortController();
     activeVerifyControllerRef.current = controller;
@@ -201,7 +237,7 @@ export default function OrganizationAdminPage() {
       signal: controller.signal,
     })
       .then(async (res) => {
-        if (!isCurrent) return;
+        if (!isCurrent || controller.signal.aborted || verifyGenerationRef.current !== verifyGen) return;
 
         if (res.status === 401) {
           router.push(`/sign-in?redirect_url=${encodeURIComponent("/admin")}`);
@@ -225,8 +261,15 @@ export default function OrganizationAdminPage() {
         throw new Error(`Unexpected server response (status ${res.status})`);
       })
       .catch((err: unknown) => {
-        if (!isCurrent) return;
-        if (err instanceof DOMException && err.name === "AbortError") {
+        if (!isCurrent || controller.signal.aborted || verifyGenerationRef.current !== verifyGen) return;
+        const isAbort =
+          (err instanceof Error && err.name === "AbortError") ||
+          (typeof err === "object" &&
+            err !== null &&
+            "name" in err &&
+            (err as { name: string }).name === "AbortError") ||
+          controller.signal.aborted;
+        if (isAbort) {
           return;
         }
         setVerifiedOrgId(selectedOrgId);
@@ -239,21 +282,38 @@ export default function OrganizationAdminPage() {
     return () => {
       isCurrent = false;
       controller.abort();
+      if (activeVerifyControllerRef.current === controller) {
+        activeVerifyControllerRef.current = null;
+      }
     };
   }, [selectedOrgId, verifyRetryTrigger, router]);
 
   const handleRetryVerification = () => {
     if (!selectedOrgId) return;
+    if (activeVerifyControllerRef.current) {
+      activeVerifyControllerRef.current.abort();
+      activeVerifyControllerRef.current = null;
+    }
     setVerifiedOrgId(null);
+    setAdminAuthResult(null);
+    setAdminError(null);
     setVerifyRetryTrigger((prev) => prev + 1);
   };
 
   const handleSelectOrg = (newId: string) => {
+    if (newId === selectedOrgId) return;
+    if (activeVerifyControllerRef.current) {
+      activeVerifyControllerRef.current.abort();
+      activeVerifyControllerRef.current = null;
+    }
+    setVerifiedOrgId(null);
+    setAdminAuthResult(null);
+    setAdminError(null);
     setSelectedOrgId(newId);
   };
 
   const selectedOrg = organizations.find((org) => org.id === selectedOrgId) ?? null;
-  const isVerifying = Boolean(selectedOrgId && verifiedOrgId !== selectedOrgId);
+  const isVerifying = Boolean(selectedOrgId && (verifiedOrgId !== selectedOrgId || adminAuthResult === null));
 
   return (
     <>
