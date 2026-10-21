@@ -65,6 +65,7 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
   const serviceFetchGenerationRef = useRef<number>(0);
   const activeServiceCreationRequestIdRef = useRef<number>(0);
   const currentOrgIdRef = useRef<string>(organizationId);
+  const isCreatingServiceRef = useRef<boolean>(false);
 
   // Reset form inputs and errors when switching organizations
   const [prevOrgId, setPrevOrgId] = useState(organizationId);
@@ -75,6 +76,7 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
     setServiceFormError(null);
     setServiceFormSuccess(null);
     setIsCreatingService(false);
+    isCreatingServiceRef.current = false;
   }
 
   // Synchronize refs with organizationId prop
@@ -139,7 +141,14 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
       })
       .catch((err: unknown) => {
         if (!isCurrent || serviceFetchGenerationRef.current !== fetchGen) return;
-        if (err instanceof DOMException && err.name === "AbortError") {
+        if (
+          (err instanceof Error && err.name === "AbortError") ||
+          (typeof err === "object" &&
+            err !== null &&
+            "name" in err &&
+            (err as { name: unknown }).name === "AbortError") ||
+          controller.signal.aborted
+        ) {
           return;
         }
         setServicesOrgId(organizationId);
@@ -162,7 +171,7 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
 
   const handleCreateService = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isCreatingService) return;
+    if (isCreatingServiceRef.current) return;
 
     const trimmedName = newServiceName.trim();
     if (!trimmedName) {
@@ -170,6 +179,7 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
       return;
     }
 
+    isCreatingServiceRef.current = true;
     const trimmedDesc = newServiceDescription.trim();
     const creationRequestId = ++activeServiceCreationRequestIdRef.current;
     setIsCreatingService(true);
@@ -295,7 +305,11 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
         );
       }
     } finally {
-      if (activeServiceCreationRequestIdRef.current === creationRequestId) {
+      if (
+        currentOrgIdRef.current === targetOrgId &&
+        activeServiceCreationRequestIdRef.current === creationRequestId
+      ) {
+        isCreatingServiceRef.current = false;
         setIsCreatingService(false);
       }
     }
