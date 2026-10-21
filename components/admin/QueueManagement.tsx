@@ -97,16 +97,27 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
   const activeCreationRequestIdRef = useRef<number>(0);
   const currentOrgIdRef = useRef<string>(organizationId);
   const currentServiceIdRef = useRef<string | null>(selectedServiceId);
+  const isCreatingQueueRef = useRef<boolean>(false);
 
   // Reset form and selections when switching organizations
   const [prevOrgId, setPrevOrgId] = useState(organizationId);
   if (organizationId !== prevOrgId) {
     setPrevOrgId(organizationId);
+    setServices([]);
+    setServicesOrgId(null);
+    setServicesError(null);
     setSelectedServiceId(null);
+    setQueues([]);
+    setQueuesServiceId(null);
+    setQueuesError(null);
     setNewQueueName("");
     setFormError(null);
     setFormSuccess(null);
     setIsCreatingQueue(false);
+    isCreatingQueueRef.current = false;
+    currentOrgIdRef.current = organizationId;
+    currentServiceIdRef.current = null;
+    activeCreationRequestIdRef.current += 1;
   }
 
   // Synchronize currentOrgIdRef with prop
@@ -124,6 +135,10 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
   useEffect(() => {
     if (activeServicesControllerRef.current) {
       activeServicesControllerRef.current.abort();
+    }
+    if (activeQueuesControllerRef.current) {
+      activeQueuesControllerRef.current.abort();
+      activeQueuesControllerRef.current = null;
     }
 
     let isCurrent = true;
@@ -182,7 +197,14 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
       })
       .catch((err: unknown) => {
         if (!isCurrent || servicesFetchGenRef.current !== fetchGen) return;
-        if (err instanceof DOMException && err.name === "AbortError") {
+        if (
+          (err instanceof Error && err.name === "AbortError") ||
+          (typeof err === "object" &&
+            err !== null &&
+            "name" in err &&
+            (err as { name: unknown }).name === "AbortError") ||
+          controller.signal.aborted
+        ) {
           return;
         }
         setServicesOrgId(organizationId);
@@ -262,7 +284,14 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
       })
       .catch((err: unknown) => {
         if (!isCurrent || queuesFetchGenRef.current !== fetchGen) return;
-        if (err instanceof DOMException && err.name === "AbortError") {
+        if (
+          (err instanceof Error && err.name === "AbortError") ||
+          (typeof err === "object" &&
+            err !== null &&
+            "name" in err &&
+            (err as { name: unknown }).name === "AbortError") ||
+          controller.signal.aborted
+        ) {
           return;
         }
         setQueuesServiceId(selectedServiceId);
@@ -291,7 +320,9 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
 
   const handleSelectService = (newServiceId: string) => {
     setSelectedServiceId(newServiceId);
+    currentServiceIdRef.current = newServiceId;
     activeCreationRequestIdRef.current += 1;
+    isCreatingQueueRef.current = false;
     setIsCreatingQueue(false);
     setNewQueueName("");
     setFormError(null);
@@ -300,7 +331,7 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
 
   const handleCreateQueue = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedServiceId || isCreatingQueue) return;
+    if (!selectedServiceId || isCreatingQueueRef.current) return;
 
     const trimmed = newQueueName.trim();
     if (!trimmed) {
@@ -308,6 +339,7 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
       return;
     }
 
+    isCreatingQueueRef.current = true;
     const creationRequestId = ++activeCreationRequestIdRef.current;
     setIsCreatingQueue(true);
     setFormError(null);
@@ -429,7 +461,12 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
         );
       }
     } finally {
-      if (activeCreationRequestIdRef.current === creationRequestId) {
+      if (
+        currentOrgIdRef.current === targetOrgId &&
+        currentServiceIdRef.current === targetServiceId &&
+        activeCreationRequestIdRef.current === creationRequestId
+      ) {
+        isCreatingQueueRef.current = false;
         setIsCreatingQueue(false);
       }
     }
