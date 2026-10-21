@@ -21,3 +21,19 @@ export interface CustomerAppointment {
     };
   };
 }
+
+export interface BookAppointmentService {
+  id: string;
+  name: string;
+}
+
+export interface BookAppointmentOrganization {
+  id: string;
+  name: string;
+}
+
+export interface BookedAppointmentSuccessData {
+  id: string;
+  serviceId: string;
+  scheduledAt: string;
+}

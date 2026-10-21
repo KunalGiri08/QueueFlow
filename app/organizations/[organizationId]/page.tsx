@@ -5,6 +5,8 @@ import { useRouter, useParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
+import { BookAppointmentDialog } from "@/components/appointments/BookAppointmentDialog";
+import type { BookedAppointmentSuccessData } from "@/components/appointments/types";
 
 interface PublicQueue {
   id: string;
@@ -151,11 +153,21 @@ function OrganizationServicesContent({
     message: string;
   } | null>(null);
 
+  const [bookingService, setBookingService] = useState<PublicService | null>(
+    null,
+  );
+  const [isBooking, setIsBooking] = useState(false);
+  const [bookingError, setBookingError] = useState<string | null>(null);
+  const [bookingSuccessData, setBookingSuccessData] =
+    useState<BookedAppointmentSuccessData | null>(null);
+
   const activeCatalogControllerRef = useRef<AbortController | null>(null);
   const catalogGenRef = useRef<number>(0);
   const isMountedRef = useRef<boolean>(true);
   const isJoiningRef = useRef<boolean>(false);
   const joinGenRef = useRef<number>(0);
+  const isBookingRef = useRef<boolean>(false);
+  const bookingGenRef = useRef<number>(0);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -235,14 +247,25 @@ function OrganizationServicesContent({
     }
   }, [organizationId]);
 
-  useEffect(() => {
-    // Invalidate pending join and reset queue state when organization identity changes
-    joinGenRef.current++;
-    isJoiningRef.current = false;
+  const [prevOrgId, setPrevOrgId] = useState(organizationId);
+  if (organizationId !== prevOrgId) {
+    setPrevOrgId(organizationId);
     setJoiningQueueId(null);
     setQueueError(null);
+    setIsBooking(false);
+    setBookingService(null);
+    setBookingError(null);
+    setBookingSuccessData(null);
+  }
 
-    fetchServices();
+  useEffect(() => {
+    // Invalidate pending join and booking when organization identity changes
+    joinGenRef.current++;
+    isJoiningRef.current = false;
+    bookingGenRef.current++;
+    isBookingRef.current = false;
+
+    void Promise.resolve().then(() => fetchServices());
 
     return () => {
       if (activeCatalogControllerRef.current) {
@@ -383,6 +406,176 @@ function OrganizationServicesContent({
     }
   };
 
+  const handleOpenBookAppointment = (service: PublicService) => {
+    if (!organizationId) return;
+
+    if (!isSignedIn) {
+      router.push(
+        `/sign-in?redirect_url=${encodeURIComponent(`/organizations/${organizationId}`)}`,
+      );
+      return;
+    }
+
+    setBookingError(null);
+    setBookingSuccessData(null);
+    setBookingService(service);
+  };
+
+  const handleCloseBookAppointment = () => {
+    if (isBooking) return;
+    setBookingService(null);
+    setBookingError(null);
+    setBookingSuccessData(null);
+  };
+
+  const handleConfirmBookAppointment = async (scheduledAtIso: string) => {
+    if (!organizationId || !bookingService) return;
+
+    if (!isSignedIn) {
+      router.push(
+        `/sign-in?redirect_url=${encodeURIComponent(`/organizations/${organizationId}`)}`,
+      );
+      return;
+    }
+
+    if (isBookingRef.current) return;
+    isBookingRef.current = true;
+    const currentBookingGen = ++bookingGenRef.current;
+
+    setIsBooking(true);
+    setBookingError(null);
+
+    try {
+      const response = await fetch("/api/appointments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          serviceId: bookingService.id,
+          scheduledAt: scheduledAtIso,
+        }),
+      });
+
+      if (!isMountedRef.current || bookingGenRef.current !== currentBookingGen) {
+        return;
+      }
+
+      if (response.status === 201) {
+        const appointmentData: unknown = await response.json();
+        if (
+          appointmentData &&
+          typeof appointmentData === "object" &&
+          "id" in appointmentData &&
+          typeof (appointmentData as { id: unknown }).id === "string" &&
+          "scheduledAt" in appointmentData &&
+          typeof (appointmentData as { scheduledAt: unknown }).scheduledAt ===
+            "string"
+        ) {
+          setBookingSuccessData({
+            id: (appointmentData as { id: string }).id,
+            serviceId: bookingService.id,
+            scheduledAt: (appointmentData as { scheduledAt: string })
+              .scheduledAt,
+          });
+          return;
+        }
+
+        setBookingError(
+          "Appointment was created, but response was invalid. Please check your appointments.",
+        );
+        return;
+      }
+
+      if (response.status === 401) {
+        router.push(
+          `/sign-in?redirect_url=${encodeURIComponent(`/organizations/${organizationId}`)}`,
+        );
+        return;
+      }
+
+      if (response.status === 409) {
+        let errorMessage =
+          "This appointment time slot is already booked. Please choose another time.";
+        try {
+          const errJson: unknown = await response.json();
+          if (
+            errJson &&
+            typeof errJson === "object" &&
+            "error" in errJson &&
+            typeof (errJson as { error: unknown }).error === "string"
+          ) {
+            errorMessage = (errJson as { error: string }).error;
+          }
+        } catch {
+          // fallback to default message
+        }
+
+        setBookingError(errorMessage);
+        return;
+      }
+
+      if (response.status === 400) {
+        let errorMessage =
+          "Invalid appointment details. Please check your selected time.";
+        try {
+          const errJson: unknown = await response.json();
+          if (
+            errJson &&
+            typeof errJson === "object" &&
+            "details" in errJson &&
+            errJson.details &&
+            typeof errJson.details === "object" &&
+            "fieldErrors" in (errJson.details as Record<string, unknown>)
+          ) {
+            const fieldErrors = (
+              errJson.details as { fieldErrors: Record<string, string[]> }
+            ).fieldErrors;
+            if (fieldErrors?.scheduledAt?.[0]) {
+              errorMessage = fieldErrors.scheduledAt[0];
+            }
+          } else if (
+            errJson &&
+            typeof errJson === "object" &&
+            "error" in errJson &&
+            typeof (errJson as { error: unknown }).error === "string"
+          ) {
+            errorMessage = (errJson as { error: string }).error;
+          }
+        } catch {
+          // fallback to default message
+        }
+
+        setBookingError(errorMessage);
+        return;
+      }
+
+      if (response.status === 404) {
+        setBookingError(
+          "This service is no longer available. Please refresh the page.",
+        );
+        return;
+      }
+
+      setBookingError(
+        "Unable to book appointment at this time. Please try again.",
+      );
+    } catch {
+      if (!isMountedRef.current || bookingGenRef.current !== currentBookingGen) {
+        return;
+      }
+
+      setBookingError(
+        "Unable to connect to the server. Please check your connection and try again.",
+      );
+    } finally {
+      isBookingRef.current = false;
+      if (isMountedRef.current && bookingGenRef.current === currentBookingGen) {
+        setIsBooking(false);
+      }
+    }
+  };
+
   if (isLoading) {
     return <ServicesLoadingSkeleton />;
   }
@@ -508,6 +701,31 @@ function OrganizationServicesContent({
                     {service.description}
                   </p>
                 )}
+
+                <div className="mt-4">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenBookAppointment(service)}
+                    aria-label={`Book appointment for ${service.name}`}
+                    className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
+                  >
+                    <svg
+                      className="mr-1.5 h-3.5 w-3.5 text-gray-500"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      strokeWidth="2"
+                      stroke="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5"
+                      />
+                    </svg>
+                    Book Appointment
+                  </button>
+                </div>
               </div>
 
               <div className="mt-6 border-t border-gray-100 pt-4">
@@ -599,6 +817,19 @@ function OrganizationServicesContent({
             </article>
           ))}
         </div>
+      )}
+
+      {data && (
+        <BookAppointmentDialog
+          isOpen={Boolean(bookingService)}
+          service={bookingService}
+          organization={data.organization}
+          isSubmitting={isBooking}
+          error={bookingError}
+          successData={bookingSuccessData}
+          onConfirm={handleConfirmBookAppointment}
+          onClose={handleCloseBookAppointment}
+        />
       )}
     </div>
   );

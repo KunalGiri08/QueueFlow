@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from "@testing-library/react";
 import OrganizationServicesPage from "./page";
 
 // 1. Mock Next.js navigation with dynamic params
@@ -734,6 +734,413 @@ describe("app/organizations/[organizationId]/page", () => {
       });
 
       // No stale error alert is displayed on org-2
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+
+  describe("E. Customer appointment booking", () => {
+    it("renders Book Appointment button alongside queues for each service", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(mockCatalogData));
+      await renderPage();
+
+      const bookButtons = screen.getAllByRole("button", {
+        name: /book appointment/i,
+      });
+      expect(bookButtons.length).toBe(2);
+      expect(
+        screen.getByRole("button", {
+          name: "Book appointment for General Consultation",
+        }),
+      ).toBeDefined();
+      expect(
+        screen.getByRole("button", {
+          name: "Book appointment for Pharmacy",
+        }),
+      ).toBeDefined();
+    });
+
+    it("redirects to sign-in when unauthenticated user clicks Book Appointment", async () => {
+      mockIsSignedIn = false;
+      fetchMock.mockResolvedValueOnce(jsonResponse(mockCatalogData));
+      await renderPage();
+
+      const bookBtn = screen.getByRole("button", {
+        name: "Book appointment for General Consultation",
+      });
+      fireEvent.click(bookBtn);
+
+      expect(mockPush).toHaveBeenCalledWith(
+        "/sign-in?redirect_url=%2Forganizations%2Forg-123",
+      );
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("opens BookAppointmentDialog when authenticated user clicks Book Appointment", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(mockCatalogData));
+      await renderPage();
+
+      const bookBtn = screen.getByRole("button", {
+        name: "Book appointment for General Consultation",
+      });
+      fireEvent.click(bookBtn);
+
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toBeDefined();
+      expect(
+        within(dialog).getByRole("heading", { name: "Book Appointment" }),
+      ).toBeDefined();
+      expect(within(dialog).getByText("Apex Healthcare")).toBeDefined();
+      expect(within(dialog).getByText(/General Consultation/)).toBeDefined();
+    });
+
+    it("books appointment successfully: sends POST /api/appointments and displays confirmation with navigation link", async () => {
+      let postBody: unknown = null;
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === "/api/public/organizations/org-123/services") {
+          return jsonResponse(mockCatalogData);
+        }
+        if (url === "/api/appointments" && init?.method === "POST") {
+          postBody = JSON.parse(init.body as string);
+          return jsonResponse(
+            {
+              id: "appt-new-123",
+              serviceId: "srv-1",
+              userId: "user-1",
+              scheduledAt: (postBody as { scheduledAt: string }).scheduledAt,
+              status: "BOOKED",
+            },
+            201,
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      const bookBtn = screen.getByRole("button", {
+        name: "Book appointment for General Consultation",
+      });
+      fireEvent.click(bookBtn);
+
+      const input = screen.getByLabelText(/appointment date and time/i);
+      const future = new Date(Date.now() + 3 * 86_400_000);
+      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
+      fireEvent.change(input, { target: { value: local } });
+
+      const confirmBtn = screen.getByRole("button", {
+        name: /confirm booking/i,
+      });
+      await act(async () => {
+        fireEvent.click(confirmBtn);
+      });
+
+      expect(postBody).toEqual({
+        serviceId: "srv-1",
+        scheduledAt: expect.any(String),
+      });
+
+      expect(screen.getByText("Appointment Booked!")).toBeDefined();
+      const viewLink = screen.getByRole("link", {
+        name: /view my appointments/i,
+      });
+      expect(viewLink.getAttribute("href")).toBe("/appointments");
+    });
+
+    it("handles 409 conflict: displays slot booked message in dialog without losing selected date", async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === "/api/public/organizations/org-123/services") {
+          return jsonResponse(mockCatalogData);
+        }
+        if (url === "/api/appointments" && init?.method === "POST") {
+          return jsonResponse(
+            { error: "This appointment time slot is already booked" },
+            409,
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      const bookBtn = screen.getByRole("button", {
+        name: "Book appointment for General Consultation",
+      });
+      fireEvent.click(bookBtn);
+
+      const input = screen.getByLabelText(/appointment date and time/i);
+      const future = new Date(Date.now() + 3 * 86_400_000);
+      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
+      fireEvent.change(input, { target: { value: local } });
+
+      const confirmBtn = screen.getByRole("button", {
+        name: /confirm booking/i,
+      });
+      await act(async () => {
+        fireEvent.click(confirmBtn);
+      });
+
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain(
+        "This appointment time slot is already booked",
+      );
+      expect(screen.getByRole("dialog")).toBeDefined();
+      expect(
+        screen.getByLabelText<HTMLInputElement>(/appointment date and time/i)
+          .value,
+      ).not.toBe("");
+    });
+
+    it("handles 400 validation error from server", async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === "/api/public/organizations/org-123/services") {
+          return jsonResponse(mockCatalogData);
+        }
+        if (url === "/api/appointments" && init?.method === "POST") {
+          return jsonResponse(
+            {
+              error: "Invalid request body",
+              details: {
+                fieldErrors: {
+                  scheduledAt: [
+                    "Appointment cannot be scheduled more than 365 days in advance",
+                  ],
+                },
+              },
+            },
+            400,
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      const bookBtn = screen.getByRole("button", {
+        name: "Book appointment for General Consultation",
+      });
+      fireEvent.click(bookBtn);
+
+      const input = screen.getByLabelText(/appointment date and time/i);
+      const future = new Date(Date.now() + 3 * 86_400_000);
+      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
+      fireEvent.change(input, { target: { value: local } });
+
+      const confirmBtn = screen.getByRole("button", {
+        name: /confirm booking/i,
+      });
+      await act(async () => {
+        fireEvent.click(confirmBtn);
+      });
+
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain(
+        "Appointment cannot be scheduled more than 365 days in advance",
+      );
+    });
+
+    it("redirects to sign-in when POST /api/appointments returns 401", async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === "/api/public/organizations/org-123/services") {
+          return jsonResponse(mockCatalogData);
+        }
+        if (url === "/api/appointments" && init?.method === "POST") {
+          return jsonResponse({ error: "Unauthorized" }, 401);
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      const bookBtn = screen.getByRole("button", {
+        name: "Book appointment for General Consultation",
+      });
+      fireEvent.click(bookBtn);
+
+      const input = screen.getByLabelText(/appointment date and time/i);
+      const future = new Date(Date.now() + 3 * 86_400_000);
+      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
+      fireEvent.change(input, { target: { value: local } });
+
+      const confirmBtn = screen.getByRole("button", {
+        name: /confirm booking/i,
+      });
+      await act(async () => {
+        fireEvent.click(confirmBtn);
+      });
+
+      expect(mockPush).toHaveBeenCalledWith(
+        "/sign-in?redirect_url=%2Forganizations%2Forg-123",
+      );
+    });
+
+    it("handles network failure gracefully", async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === "/api/public/organizations/org-123/services") {
+          return jsonResponse(mockCatalogData);
+        }
+        if (url === "/api/appointments" && init?.method === "POST") {
+          throw new Error("Network error");
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      const bookBtn = screen.getByRole("button", {
+        name: "Book appointment for General Consultation",
+      });
+      fireEvent.click(bookBtn);
+
+      const input = screen.getByLabelText(/appointment date and time/i);
+      const future = new Date(Date.now() + 3 * 86_400_000);
+      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
+      fireEvent.change(input, { target: { value: local } });
+
+      const confirmBtn = screen.getByRole("button", {
+        name: /confirm booking/i,
+      });
+      await act(async () => {
+        fireEvent.click(confirmBtn);
+      });
+
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain("Unable to connect to the server.");
+    });
+
+    it("synchronous duplicate submission guard: prevents second booking request while one is in-flight", async () => {
+      let postCallCount = 0;
+      const deferredPost = createDeferred<Response>();
+
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === "/api/public/organizations/org-123/services") {
+          return jsonResponse(mockCatalogData);
+        }
+        if (url === "/api/appointments" && init?.method === "POST") {
+          postCallCount++;
+          return deferredPost.promise;
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      const bookBtn = screen.getByRole("button", {
+        name: "Book appointment for General Consultation",
+      });
+      fireEvent.click(bookBtn);
+
+      const input = screen.getByLabelText(/appointment date and time/i);
+      const future = new Date(Date.now() + 3 * 86_400_000);
+      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
+      fireEvent.change(input, { target: { value: local } });
+
+      const confirmBtn = screen.getByRole("button", {
+        name: /confirm booking/i,
+      });
+      fireEvent.click(confirmBtn);
+      fireEvent.click(confirmBtn);
+
+      expect(postCallCount).toBe(1);
+
+      await act(async () => {
+        deferredPost.resolve(
+          jsonResponse(
+            {
+              id: "appt-1",
+              serviceId: "srv-1",
+              scheduledAt: new Date().toISOString(),
+            },
+            201,
+          ),
+        );
+      });
+    });
+
+    it("resets booking dialog and discards in-flight booking when organization changes", async () => {
+      const deferredPost = createDeferred<Response>();
+
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === "/api/public/organizations/org-1/services") {
+          return jsonResponse(mockCatalogData);
+        }
+        if (url === "/api/public/organizations/org-2/services") {
+          return jsonResponse({
+            organization: {
+              id: "org-2",
+              name: "Beacon Clinic",
+              slug: "beacon",
+            },
+            services: [],
+          });
+        }
+        if (url === "/api/appointments" && init?.method === "POST") {
+          return deferredPost.promise;
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      mockParams = { organizationId: "org-1" };
+      let rerenderFn!: (ui: React.ReactElement) => void;
+      await act(async () => {
+        const res = render(
+          <OrganizationServicesPage
+            params={Promise.resolve({ organizationId: "org-1" })}
+          />,
+        );
+        rerenderFn = res.rerender;
+      });
+
+      expect(await screen.findByText("Apex Healthcare")).toBeDefined();
+
+      const bookBtn = screen.getByRole("button", {
+        name: "Book appointment for General Consultation",
+      });
+      fireEvent.click(bookBtn);
+
+      expect(screen.getByRole("dialog")).toBeDefined();
+
+      const input = screen.getByLabelText(/appointment date and time/i);
+      const future = new Date(Date.now() + 3 * 86_400_000);
+      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
+      fireEvent.change(input, { target: { value: local } });
+
+      // Submit booking for org-1
+      const confirmBtn = screen.getByRole("button", {
+        name: /confirm booking/i,
+      });
+      fireEvent.click(confirmBtn);
+
+      // Switch organization to org-2 while booking is in flight
+      mockParams = { organizationId: "org-2" };
+      await act(async () => {
+        rerenderFn(
+          <OrganizationServicesPage
+            params={Promise.resolve({ organizationId: "org-2" })}
+          />,
+        );
+      });
+
+      expect(await screen.findByText("Beacon Clinic")).toBeDefined();
+
+      // Dialog is closed
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      // Resolve in-flight request
+      await act(async () => {
+        deferredPost.resolve(
+          jsonResponse(
+            {
+              id: "appt-1",
+              serviceId: "srv-1",
+              scheduledAt: new Date().toISOString(),
+            },
+            201,
+          ),
+        );
+      });
+
+      // No stale dialog or error alert appears on org-2
+      expect(screen.queryByRole("dialog")).toBeNull();
       expect(screen.queryByRole("alert")).toBeNull();
     });
   });
