@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState, useEffect, useCallback, Suspense } from "react";
+import { use, useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
@@ -30,6 +30,66 @@ interface OrganizationServicesData {
 
 interface PageProps {
   params: Promise<{ organizationId: string }>;
+}
+
+function isValidQueue(q: unknown): q is PublicQueue {
+  if (!q || typeof q !== "object") return false;
+  const item = q as Record<string, unknown>;
+  return (
+    typeof item.id === "string" &&
+    item.id.trim() !== "" &&
+    typeof item.name === "string" &&
+    item.name.trim() !== "" &&
+    typeof item.isActive === "boolean"
+  );
+}
+
+function isValidService(s: unknown): s is PublicService {
+  if (!s || typeof s !== "object") return false;
+  const item = s as Record<string, unknown>;
+  const isDescriptionValid =
+    item.description === null || typeof item.description === "string";
+  return (
+    typeof item.id === "string" &&
+    item.id.trim() !== "" &&
+    typeof item.name === "string" &&
+    item.name.trim() !== "" &&
+    isDescriptionValid &&
+    Array.isArray(item.queues) &&
+    item.queues.every(isValidQueue)
+  );
+}
+
+function parseOrganizationServices(
+  json: unknown,
+): OrganizationServicesData | null {
+  if (!json || typeof json !== "object") return null;
+  const obj = json as Record<string, unknown>;
+
+  if (!obj.organization || typeof obj.organization !== "object") return null;
+  const org = obj.organization as Record<string, unknown>;
+  if (
+    typeof org.id !== "string" ||
+    org.id.trim() === "" ||
+    typeof org.name !== "string" ||
+    org.name.trim() === "" ||
+    typeof org.slug !== "string" ||
+    org.slug.trim() === ""
+  ) {
+    return null;
+  }
+
+  if (!Array.isArray(obj.services)) return null;
+  if (!obj.services.every(isValidService)) return null;
+
+  return {
+    organization: {
+      id: org.id,
+      name: org.name,
+      slug: org.slug,
+    },
+    services: obj.services as PublicService[],
+  };
 }
 
 function ServicesLoadingSkeleton() {
@@ -91,8 +151,32 @@ function OrganizationServicesContent({
     message: string;
   } | null>(null);
 
+  const activeCatalogControllerRef = useRef<AbortController | null>(null);
+  const catalogGenRef = useRef<number>(0);
+  const isMountedRef = useRef<boolean>(true);
+  const isJoiningRef = useRef<boolean>(false);
+  const joinGenRef = useRef<number>(0);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (activeCatalogControllerRef.current) {
+        activeCatalogControllerRef.current.abort();
+      }
+    };
+  }, []);
+
   const fetchServices = useCallback(async () => {
     if (!organizationId) return;
+
+    if (activeCatalogControllerRef.current) {
+      activeCatalogControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    activeCatalogControllerRef.current = controller;
+
+    const currentGen = ++catalogGenRef.current;
 
     setIsLoading(true);
     setError(null);
@@ -101,7 +185,12 @@ function OrganizationServicesContent({
     try {
       const response = await fetch(
         `/api/public/organizations/${encodeURIComponent(organizationId)}/services`,
+        { signal: controller.signal },
       );
+
+      if (!isMountedRef.current || catalogGenRef.current !== currentGen) {
+        return;
+      }
 
       if (response.status === 404) {
         setIsNotFound(true);
@@ -115,27 +204,51 @@ function OrganizationServicesContent({
 
       const json: unknown = await response.json();
 
-      if (
-        !json ||
-        typeof json !== "object" ||
-        !("organization" in json) ||
-        !("services" in json) ||
-        !Array.isArray((json as { services: unknown }).services)
-      ) {
+      if (!isMountedRef.current || catalogGenRef.current !== currentGen) {
+        return;
+      }
+
+      const validated = parseOrganizationServices(json);
+      if (!validated) {
         throw new Error("Malformed response format");
       }
 
-      setData(json as OrganizationServicesData);
-    } catch {
+      setData(validated);
+    } catch (err: unknown) {
+      if (
+        (err instanceof Error && err.name === "AbortError") ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
+
+      if (!isMountedRef.current || catalogGenRef.current !== currentGen) {
+        return;
+      }
+
       setError("Unable to load services at this time. Please try again.");
       setData(null);
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current && catalogGenRef.current === currentGen) {
+        setIsLoading(false);
+      }
     }
   }, [organizationId]);
 
   useEffect(() => {
+    // Invalidate pending join and reset queue state when organization identity changes
+    joinGenRef.current++;
+    isJoiningRef.current = false;
+    setJoiningQueueId(null);
+    setQueueError(null);
+
     fetchServices();
+
+    return () => {
+      if (activeCatalogControllerRef.current) {
+        activeCatalogControllerRef.current.abort();
+      }
+    };
   }, [fetchServices]);
 
   const handleJoinQueue = async (queueId: string) => {
@@ -148,7 +261,11 @@ function OrganizationServicesContent({
       return;
     }
 
-    if (joiningQueueId === queueId) return;
+    if (isJoiningRef.current) return;
+    isJoiningRef.current = true;
+
+    const currentJoinGen = ++joinGenRef.current;
+    let hasNavigated = false;
 
     setQueueError((prev) => (prev?.queueId === queueId ? null : prev));
     setJoiningQueueId(queueId);
@@ -162,6 +279,10 @@ function OrganizationServicesContent({
         body: JSON.stringify({ queueId }),
       });
 
+      if (!isMountedRef.current || joinGenRef.current !== currentJoinGen) {
+        return;
+      }
+
       if (response.status === 201) {
         const ticketData: unknown = await response.json();
 
@@ -173,11 +294,16 @@ function OrganizationServicesContent({
             "string" &&
           (ticketData as { trackingToken: string }).trackingToken.trim() !== ""
         ) {
+          hasNavigated = true;
           router.push(
             `/tickets/track/${encodeURIComponent(
               (ticketData as { trackingToken: string }).trackingToken,
             )}`,
           );
+          return;
+        }
+
+        if (!isMountedRef.current || joinGenRef.current !== currentJoinGen) {
           return;
         }
 
@@ -189,6 +315,7 @@ function OrganizationServicesContent({
       }
 
       if (response.status === 401) {
+        hasNavigated = true;
         router.push(
           `/sign-in?redirect_url=${encodeURIComponent(`/organizations/${organizationId}`)}`,
         );
@@ -221,6 +348,10 @@ function OrganizationServicesContent({
           // Fall back to default safe message
         }
 
+        if (!isMountedRef.current || joinGenRef.current !== currentJoinGen) {
+          return;
+        }
+
         setQueueError({
           queueId,
           message: errorMessage,
@@ -233,13 +364,22 @@ function OrganizationServicesContent({
         message: "Unable to join the queue at this time. Please try again.",
       });
     } catch {
+      if (!isMountedRef.current || joinGenRef.current !== currentJoinGen) {
+        return;
+      }
+
       setQueueError({
         queueId,
         message:
           "Unable to join the queue at this time. Please check your connection and try again.",
       });
     } finally {
-      setJoiningQueueId(null);
+      if (!hasNavigated) {
+        isJoiningRef.current = false;
+        if (isMountedRef.current && joinGenRef.current === currentJoinGen) {
+          setJoiningQueueId(null);
+        }
+      }
     }
   };
 
@@ -379,6 +519,7 @@ function OrganizationServicesContent({
                     {service.queues.map((queue) => {
                       const isSubmitting = joiningQueueId === queue.id;
                       const hasError = queueError?.queueId === queue.id;
+                      const errorId = `queue-error-${queue.id}`;
 
                       return (
                         <div
@@ -402,6 +543,7 @@ function OrganizationServicesContent({
                               disabled={
                                 isSubmitting || joiningQueueId !== null
                               }
+                              aria-describedby={hasError ? errorId : undefined}
                               aria-label={
                                 isSubmitting
                                   ? `Joining ${queue.name}...`
@@ -435,6 +577,7 @@ function OrganizationServicesContent({
 
                           {hasError && (
                             <div
+                              id={errorId}
                               role="alert"
                               className="mt-2.5 rounded-md border border-red-200 bg-red-50/80 p-2 text-xs text-red-700"
                             >
