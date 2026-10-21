@@ -3,81 +3,89 @@ import { getCurrentUser } from "@/lib/auth/current-user";
 import { createStaffSchema } from "@/lib/validations/staff";
 
 export async function GET(request: Request) {
-  const currentUser = await getCurrentUser();
+  try {
+    const currentUser = await getCurrentUser();
 
-  if (!currentUser) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+    if (!currentUser) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-  const { searchParams } = new URL(request.url);
-  const organizationId = searchParams.get("organizationId");
+    const { searchParams } = new URL(request.url);
+    const organizationId = searchParams.get("organizationId");
 
-  if (!organizationId) {
-    return Response.json(
-      { error: "Organization ID is required" },
-      { status: 400 },
-    );
-  }
+    if (!organizationId) {
+      return Response.json(
+        { error: "Organization ID is required" },
+        { status: 400 },
+      );
+    }
 
-  const membership = await prisma.organizationMembership.findUnique({
-    where: {
-      userId_organizationId: {
-        userId: currentUser.id,
+    const membership = await prisma.organizationMembership.findUnique({
+      where: {
+        userId_organizationId: {
+          userId: currentUser.id,
+          organizationId,
+        },
+      },
+    });
+
+    if (!membership || membership.role !== "ADMIN") {
+      return Response.json(
+        { error: "Organization admin access required" },
+        { status: 403 },
+      );
+    }
+
+    const staff = await prisma.organizationMembership.findMany({
+      where: {
         organizationId,
       },
-    },
-  });
-
-  if (!membership || membership.role !== "ADMIN") {
-    return Response.json(
-      { error: "Organization admin access required" },
-      { status: 403 },
-    );
-  }
-
-  const staff = await prisma.organizationMembership.findMany({
-    where: {
-      organizationId,
-      role: "STAFF",
-    },
-    include: {
-      user: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          counterAssignments: {
-            where: {
-              counter: {
-                organizationId,
+      orderBy: [
+        { role: "asc" },
+        { createdAt: "asc" },
+      ],
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            counterAssignments: {
+              where: {
+                counter: {
+                  organizationId,
+                },
               },
-            },
-            include: {
-              counter: {
-                select: {
-                  id: true,
-                  name: true,
+              include: {
+                counter: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
                 },
               },
             },
           },
         },
       },
-    },
-  });
+    });
 
-  const response = staff.map((member) => ({
-    id: member.user.id,
-    name: member.user.name,
-    email: member.user.email,
-    role: member.role,
-    counters: member.user.counterAssignments.map((assignment) => ({
-      id: assignment.counter.id,
-      name: assignment.counter.name,
-    })),
-  }));
+    const response = staff.map((member) => ({
+      id: member.user.id,
+      name: member.user.name,
+      email: member.user.email,
+      role: member.role,
+      counters: member.user.counterAssignments.map((assignment) => ({
+        id: assignment.counter.id,
+        name: assignment.counter.name,
+      })),
+    }));
 
-  return Response.json(response);
+    return Response.json(response);
+  } catch (error) {
+    console.error("Failed to fetch staff members:", error);
+    return Response.json({ error: "Internal server error" }, { status: 500 });
+  }
 }
 
 export async function POST(request: Request) {

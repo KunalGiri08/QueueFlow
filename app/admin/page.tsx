@@ -12,6 +12,7 @@ import {
 import { CounterManagement } from "@/components/admin/CounterManagement";
 import { ServiceManagement } from "@/components/admin/ServiceManagement";
 import { QueueManagement } from "@/components/admin/QueueManagement";
+import { StaffManagement } from "@/components/admin/StaffManagement";
 
 type AdminAuthResult = "authorized" | "forbidden" | "error";
 
@@ -490,50 +491,8 @@ export default function OrganizationAdminPage() {
                   {/* Section: Queue Management (Step 3B) */}
                   <QueueManagement organizationId={selectedOrg.id} />
 
-                  {/* Upcoming Modules Preview Cards */}
-                  <div className="space-y-4 pt-4 border-t border-gray-200/80">
-                    <div>
-                      <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-400">
-                        Upcoming Administration Modules
-                      </h3>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-
-                      {/* Staff & Assignments Card */}
-                      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm flex flex-col justify-between opacity-80">
-                        <div>
-                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100 text-gray-700">
-                            <svg
-                              className="h-5 w-5"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              strokeWidth="1.5"
-                              stroke="currentColor"
-                              aria-hidden="true"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z"
-                              />
-                            </svg>
-                          </div>
-                          <h4 className="mt-4 text-base font-semibold text-gray-900">
-                            Staff & Assignments
-                          </h4>
-                          <p className="mt-1 text-xs text-gray-500 leading-relaxed">
-                            Onboard staff operators and assign them to active counters to manage queue flow.
-                          </p>
-                        </div>
-                        <div className="mt-6 border-t border-gray-100 pt-3">
-                          <span className="inline-flex items-center rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-500">
-                            Step 4: Staff Onboarding & Assignment
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  {/* Section: Staff & Counter Assignments (Step 4) */}
+                  <StaffManagement organizationId={selectedOrg.id} />
                 </div>
               )}
             </div>

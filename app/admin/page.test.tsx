@@ -52,6 +52,14 @@ vi.mock("@/components/admin/QueueManagement", () => ({
   ),
 }));
 
+vi.mock("@/components/admin/StaffManagement", () => ({
+  StaffManagement: ({ organizationId }: { organizationId: string }) => (
+    <div data-testid="staff-management" data-org-id={organizationId}>
+      Staff Management ({organizationId})
+    </div>
+  ),
+}));
+
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -248,6 +256,9 @@ describe("OrganizationAdminPage", () => {
 
       const queueMgmt = screen.getByTestId("queue-management");
       expect(queueMgmt.getAttribute("data-org-id")).toBe("org-1");
+
+      const staffMgmt = screen.getByTestId("staff-management");
+      expect(staffMgmt.getAttribute("data-org-id")).toBe("org-1");
     });
 
     it("renders 403 Forbidden alert and suppresses management components when user is not admin", async () => {
@@ -279,6 +290,7 @@ describe("OrganizationAdminPage", () => {
       expect(screen.queryByTestId("counter-management")).toBeNull();
       expect(screen.queryByTestId("service-management")).toBeNull();
       expect(screen.queryByTestId("queue-management")).toBeNull();
+      expect(screen.queryByTestId("staff-management")).toBeNull();
     });
 
     it("redirects to sign-in when verification probe returns 401 Unauthorized", async () => {
