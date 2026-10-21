@@ -116,10 +116,24 @@ export async function GET() {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // CHANGED: Fetch appointments belonging only to the authenticated user
+  // CHANGED: Fetch appointments belonging only to the authenticated user, enriched with service and organization display details
   const appointments = await prisma.appointment.findMany({
     where: {
       userId: currentUser.id,
+    },
+    include: {
+      service: {
+        select: {
+          id: true,
+          name: true,
+          organization: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      },
     },
     orderBy: {
       scheduledAt: "asc",

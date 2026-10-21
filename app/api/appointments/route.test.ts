@@ -357,7 +357,7 @@ describe("GET /api/appointments", () => {
     expect(mockAppointmentFindMany).not.toHaveBeenCalled();
   });
 
-  it("returns appointments belonging only to the authenticated user", async () => {
+  it("returns appointments belonging only to the authenticated user with service and organization details", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
     const userAppointments = [
       {
@@ -366,6 +366,14 @@ describe("GET /api/appointments", () => {
         serviceId: "svc-1",
         scheduledAt: new Date(futureDate),
         status: "BOOKED",
+        service: {
+          id: "svc-1",
+          name: "General Consultation",
+          organization: {
+            id: "org-1",
+            name: "Metro Health",
+          },
+        },
       },
     ];
     mockAppointmentFindMany.mockResolvedValue(userAppointments);
@@ -381,6 +389,20 @@ describe("GET /api/appointments", () => {
     );
     expect(mockAppointmentFindMany).toHaveBeenCalledWith({
       where: { userId: "user-123" },
+      include: {
+        service: {
+          select: {
+            id: true,
+            name: true,
+            organization: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
+      },
       orderBy: { scheduledAt: "asc" },
     });
   });

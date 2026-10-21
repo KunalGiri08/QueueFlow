@@ -74,6 +74,12 @@ export function Navbar() {
             >
               My Tickets
             </Link>
+            <Link
+              href="/appointments"
+              className="text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 rounded-md px-2 py-1"
+            >
+              My Appointments
+            </Link>
             <UserButton />
           </Show>
         </div>
