@@ -59,10 +59,16 @@ export function CounterManagement({ organizationId }: CounterManagementProps) {
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
 
+  // Counter activation/deactivation operational states
+  const [updatingCounterId, setUpdatingCounterId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+
   // Concurrency & lifecycle refs
   const activeCounterControllerRef = useRef<AbortController | null>(null);
   const counterFetchGenerationRef = useRef<number>(0);
   const activeCreationRequestIdRef = useRef<number>(0);
+  const activeActionRequestIdRef = useRef<number>(0);
   const currentOrgIdRef = useRef<string>(organizationId);
 
   // Reset form inputs and errors when switching organizations
@@ -73,12 +79,16 @@ export function CounterManagement({ organizationId }: CounterManagementProps) {
     setFormError(null);
     setFormSuccess(null);
     setIsCreatingCounter(false);
+    setUpdatingCounterId(null);
+    setActionError(null);
+    setActionSuccess(null);
   }
 
   // Synchronize refs with organizationId prop
   useEffect(() => {
     currentOrgIdRef.current = organizationId;
     activeCreationRequestIdRef.current += 1;
+    activeActionRequestIdRef.current += 1;
   }, [organizationId]);
 
   // Counter fetching effect: fetches counters for the active organization
@@ -153,6 +163,8 @@ export function CounterManagement({ organizationId }: CounterManagementProps) {
   const handleRetryCounters = () => {
     setCountersOrgId(null);
     setCountersError(null);
+    setActionError(null);
+    setActionSuccess(null);
     setCountersRetryTrigger((prev) => prev + 1);
   };
 
@@ -279,6 +291,104 @@ export function CounterManagement({ organizationId }: CounterManagementProps) {
     } finally {
       if (activeCreationRequestIdRef.current === creationRequestId) {
         setIsCreatingCounter(false);
+      }
+    }
+  };
+
+  const handleToggleCounterStatus = async (counter: CounterItem) => {
+    if (updatingCounterId || isCountersLoading) return;
+
+    setActionError(null);
+    setActionSuccess(null);
+    setUpdatingCounterId(counter.id);
+
+    const actionRequestId = ++activeActionRequestIdRef.current;
+    const targetOrgId = organizationId;
+    const targetIsActive = !counter.isActive;
+
+    try {
+      const res = await fetch(
+        `/api/organizations/${encodeURIComponent(targetOrgId)}/counters/${encodeURIComponent(counter.id)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ isActive: targetIsActive }),
+        },
+      );
+
+      if (
+        currentOrgIdRef.current !== targetOrgId ||
+        activeActionRequestIdRef.current !== actionRequestId
+      ) {
+        return;
+      }
+
+      if (res.status === 401) {
+        router.push(`/sign-in?redirect_url=${encodeURIComponent("/admin")}`);
+        return;
+      }
+
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setActionError(
+          data.error ||
+            `Failed to ${targetIsActive ? "activate" : "deactivate"} counter "${counter.name}".`,
+        );
+        return;
+      }
+
+      const updated: unknown = await res.json();
+
+      if (
+        currentOrgIdRef.current !== targetOrgId ||
+        activeActionRequestIdRef.current !== actionRequestId
+      ) {
+        return;
+      }
+
+      if (
+        typeof updated === "object" &&
+        updated !== null &&
+        typeof (updated as { id?: unknown }).id === "string" &&
+        typeof (updated as { isActive?: unknown }).isActive === "boolean"
+      ) {
+        const validUpdated = updated as CounterItem;
+        setCounters((prev) =>
+          prev.map((c) =>
+            c.id === counter.id ? { ...c, isActive: validUpdated.isActive } : c,
+          ),
+        );
+        setActionSuccess(
+          `Counter "${counter.name}" ${
+            validUpdated.isActive ? "activated" : "deactivated"
+          } successfully.`,
+        );
+      } else {
+        setCounters((prev) =>
+          prev.map((c) =>
+            c.id === counter.id ? { ...c, isActive: targetIsActive } : c,
+          ),
+        );
+        setActionSuccess(
+          `Counter "${counter.name}" ${
+            targetIsActive ? "activated" : "deactivated"
+          } successfully.`,
+        );
+      }
+    } catch {
+      if (
+        currentOrgIdRef.current === targetOrgId &&
+        activeActionRequestIdRef.current === actionRequestId
+      ) {
+        setActionError(
+          `Failed to ${targetIsActive ? "activate" : "deactivate"} counter due to a network error. Please try again.`,
+        );
+      }
+    } finally {
+      if (activeActionRequestIdRef.current === actionRequestId) {
+        setUpdatingCounterId(null);
       }
     }
   };
@@ -458,6 +568,71 @@ export function CounterManagement({ organizationId }: CounterManagementProps) {
         </form>
       </div>
 
+      {/* Global Counter Action Feedback Alerts */}
+      {actionError && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-200 bg-red-50 p-3.5 text-xs sm:text-sm font-medium text-red-800 shadow-sm flex items-start justify-between gap-3"
+        >
+          <div className="flex items-center gap-2">
+            <svg
+              className="h-4 w-4 text-red-600 shrink-0"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="1.5"
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
+              />
+            </svg>
+            <span>{actionError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            className="text-red-600 hover:text-red-900 text-xs font-semibold shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {actionSuccess && (
+        <div
+          role="status"
+          className="rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-xs sm:text-sm font-medium text-emerald-800 shadow-sm flex items-start justify-between gap-3"
+        >
+          <div className="flex items-center gap-2">
+            <svg
+              className="h-4 w-4 text-emerald-600 shrink-0"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="1.5"
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+              />
+            </svg>
+            <span>{actionSuccess}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionSuccess(null)}
+            className="text-emerald-600 hover:text-emerald-900 text-xs font-semibold shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Counters List State Container */}
       <div>
         {isCountersLoading ? (
@@ -505,37 +680,91 @@ export function CounterManagement({ organizationId }: CounterManagementProps) {
         ) : (
           /* Populated State: Grid of Counters */
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {displayedCounters.map((counter) => (
-              <div
-                key={counter.id}
-                className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-gray-300 flex flex-col justify-between gap-4"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="space-y-1">
-                    <h4 className="text-base font-semibold text-gray-900">
-                      {counter.name}
-                    </h4>
-                    <span className="block font-mono text-xs text-gray-400">
-                      ID: {counter.id}
-                    </span>
+            {displayedCounters.map((counter) => {
+              const isCounterUpdating = updatingCounterId === counter.id;
+              const isAnyCounterUpdating = Boolean(updatingCounterId);
+
+              return (
+                <div
+                  key={counter.id}
+                  className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-gray-300 flex flex-col justify-between gap-4"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      <h4 className="text-base font-semibold text-gray-900">
+                        {counter.name}
+                      </h4>
+                      <span className="block font-mono text-xs text-gray-400">
+                        ID: {counter.id}
+                      </span>
+                    </div>
+                    {counter.isActive ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200/80">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        Active
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-600 border border-gray-200">
+                        <span className="h-1.5 w-1.5 rounded-full bg-gray-400" />
+                        Inactive
+                      </span>
+                    )}
                   </div>
-                  {counter.isActive ? (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200/80">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                      Active
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-600 border border-gray-200">
-                      <span className="h-1.5 w-1.5 rounded-full bg-gray-400" />
-                      Inactive
-                    </span>
-                  )}
+
+                  <div className="flex items-center justify-between gap-2 border-t border-gray-100 pt-3 text-xs text-gray-400">
+                    <span>{formatCreationDate(counter.createdAt)}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleCounterStatus(counter)}
+                      disabled={
+                        isAnyCounterUpdating ||
+                        isCountersLoading ||
+                        isCreatingCounter
+                      }
+                      aria-label={`${
+                        counter.isActive ? "Deactivate" : "Activate"
+                      } ${counter.name}`}
+                      className={`inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none ${
+                        counter.isActive
+                          ? "border-gray-300 bg-white text-gray-700 hover:bg-gray-50 hover:text-red-700 hover:border-red-200"
+                          : "border-gray-300 bg-white text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300"
+                      }`}
+                    >
+                      {isCounterUpdating ? (
+                        <>
+                          <svg
+                            className="mr-1.5 h-3.5 w-3.5 animate-spin text-gray-500"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                          >
+                            <circle
+                              className="opacity-25"
+                              cx="12"
+                              cy="12"
+                              r="10"
+                              stroke="currentColor"
+                              strokeWidth="4"
+                            />
+                            <path
+                              className="opacity-75"
+                              fill="currentColor"
+                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                            />
+                          </svg>
+                          {counter.isActive
+                            ? "Deactivating..."
+                            : "Activating..."}
+                        </>
+                      ) : counter.isActive ? (
+                        "Deactivate"
+                      ) : (
+                        "Activate"
+                      )}
+                    </button>
+                  </div>
                 </div>
-                <div className="border-t border-gray-100 pt-3 text-xs text-gray-400">
-                  {formatCreationDate(counter.createdAt)}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

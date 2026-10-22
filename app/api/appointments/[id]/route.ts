@@ -126,12 +126,16 @@ export async function PATCH(
       }
 
       // Serialize rescheduling and creation for this service.
-      await tx.$queryRaw`
-        SELECT "id"
+      const serviceRows = await tx.$queryRaw<{ id: string; isActive?: boolean }[]>`
+        SELECT "id", "isActive"
         FROM "Service"
         WHERE "id" = ${appointment.serviceId}
         FOR UPDATE
       `;
+
+      if (serviceRows && serviceRows.length > 0 && serviceRows[0]?.isActive === false) {
+        throw new Error("SERVICE_NOT_ACTIVE");
+      }
 
       const existingAppointment = await tx.appointment.findFirst({
         where: {
@@ -174,6 +178,13 @@ export async function PATCH(
         return Response.json(
           { error: "Appointment not found" },
           { status: 404 },
+        );
+      }
+
+      if (error.message === "SERVICE_NOT_ACTIVE") {
+        return Response.json(
+          { error: "Service is not active" },
+          { status: 400 },
         );
       }
 

@@ -440,4 +440,303 @@ describe("components/admin/CounterManagement", () => {
       ).toBeNull();
     });
   });
+
+  describe("Counter activation and deactivation controls", () => {
+    it("successfully deactivates an active counter and updates UI status", async () => {
+      const mockCounters = [
+        {
+          id: "counter-1",
+          name: "Window A",
+          organizationId: "org-1",
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH" && url.includes("/api/organizations/org-1/counters/counter-1")) {
+          const body = JSON.parse(init.body as string);
+          expect(body).toEqual({ isActive: false });
+          return new Response(
+            JSON.stringify({
+              ...mockCounters[0],
+              isActive: false,
+              updatedAt: "2026-03-01T11:00:00.000Z",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify(mockCounters), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+
+      render(<CounterManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Window A")).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+
+      const deactivateBtn = screen.getByRole("button", {
+        name: /deactivate window a/i,
+      });
+      expect(deactivateBtn).toBeDefined();
+
+      fireEvent.click(deactivateBtn);
+
+      expect(
+        await screen.findByText('Counter "Window A" deactivated successfully.'),
+      ).toBeDefined();
+      expect(screen.getByText("Inactive")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /activate window a/i }),
+      ).toBeDefined();
+    });
+
+    it("successfully activates an inactive counter and updates UI status", async () => {
+      const mockCounters = [
+        {
+          id: "counter-2",
+          name: "Desk B",
+          organizationId: "org-1",
+          isActive: false,
+          createdAt: "2026-03-01T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH" && url.includes("/api/organizations/org-1/counters/counter-2")) {
+          const body = JSON.parse(init.body as string);
+          expect(body).toEqual({ isActive: true });
+          return new Response(
+            JSON.stringify({
+              ...mockCounters[0],
+              isActive: true,
+              updatedAt: "2026-03-01T11:00:00.000Z",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify(mockCounters), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+
+      render(<CounterManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Desk B")).toBeDefined();
+      expect(screen.getByText("Inactive")).toBeDefined();
+
+      const activateBtn = screen.getByRole("button", {
+        name: /activate desk b/i,
+      });
+      expect(activateBtn).toBeDefined();
+
+      fireEvent.click(activateBtn);
+
+      expect(
+        await screen.findByText('Counter "Desk B" activated successfully.'),
+      ).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /deactivate desk b/i }),
+      ).toBeDefined();
+    });
+
+    it("handles request failure and keeps UI status consistent without false optimistic updates", async () => {
+      const mockCounters = [
+        {
+          id: "counter-1",
+          name: "Window A",
+          organizationId: "org-1",
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return new Response(
+            JSON.stringify({
+              error: "Cannot deactivate counter while it has an active ticket",
+            }),
+            { status: 409, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify(mockCounters), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+
+      render(<CounterManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Window A")).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+
+      const deactivateBtn = screen.getByRole("button", {
+        name: /deactivate window a/i,
+      });
+      fireEvent.click(deactivateBtn);
+
+      expect(
+        await screen.findByText(
+          "Cannot deactivate counter while it has an active ticket",
+        ),
+      ).toBeDefined();
+
+      // UI status remains Active and button remains Deactivate
+      expect(screen.getByText("Active")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /deactivate window a/i }),
+      ).toBeDefined();
+    });
+
+    it("displays pending state and disables the button during in-flight status update", async () => {
+      const deferredPatch = createDeferred<Response>();
+      const mockCounters = [
+        {
+          id: "counter-1",
+          name: "Window A",
+          organizationId: "org-1",
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return deferredPatch.promise;
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify(mockCounters), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      });
+
+      render(<CounterManagement organizationId="org-1" />);
+
+      const deactivateBtn = await screen.findByRole("button", {
+        name: /deactivate window a/i,
+      });
+      expect((deactivateBtn as HTMLButtonElement).disabled).toBe(false);
+
+      fireEvent.click(deactivateBtn);
+
+      // Pending state: text changes to Deactivating... and button is disabled
+      expect(screen.getByText(/deactivating\.\.\./i)).toBeDefined();
+      expect((deactivateBtn as HTMLButtonElement).disabled).toBe(true);
+
+      // Resolve the request
+      deferredPatch.resolve(
+        new Response(
+          JSON.stringify({
+            ...mockCounters[0],
+            isActive: false,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+      // Once resolved, button returns to normal with Activate label
+      expect(
+        await screen.findByRole("button", { name: /activate window a/i }),
+      ).toBeDefined();
+      expect(
+        (
+          screen.getByRole("button", {
+            name: /activate window a/i,
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+    });
+
+    it("discards status update response if organization was switched while update was in flight", async () => {
+      const deferredPatch = createDeferred<Response>();
+
+      fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH") {
+          return deferredPatch.promise;
+        }
+        if (url.includes("/api/organizations/org-A/counters")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify([
+                {
+                  id: "counter-a",
+                  name: "Org A Counter",
+                  organizationId: "org-A",
+                  isActive: true,
+                  createdAt: "2026-03-01T00:00:00.000Z",
+                },
+              ]),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/organizations/org-B/counters")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify([
+                {
+                  id: "counter-b",
+                  name: "Org B Counter",
+                  organizationId: "org-B",
+                  isActive: true,
+                  createdAt: "2026-03-01T00:00:00.000Z",
+                },
+              ]),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      });
+
+      // 1. Initial render on org-A
+      const { rerender } = render(<CounterManagement organizationId="org-A" />);
+      const deactivateBtn = await screen.findByRole("button", {
+        name: /deactivate org a counter/i,
+      });
+
+      // 2. Click deactivate on org-A counter
+      fireEvent.click(deactivateBtn);
+      expect(screen.getByText(/deactivating\.\.\./i)).toBeDefined();
+
+      // 3. User switches to org-B while request is in flight
+      rerender(<CounterManagement organizationId="org-B" />);
+      expect(await screen.findByText("Org B Counter")).toBeDefined();
+
+      // 4. Resolve org-A patch
+      deferredPatch.resolve(
+        new Response(
+          JSON.stringify({
+            id: "counter-a",
+            name: "Org A Counter",
+            organizationId: "org-A",
+            isActive: false,
+            createdAt: "2026-03-01T00:00:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+      // 5. Ensure no success message or state pollution leaked into org-B
+      expect(
+        screen.queryByText('Counter "Org A Counter" deactivated successfully.'),
+      ).toBeNull();
+      expect(screen.getByText("Org B Counter")).toBeDefined();
+    });
+  });
 });

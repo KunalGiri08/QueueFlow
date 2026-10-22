@@ -30,6 +30,7 @@ export async function GET(
     const services = await prisma.service.findMany({
       where: {
         organizationId,
+        isActive: true,
       },
       select: {
         id: true,

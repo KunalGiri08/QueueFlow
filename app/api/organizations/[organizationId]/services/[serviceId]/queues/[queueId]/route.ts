@@ -101,6 +101,7 @@ export async function PATCH(
       );
     }
 
-    throw error;
+    console.error("Failed to update queue:", error);
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
 }

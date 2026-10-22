@@ -9,6 +9,7 @@ export interface ServiceItem {
   name: string;
   description: string | null;
   organizationId: string;
+  isActive: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -60,10 +61,16 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
   const [serviceFormError, setServiceFormError] = useState<string | null>(null);
   const [serviceFormSuccess, setServiceFormSuccess] = useState<string | null>(null);
 
+  // Service activation/deactivation operational states
+  const [updatingServiceId, setUpdatingServiceId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+
   // Concurrency & lifecycle refs
   const activeServiceControllerRef = useRef<AbortController | null>(null);
   const serviceFetchGenerationRef = useRef<number>(0);
   const activeServiceCreationRequestIdRef = useRef<number>(0);
+  const activeActionRequestIdRef = useRef<number>(0);
   const currentOrgIdRef = useRef<string>(organizationId);
   const isCreatingServiceRef = useRef<boolean>(false);
 
@@ -76,13 +83,17 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
     setServiceFormError(null);
     setServiceFormSuccess(null);
     setIsCreatingService(false);
-    isCreatingServiceRef.current = false;
+    setUpdatingServiceId(null);
+    setActionError(null);
+    setActionSuccess(null);
   }
 
   // Synchronize refs with organizationId prop
   useEffect(() => {
+    isCreatingServiceRef.current = false;
     currentOrgIdRef.current = organizationId;
     activeServiceCreationRequestIdRef.current += 1;
+    activeActionRequestIdRef.current += 1;
   }, [organizationId]);
 
   // Service fetching effect: triggers when organizationId changes or retry is clicked
@@ -116,8 +127,9 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
           throw new Error("Malformed services response");
         }
 
-        const validated: ServiceItem[] = data.filter(
-          (s): s is ServiceItem =>
+        const validated: ServiceItem[] = [];
+        for (const s of data) {
+          if (
             typeof s === "object" &&
             s !== null &&
             typeof (s as { id?: unknown }).id === "string" &&
@@ -126,8 +138,23 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
               typeof (s as { description?: unknown }).description === "string") &&
             typeof (s as { organizationId?: unknown }).organizationId === "string" &&
             typeof (s as { createdAt?: unknown }).createdAt === "string" &&
-            typeof (s as { updatedAt?: unknown }).updatedAt === "string",
-        );
+            typeof (s as { updatedAt?: unknown }).updatedAt === "string"
+          ) {
+            validated.push({
+              id: (s as { id: string }).id,
+              name: (s as { name: string }).name,
+              description:
+                (s as { description: string | null }).description ?? null,
+              organizationId: (s as { organizationId: string }).organizationId,
+              isActive:
+                typeof (s as { isActive?: unknown }).isActive === "boolean"
+                  ? (s as { isActive: boolean }).isActive
+                  : true,
+              createdAt: (s as { createdAt: string }).createdAt,
+              updatedAt: (s as { updatedAt: string }).updatedAt,
+            });
+          }
+        }
 
         validated.sort((a, b) =>
           a.name.localeCompare(b.name, undefined, { numeric: true }),
@@ -166,7 +193,107 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
   const handleRetryServices = () => {
     setServicesOrgId(null);
     setServicesError(null);
+    setActionError(null);
+    setActionSuccess(null);
     setServicesRetryTrigger((prev) => prev + 1);
+  };
+
+  const handleToggleServiceStatus = async (service: ServiceItem) => {
+    if (updatingServiceId || isServicesLoading) return;
+
+    setActionError(null);
+    setActionSuccess(null);
+    setUpdatingServiceId(service.id);
+
+    const actionRequestId = ++activeActionRequestIdRef.current;
+    const targetOrgId = organizationId;
+    const targetIsActive = !service.isActive;
+
+    try {
+      const res = await fetch(
+        `/api/organizations/${encodeURIComponent(targetOrgId)}/services/${encodeURIComponent(service.id)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ isActive: targetIsActive }),
+        },
+      );
+
+      if (
+        currentOrgIdRef.current !== targetOrgId ||
+        activeActionRequestIdRef.current !== actionRequestId
+      ) {
+        return;
+      }
+
+      if (res.status === 401) {
+        router.push(`/sign-in?redirect_url=${encodeURIComponent("/admin")}`);
+        return;
+      }
+
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setActionError(
+          data.error ||
+            `Failed to ${targetIsActive ? "activate" : "deactivate"} service "${service.name}".`,
+        );
+        return;
+      }
+
+      const updated: unknown = await res.json();
+
+      if (
+        currentOrgIdRef.current !== targetOrgId ||
+        activeActionRequestIdRef.current !== actionRequestId
+      ) {
+        return;
+      }
+
+      if (
+        typeof updated === "object" &&
+        updated !== null &&
+        typeof (updated as { id?: unknown }).id === "string" &&
+        typeof (updated as { isActive?: unknown }).isActive === "boolean"
+      ) {
+        const validUpdated = updated as ServiceItem;
+        setServices((prev) =>
+          prev.map((s) =>
+            s.id === service.id ? { ...s, isActive: validUpdated.isActive } : s,
+          ),
+        );
+        setActionSuccess(
+          `Service "${service.name}" ${
+            validUpdated.isActive ? "activated" : "deactivated"
+          } successfully.`,
+        );
+      } else {
+        setServices((prev) =>
+          prev.map((s) =>
+            s.id === service.id ? { ...s, isActive: targetIsActive } : s,
+          ),
+        );
+        setActionSuccess(
+          `Service "${service.name}" ${
+            targetIsActive ? "activated" : "deactivated"
+          } successfully.`,
+        );
+      }
+    } catch {
+      if (
+        currentOrgIdRef.current === targetOrgId &&
+        activeActionRequestIdRef.current === actionRequestId
+      ) {
+        setActionError(
+          `Failed to ${targetIsActive ? "activate" : "deactivate"} service due to a network error. Please try again.`,
+        );
+      }
+    } finally {
+      if (activeActionRequestIdRef.current === actionRequestId) {
+        setUpdatingServiceId(null);
+      }
+    }
   };
 
   const handleCreateService = async (e: React.FormEvent) => {
@@ -278,7 +405,19 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
         typeof (newService as { createdAt?: unknown }).createdAt === "string" &&
         typeof (newService as { updatedAt?: unknown }).updatedAt === "string"
       ) {
-        const validService = newService as ServiceItem;
+        const validService: ServiceItem = {
+          id: (newService as { id: string }).id,
+          name: (newService as { name: string }).name,
+          description:
+            (newService as { description: string | null }).description ?? null,
+          organizationId: (newService as { organizationId: string }).organizationId,
+          isActive:
+            typeof (newService as { isActive?: unknown }).isActive === "boolean"
+              ? (newService as { isActive: boolean }).isActive
+              : true,
+          createdAt: (newService as { createdAt: string }).createdAt,
+          updatedAt: (newService as { updatedAt: string }).updatedAt,
+        };
         setServices((prev) => {
           const updated = [...prev, validService];
           updated.sort((a, b) =>
@@ -518,6 +657,71 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
         </form>
       </div>
 
+      {/* Global Service Action Feedback Alerts */}
+      {actionError && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-200 bg-red-50 p-3.5 text-xs sm:text-sm font-medium text-red-800 shadow-sm flex items-start justify-between gap-3"
+        >
+          <div className="flex items-center gap-2">
+            <svg
+              className="h-4 w-4 text-red-600 shrink-0"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="1.5"
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
+              />
+            </svg>
+            <span>{actionError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            className="text-red-600 hover:text-red-900 text-xs font-semibold shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {actionSuccess && (
+        <div
+          role="status"
+          className="rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-xs sm:text-sm font-medium text-emerald-800 shadow-sm flex items-start justify-between gap-3"
+        >
+          <div className="flex items-center gap-2">
+            <svg
+              className="h-4 w-4 text-emerald-600 shrink-0"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="1.5"
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+              />
+            </svg>
+            <span>{actionSuccess}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionSuccess(null)}
+            className="text-emerald-600 hover:text-emerald-900 text-xs font-semibold shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Services List State Container */}
       <div>
         {isServicesLoading ? (
@@ -565,35 +769,100 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
         ) : (
           /* Populated State: Grid of Services */
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {displayedServices.map((service) => (
-              <div
-                key={service.id}
-                className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-gray-300 flex flex-col justify-between gap-4"
-              >
-                <div className="space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <h4 className="text-base font-semibold text-gray-900">
-                      {service.name}
-                    </h4>
+            {displayedServices.map((service) => {
+              const isServiceUpdating = updatingServiceId === service.id;
+              const isAnyServiceUpdating = Boolean(updatingServiceId);
+
+              return (
+                <div
+                  key={service.id}
+                  className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-gray-300 flex flex-col justify-between gap-4"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <h4 className="text-base font-semibold text-gray-900">
+                        {service.name}
+                      </h4>
+                      {service.isActive ? (
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200/80">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                          Active
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-600 border border-gray-200">
+                          <span className="h-1.5 w-1.5 rounded-full bg-gray-400" />
+                          Inactive
+                        </span>
+                      )}
+                    </div>
+                    {service.description ? (
+                      <p className="text-xs text-gray-600 line-clamp-2">
+                        {service.description}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-400 italic">
+                        No description provided
+                      </p>
+                    )}
+                    <span className="block font-mono text-xs text-gray-400">
+                      ID: {service.id}
+                    </span>
                   </div>
-                  {service.description ? (
-                    <p className="text-xs text-gray-600 line-clamp-2">
-                      {service.description}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-gray-400 italic">
-                      No description provided
-                    </p>
-                  )}
-                  <span className="block font-mono text-xs text-gray-400">
-                    ID: {service.id}
-                  </span>
+
+                  <div className="flex items-center justify-between gap-2 border-t border-gray-100 pt-3 text-xs text-gray-400">
+                    <span>{formatCreationDate(service.createdAt)}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleServiceStatus(service)}
+                      disabled={
+                        isAnyServiceUpdating ||
+                        isServicesLoading ||
+                        isCreatingService
+                      }
+                      aria-label={`${
+                        service.isActive ? "Deactivate" : "Activate"
+                      } ${service.name}`}
+                      className={`inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none ${
+                        service.isActive
+                          ? "border-gray-300 bg-white text-gray-700 hover:bg-gray-50 hover:text-red-700 hover:border-red-200"
+                          : "border-gray-300 bg-white text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300"
+                      }`}
+                    >
+                      {isServiceUpdating ? (
+                        <>
+                          <svg
+                            className="mr-1.5 h-3.5 w-3.5 animate-spin text-gray-500"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                          >
+                            <circle
+                              className="opacity-25"
+                              cx="12"
+                              cy="12"
+                              r="10"
+                              stroke="currentColor"
+                              strokeWidth="4"
+                            />
+                            <path
+                              className="opacity-75"
+                              fill="currentColor"
+                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                            />
+                          </svg>
+                          {service.isActive
+                            ? "Deactivating..."
+                            : "Activating..."}
+                        </>
+                      ) : service.isActive ? (
+                        "Deactivate"
+                      ) : (
+                        "Activate"
+                      )}
+                    </button>
+                  </div>
                 </div>
-                <div className="border-t border-gray-100 pt-3 text-xs text-gray-400">
-                  {formatCreationDate(service.createdAt)}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

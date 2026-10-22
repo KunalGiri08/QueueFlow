@@ -207,7 +207,40 @@ describe("POST /api/tickets", () => {
     });
     expect(mockQueueFindUnique).toHaveBeenCalledWith({
       where: { id: queueId },
-      select: { id: true, isActive: true },
+      select: {
+        id: true,
+        isActive: true,
+        service: {
+          select: { id: true, isActive: true },
+        },
+      },
+    });
+    expect(mockQueryRaw).not.toHaveBeenCalled();
+    expect(mockTicketCreate).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when the queue's service is inactive", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: userId });
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: false,
+      },
+    });
+
+    const request = new Request("http://localhost/api/tickets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queueId }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Service category is not active",
     });
     expect(mockQueryRaw).not.toHaveBeenCalled();
     expect(mockTicketCreate).not.toHaveBeenCalled();
@@ -416,7 +449,13 @@ describe("POST /api/tickets", () => {
     expect(mockTransaction).toHaveBeenCalledTimes(1);
     expect(mockQueueFindUnique).toHaveBeenCalledWith({
       where: { id: queueId },
-      select: { id: true, isActive: true },
+      select: {
+        id: true,
+        isActive: true,
+        service: {
+          select: { id: true, isActive: true },
+        },
+      },
     });
     expect(mockQueryRaw).toHaveBeenCalledTimes(1);
     expect(mockTicketFindFirst).toHaveBeenCalledWith({

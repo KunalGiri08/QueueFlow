@@ -149,6 +149,7 @@ describe("GET /api/public/organizations/[organizationId]/services", () => {
     expect(mockServiceFindMany).toHaveBeenCalledWith({
       where: {
         organizationId,
+        isActive: true,
       },
       select: {
         id: true,

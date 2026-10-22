@@ -71,6 +71,7 @@ model Service {
   name           String
   description    String?
   organizationId String
+  isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

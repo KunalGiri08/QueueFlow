@@ -19,6 +19,7 @@ export interface ServiceOption {
   name: string;
   description: string | null;
   organizationId: string;
+  isActive?: boolean;
 }
 
 export interface QueueManagementProps {
@@ -89,12 +90,18 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
 
+  // Queue activation/deactivation operational states
+  const [updatingQueueId, setUpdatingQueueId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+
   // Concurrency & lifecycle refs
   const activeServicesControllerRef = useRef<AbortController | null>(null);
   const activeQueuesControllerRef = useRef<AbortController | null>(null);
   const servicesFetchGenRef = useRef<number>(0);
   const queuesFetchGenRef = useRef<number>(0);
   const activeCreationRequestIdRef = useRef<number>(0);
+  const activeActionRequestIdRef = useRef<number>(0);
   const currentOrgIdRef = useRef<string>(organizationId);
   const currentServiceIdRef = useRef<string | null>(selectedServiceId);
   const isCreatingQueueRef = useRef<boolean>(false);
@@ -114,16 +121,18 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     setFormError(null);
     setFormSuccess(null);
     setIsCreatingQueue(false);
-    isCreatingQueueRef.current = false;
-    currentOrgIdRef.current = organizationId;
-    currentServiceIdRef.current = null;
-    activeCreationRequestIdRef.current += 1;
+    setUpdatingQueueId(null);
+    setActionError(null);
+    setActionSuccess(null);
   }
 
   // Synchronize currentOrgIdRef with prop
   useEffect(() => {
+    isCreatingQueueRef.current = false;
     currentOrgIdRef.current = organizationId;
+    currentServiceIdRef.current = null;
     activeCreationRequestIdRef.current += 1;
+    activeActionRequestIdRef.current += 1;
   }, [organizationId]);
 
   // Synchronize currentServiceIdRef with state
@@ -166,16 +175,30 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
           throw new Error("Malformed services response");
         }
 
-        const validated: ServiceOption[] = data.filter(
-          (s): s is ServiceOption =>
+        const validated: ServiceOption[] = [];
+        for (const s of data) {
+          if (
             typeof s === "object" &&
             s !== null &&
             typeof (s as { id?: unknown }).id === "string" &&
             typeof (s as { name?: unknown }).name === "string" &&
             ((s as { description?: unknown }).description === null ||
               typeof (s as { description?: unknown }).description === "string") &&
-            typeof (s as { organizationId?: unknown }).organizationId === "string",
-        );
+            typeof (s as { organizationId?: unknown }).organizationId === "string"
+          ) {
+            validated.push({
+              id: (s as { id: string }).id,
+              name: (s as { name: string }).name,
+              description:
+                (s as { description: string | null }).description ?? null,
+              organizationId: (s as { organizationId: string }).organizationId,
+              isActive:
+                typeof (s as { isActive?: unknown }).isActive === "boolean"
+                  ? (s as { isActive: boolean }).isActive
+                  : true,
+            });
+          }
+        }
 
         validated.sort((a, b) =>
           a.name.localeCompare(b.name, undefined, { numeric: true }),
@@ -315,6 +338,8 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
   const handleRetryQueues = () => {
     setQueuesServiceId(null);
     setQueuesError(null);
+    setActionError(null);
+    setActionSuccess(null);
     setQueuesRetryTrigger((prev) => prev + 1);
   };
 
@@ -322,8 +347,12 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     setSelectedServiceId(newServiceId);
     currentServiceIdRef.current = newServiceId;
     activeCreationRequestIdRef.current += 1;
+    activeActionRequestIdRef.current += 1;
     isCreatingQueueRef.current = false;
     setIsCreatingQueue(false);
+    setUpdatingQueueId(null);
+    setActionError(null);
+    setActionSuccess(null);
     setNewQueueName("");
     setFormError(null);
     setFormSuccess(null);
@@ -472,6 +501,109 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     }
   };
 
+  const handleToggleQueueStatus = async (queue: QueueItem) => {
+    if (updatingQueueId || isQueuesLoading || !selectedServiceId) return;
+
+    setActionError(null);
+    setActionSuccess(null);
+    setUpdatingQueueId(queue.id);
+
+    const actionRequestId = ++activeActionRequestIdRef.current;
+    const targetOrgId = organizationId;
+    const targetServiceId = selectedServiceId;
+    const targetIsActive = !queue.isActive;
+
+    try {
+      const res = await fetch(
+        `/api/organizations/${encodeURIComponent(targetOrgId)}/services/${encodeURIComponent(targetServiceId)}/queues/${encodeURIComponent(queue.id)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ isActive: targetIsActive }),
+        },
+      );
+
+      // Verify the user is still on the same organization, service, and active request
+      if (
+        currentOrgIdRef.current !== targetOrgId ||
+        currentServiceIdRef.current !== targetServiceId ||
+        activeActionRequestIdRef.current !== actionRequestId
+      ) {
+        return;
+      }
+
+      if (res.status === 401) {
+        router.push(`/sign-in?redirect_url=${encodeURIComponent("/admin")}`);
+        return;
+      }
+
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setActionError(
+          data.error ||
+            `Failed to ${targetIsActive ? "activate" : "deactivate"} queue "${queue.name}".`,
+        );
+        return;
+      }
+
+      const updated: unknown = await res.json();
+
+      if (
+        currentOrgIdRef.current !== targetOrgId ||
+        currentServiceIdRef.current !== targetServiceId ||
+        activeActionRequestIdRef.current !== actionRequestId
+      ) {
+        return;
+      }
+
+      if (
+        typeof updated === "object" &&
+        updated !== null &&
+        typeof (updated as { id?: unknown }).id === "string" &&
+        typeof (updated as { isActive?: unknown }).isActive === "boolean"
+      ) {
+        const validUpdated = updated as QueueItem;
+        setQueues((prev) =>
+          prev.map((q) =>
+            q.id === queue.id ? { ...q, isActive: validUpdated.isActive } : q,
+          ),
+        );
+        setActionSuccess(
+          `Queue "${queue.name}" ${
+            validUpdated.isActive ? "activated" : "deactivated"
+          } successfully.`,
+        );
+      } else {
+        setQueues((prev) =>
+          prev.map((q) =>
+            q.id === queue.id ? { ...q, isActive: targetIsActive } : q,
+          ),
+        );
+        setActionSuccess(
+          `Queue "${queue.name}" ${
+            targetIsActive ? "activated" : "deactivated"
+          } successfully.`,
+        );
+      }
+    } catch {
+      if (
+        currentOrgIdRef.current === targetOrgId &&
+        currentServiceIdRef.current === targetServiceId &&
+        activeActionRequestIdRef.current === actionRequestId
+      ) {
+        setActionError(
+          `Failed to ${targetIsActive ? "activate" : "deactivate"} queue due to a network error. Please try again.`,
+        );
+      }
+    } finally {
+      if (activeActionRequestIdRef.current === actionRequestId) {
+        setUpdatingQueueId(null);
+      }
+    }
+  };
+
   const isServicesLoading = Boolean(servicesOrgId !== organizationId);
   const isQueuesLoading = Boolean(
     selectedServiceId !== null && queuesServiceId !== selectedServiceId,
@@ -603,7 +735,7 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
                 >
                   {services.map((service) => (
                     <option key={service.id} value={service.id}>
-                      {service.name}
+                      {service.name}{service.isActive === false ? " (Inactive)" : ""}
                     </option>
                   ))}
                 </select>
@@ -744,6 +876,71 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
             </div>
           )}
 
+          {/* Global Queue Action Feedback Alerts */}
+          {actionError && (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 p-3.5 text-xs sm:text-sm font-medium text-red-800 shadow-sm flex items-start justify-between gap-3"
+            >
+              <div className="flex items-center gap-2">
+                <svg
+                  className="h-4 w-4 text-red-600 shrink-0"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth="1.5"
+                  stroke="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
+                  />
+                </svg>
+                <span>{actionError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActionError(null)}
+                className="text-red-600 hover:text-red-900 text-xs font-semibold shrink-0"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {actionSuccess && (
+            <div
+              role="status"
+              className="rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-xs sm:text-sm font-medium text-emerald-800 shadow-sm flex items-start justify-between gap-3"
+            >
+              <div className="flex items-center gap-2">
+                <svg
+                  className="h-4 w-4 text-emerald-600 shrink-0"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth="1.5"
+                  stroke="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+                  />
+                </svg>
+                <span>{actionSuccess}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActionSuccess(null)}
+                className="text-emerald-600 hover:text-emerald-900 text-xs font-semibold shrink-0"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
           {/* Queues List State Container */}
           <div>
             {isQueuesLoading ? (
@@ -763,7 +960,7 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
                 </button>
               </div>
             ) : displayedQueues.length === 0 ? (
-              /* Empty State: No active queues for this service */
+              /* Empty State: No queues for this service */
               <div className="rounded-xl border border-dashed border-gray-300 bg-white p-8 text-center shadow-sm">
                 <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-gray-500">
                   <svg
@@ -789,44 +986,105 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
                 </p>
               </div>
             ) : (
-              /* Populated State: Grid of Active Queues */
+              /* Populated State: Grid of Queues */
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {displayedQueues.map((queue) => (
-                  <div
-                    key={queue.id}
-                    className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-gray-300 flex flex-col justify-between gap-4"
-                  >
-                    <div className="space-y-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="space-y-1">
-                          <h4 className="text-base font-semibold text-gray-900">
-                            {queue.name}
-                          </h4>
-                          <span className="block font-mono text-xs text-gray-400">
-                            ID: {queue.id}
+                {displayedQueues.map((queue) => {
+                  const isQueueUpdating = updatingQueueId === queue.id;
+                  const isAnyQueueUpdating = Boolean(updatingQueueId);
+
+                  return (
+                    <div
+                      key={queue.id}
+                      className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-gray-300 flex flex-col justify-between gap-4"
+                    >
+                      <div className="space-y-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="space-y-1">
+                            <h4 className="text-base font-semibold text-gray-900">
+                              {queue.name}
+                            </h4>
+                            <span className="block font-mono text-xs text-gray-400">
+                              ID: {queue.id}
+                            </span>
+                          </div>
+                          {queue.isActive ? (
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200/80">
+                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                              Active
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-600 border border-gray-200">
+                              <span className="h-1.5 w-1.5 rounded-full bg-gray-400" />
+                              Inactive
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                          <span className="font-medium text-gray-500">
+                            Next Ticket Number
+                          </span>
+                          <span className="font-mono font-bold text-gray-900">
+                            #{queue.nextTicketNumber}
                           </span>
                         </div>
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200/80">
-                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                          Active
-                        </span>
                       </div>
 
-                      <div className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
-                        <span className="font-medium text-gray-500">
-                          Next Ticket Number
-                        </span>
-                        <span className="font-mono font-bold text-gray-900">
-                          #{queue.nextTicketNumber}
-                        </span>
+                      <div className="flex items-center justify-between gap-2 border-t border-gray-100 pt-3 text-xs text-gray-400">
+                        <span>{formatCreationDate(queue.createdAt)}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleQueueStatus(queue)}
+                          disabled={
+                            isAnyQueueUpdating ||
+                            isQueuesLoading ||
+                            isServicesLoading ||
+                            isCreatingQueue
+                          }
+                          aria-label={`${
+                            queue.isActive ? "Deactivate" : "Activate"
+                          } ${queue.name}`}
+                          className={`inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none ${
+                            queue.isActive
+                              ? "border-gray-300 bg-white text-gray-700 hover:bg-gray-50 hover:text-red-700 hover:border-red-200"
+                              : "border-gray-300 bg-white text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300"
+                          }`}
+                        >
+                          {isQueueUpdating ? (
+                            <>
+                              <svg
+                                className="mr-1.5 h-3.5 w-3.5 animate-spin text-gray-500"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                              >
+                                <circle
+                                  className="opacity-25"
+                                  cx="12"
+                                  cy="12"
+                                  r="10"
+                                  stroke="currentColor"
+                                  strokeWidth="4"
+                                />
+                                <path
+                                  className="opacity-75"
+                                  fill="currentColor"
+                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                />
+                              </svg>
+                              {queue.isActive
+                                ? "Deactivating..."
+                                : "Activating..."}
+                            </>
+                          ) : queue.isActive ? (
+                            "Deactivate"
+                          ) : (
+                            "Activate"
+                          )}
+                        </button>
                       </div>
                     </div>
-
-                    <div className="border-t border-gray-100 pt-3 text-xs text-gray-400">
-                      {formatCreationDate(queue.createdAt)}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

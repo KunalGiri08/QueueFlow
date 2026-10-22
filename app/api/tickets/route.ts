@@ -84,11 +84,21 @@ export async function POST(request: Request) {
     const ticket = await prisma.$transaction(async (tx) => {
       const queue = await tx.queue.findUnique({
         where: { id: queueId },
-        select: { id: true, isActive: true },
+        select: {
+          id: true,
+          isActive: true,
+          service: {
+            select: { id: true, isActive: true },
+          },
+        },
       });
 
       if (!queue || !queue.isActive) {
         throw new Error("QUEUE_NOT_FOUND_OR_INACTIVE");
+      }
+
+      if (queue.service && queue.service.isActive === false) {
+        throw new Error("SERVICE_NOT_ACTIVE");
       }
 
       // Acquire the queue-row lock before checking active tickets.
@@ -176,6 +186,13 @@ export async function POST(request: Request) {
         return Response.json(
           { error: "You already have an active ticket in this queue" },
           { status: 409 },
+        );
+      }
+
+      if (error.message === "SERVICE_NOT_ACTIVE") {
+        return Response.json(
+          { error: "Service category is not active" },
+          { status: 400 },
         );
       }
 

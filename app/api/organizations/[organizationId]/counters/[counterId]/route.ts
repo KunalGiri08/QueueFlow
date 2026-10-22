@@ -71,14 +71,37 @@ export async function PATCH(
     );
   }
 
-  const updatedCounter = await prisma.counter.update({
-    where: {
-      id: counterId,
-    },
-    data: {
-      isActive: result.data.isActive,
-    },
-  });
+  // Active ticket check: Cannot deactivate counter if an active ticket is currently called or in service at this counter
+  if (result.data.isActive === false) {
+    const activeTicket = await prisma.ticket.findFirst({
+      where: {
+        counterId,
+        status: { in: ["CALLED", "SERVING"] },
+      },
+      select: { id: true },
+    });
 
-  return Response.json(updatedCounter);
+    if (activeTicket) {
+      return Response.json(
+        { error: "Cannot deactivate counter while it has an active ticket" },
+        { status: 409 },
+      );
+    }
+  }
+
+  try {
+    const updatedCounter = await prisma.counter.update({
+      where: {
+        id: counterId,
+      },
+      data: {
+        isActive: result.data.isActive,
+      },
+    });
+
+    return Response.json(updatedCounter);
+  } catch (error) {
+    console.error("Failed to update counter:", error);
+    return Response.json({ error: "Internal server error" }, { status: 500 });
+  }
 }

@@ -28,17 +28,35 @@ export async function GET(
     return Response.json({ error: "Organization not found" }, { status: 404 });
   }
 
-  // Customers can browse the catalog without organization membership.
+  // Check membership to determine whether inactive services should be visible.
+  // Admins see all services so they can activate/deactivate them; non-admins only see active services.
+  const membership = await prisma.organizationMembership.findUnique({
+    where: {
+      userId_organizationId: {
+        userId: currentUser.id,
+        organizationId,
+      },
+    },
+  });
+
+  const isAdmin = membership?.role === "ADMIN";
+
   const services = await prisma.service.findMany({
     where: {
       organizationId,
+      ...(isAdmin ? {} : { isActive: true }),
     },
     orderBy: {
       name: "asc",
     },
   });
 
-  return Response.json(services);
+  const formattedServices = services.map((s) => ({
+    ...s,
+    isActive: s.isActive ?? true,
+  }));
+
+  return Response.json(formattedServices);
 }
 
 export async function POST(
@@ -99,10 +117,17 @@ export async function POST(
         name: result.data.name,
         description: result.data.description,
         organizationId,
+        isActive: result.data.isActive ?? true,
       },
     });
 
-    return Response.json(service, { status: 201 });
+    return Response.json(
+      {
+        ...service,
+        isActive: service.isActive ?? true,
+      },
+      { status: 201 },
+    );
   } catch (error) {
     if (
       typeof error === "object" &&

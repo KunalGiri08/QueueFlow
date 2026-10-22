@@ -179,6 +179,34 @@ describe("components/admin/QueueManagement", () => {
       expect(screen.getByText("Add Queue to Pharmacy")).toBeDefined();
       expect(screen.queryByText("Standard Line")).toBeNull();
     });
+
+    it("labels inactive services with (Inactive) in the service dropdown", async () => {
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.includes("/services/srv-inactive/queues")) {
+          return jsonResponse([]);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse([
+            {
+              id: "srv-inactive",
+              name: "Discontinued Service",
+              description: "No longer offered",
+              organizationId: "org-1",
+              isActive: false,
+            },
+          ]);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+
+      const select = (await screen.findByLabelText(
+        /select service category/i,
+      )) as HTMLSelectElement;
+      expect(select.options[0].text).toContain("Discontinued Service (Inactive)");
+    });
   });
 
   describe("Queue loading, rendering, empty states, and errors", () => {
@@ -887,6 +915,401 @@ describe("components/admin/QueueManagement", () => {
       deferred.reject(abortError);
 
       expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+
+  describe("Queue activation and deactivation controls", () => {
+    it("successfully deactivates an active queue and updates UI status and button", async () => {
+      const initialQueues = [
+        {
+          id: "queue-1",
+          name: "Standard Line",
+          serviceId: "srv-1",
+          nextTicketNumber: 42,
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-01T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (
+          init?.method === "PATCH" &&
+          url.includes("/api/organizations/org-1/services/srv-1/queues/queue-1")
+        ) {
+          const body = JSON.parse(init.body as string);
+          expect(body).toEqual({ isActive: false });
+          return jsonResponse({
+            ...initialQueues[0],
+            isActive: false,
+            updatedAt: "2026-03-01T11:00:00.000Z",
+          });
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse(initialQueues);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Standard Line")).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+
+      const deactivateBtn = screen.getByRole("button", {
+        name: /deactivate standard line/i,
+      });
+      expect(deactivateBtn).toBeDefined();
+
+      fireEvent.click(deactivateBtn);
+
+      expect(
+        await screen.findByText('Queue "Standard Line" deactivated successfully.'),
+      ).toBeDefined();
+      expect(screen.getByText("Inactive")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /activate standard line/i }),
+      ).toBeDefined();
+    });
+
+    it("successfully activates an inactive queue and updates UI status and button", async () => {
+      const initialQueues = [
+        {
+          id: "queue-2",
+          name: "Priority Line",
+          serviceId: "srv-1",
+          nextTicketNumber: 15,
+          isActive: false,
+          createdAt: "2026-03-02T10:00:00.000Z",
+          updatedAt: "2026-03-02T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (
+          init?.method === "PATCH" &&
+          url.includes("/api/organizations/org-1/services/srv-1/queues/queue-2")
+        ) {
+          const body = JSON.parse(init.body as string);
+          expect(body).toEqual({ isActive: true });
+          return jsonResponse({
+            ...initialQueues[0],
+            isActive: true,
+            updatedAt: "2026-03-02T11:00:00.000Z",
+          });
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse(initialQueues);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Priority Line")).toBeDefined();
+      expect(screen.getByText("Inactive")).toBeDefined();
+
+      const activateBtn = screen.getByRole("button", {
+        name: /activate priority line/i,
+      });
+      expect(activateBtn).toBeDefined();
+
+      fireEvent.click(activateBtn);
+
+      expect(
+        await screen.findByText('Queue "Priority Line" activated successfully.'),
+      ).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /deactivate priority line/i }),
+      ).toBeDefined();
+    });
+
+    it("handles request failure without optimistic updates, keeping original status and displaying server error", async () => {
+      const initialQueues = [
+        {
+          id: "queue-1",
+          name: "Standard Line",
+          serviceId: "srv-1",
+          nextTicketNumber: 42,
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-01T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH") {
+          return jsonResponse(
+            { error: "Insufficient permissions to change queue status." },
+            403,
+          );
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse(initialQueues);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Standard Line")).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+
+      const deactivateBtn = screen.getByRole("button", {
+        name: /deactivate standard line/i,
+      });
+      fireEvent.click(deactivateBtn);
+
+      expect(
+        await screen.findByText(
+          "Insufficient permissions to change queue status.",
+        ),
+      ).toBeDefined();
+
+      // UI status remains Active and button remains Deactivate
+      expect(screen.getByText("Active")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /deactivate standard line/i }),
+      ).toBeDefined();
+
+      // Dismiss button clears the error alert
+      const dismissBtn = screen.getByRole("button", { name: /dismiss/i });
+      fireEvent.click(dismissBtn);
+      expect(
+        screen.queryByText("Insufficient permissions to change queue status."),
+      ).toBeNull();
+    });
+
+    it("displays pending state and disables the button during in-flight status update", async () => {
+      const deferredPatch = createDeferred<Response>();
+      const initialQueues = [
+        {
+          id: "queue-1",
+          name: "Standard Line",
+          serviceId: "srv-1",
+          nextTicketNumber: 42,
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-01T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH") {
+          return deferredPatch.promise;
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return Promise.resolve(jsonResponse(initialQueues));
+        }
+        if (url.includes("/services")) {
+          return Promise.resolve(jsonResponse(mockServices));
+        }
+        return Promise.resolve(jsonResponse([]));
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+
+      const deactivateBtn = await screen.findByRole("button", {
+        name: /deactivate standard line/i,
+      });
+      expect((deactivateBtn as HTMLButtonElement).disabled).toBe(false);
+
+      fireEvent.click(deactivateBtn);
+
+      // Pending state: text changes to Deactivating... and button is disabled
+      expect(screen.getByText(/deactivating\.\.\./i)).toBeDefined();
+      expect((deactivateBtn as HTMLButtonElement).disabled).toBe(true);
+
+      // Resolve the request
+      deferredPatch.resolve(
+        jsonResponse({
+          ...initialQueues[0],
+          isActive: false,
+        }),
+      );
+
+      // Once resolved, button returns to normal with Activate label and is enabled
+      expect(
+        await screen.findByRole("button", { name: /activate standard line/i }),
+      ).toBeDefined();
+      expect(
+        (
+          screen.getByRole("button", {
+            name: /activate standard line/i,
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+    });
+
+    it("discards status update response if organization was switched while update was in flight", async () => {
+      const deferredPatch = createDeferred<Response>();
+
+      fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH") {
+          return deferredPatch.promise;
+        }
+        if (url.includes("/api/organizations/org-A/services/srv-1/queues")) {
+          return Promise.resolve(
+            jsonResponse([
+              {
+                id: "queue-a",
+                name: "Org A Queue",
+                serviceId: "srv-1",
+                nextTicketNumber: 1,
+                isActive: true,
+                createdAt: "2026-03-01T00:00:00.000Z",
+                updatedAt: "2026-03-01T00:00:00.000Z",
+              },
+            ]),
+          );
+        }
+        if (url.includes("/api/organizations/org-B/services/srv-1/queues")) {
+          return Promise.resolve(
+            jsonResponse([
+              {
+                id: "queue-b",
+                name: "Org B Queue",
+                serviceId: "srv-1",
+                nextTicketNumber: 1,
+                isActive: true,
+                createdAt: "2026-03-01T00:00:00.000Z",
+                updatedAt: "2026-03-01T00:00:00.000Z",
+              },
+            ]),
+          );
+        }
+        if (url.includes("/services")) {
+          return Promise.resolve(jsonResponse(mockServices));
+        }
+        return Promise.resolve(jsonResponse([]));
+      });
+
+      // 1. Initial render on org-A
+      const { rerender } = render(<QueueManagement organizationId="org-A" />);
+      const deactivateBtn = await screen.findByRole("button", {
+        name: /deactivate org a queue/i,
+      });
+
+      // 2. Click deactivate on org-A queue
+      fireEvent.click(deactivateBtn);
+      expect(screen.getByText(/deactivating\.\.\./i)).toBeDefined();
+
+      // 3. User switches to org-B while request is in flight
+      rerender(<QueueManagement organizationId="org-B" />);
+      expect(await screen.findByText("Org B Queue")).toBeDefined();
+
+      // 4. Resolve org-A patch
+      deferredPatch.resolve(
+        jsonResponse({
+          id: "queue-a",
+          name: "Org A Queue",
+          serviceId: "srv-1",
+          nextTicketNumber: 1,
+          isActive: false,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-01T00:00:00.000Z",
+        }),
+      );
+
+      // 5. Ensure no success message or state pollution leaked into org-B
+      expect(
+        screen.queryByText('Queue "Org A Queue" deactivated successfully.'),
+      ).toBeNull();
+      expect(screen.getByText("Org B Queue")).toBeDefined();
+    });
+
+    it("discards status update response if service category was switched while update was in flight", async () => {
+      const deferredPatch = createDeferred<Response>();
+
+      fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH") {
+          return deferredPatch.promise;
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return Promise.resolve(jsonResponse(mockQueuesSrv1));
+        }
+        if (url.includes("/services/srv-2/queues")) {
+          return Promise.resolve(jsonResponse(mockQueuesSrv2));
+        }
+        if (url.includes("/services")) {
+          return Promise.resolve(jsonResponse(mockServices));
+        }
+        return Promise.resolve(jsonResponse([]));
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+      const deactivateBtn = await screen.findByRole("button", {
+        name: /deactivate standard line/i,
+      });
+
+      // 1. Start deactivation on srv-1 queue
+      fireEvent.click(deactivateBtn);
+      expect(screen.getByText(/deactivating\.\.\./i)).toBeDefined();
+
+      // 2. Switch service category to srv-2 while PATCH is pending
+      const select = screen.getByLabelText(/select service category/i);
+      fireEvent.change(select, { target: { value: "srv-2" } });
+
+      expect(await screen.findByText("Express Pickup")).toBeDefined();
+
+      // 3. Resolve PATCH for srv-1 queue
+      deferredPatch.resolve(
+        jsonResponse({
+          ...mockQueuesSrv1[0],
+          isActive: false,
+        }),
+      );
+
+      // 4. Verify no success message appeared and srv-2 queues are untouched
+      expect(
+        screen.queryByText('Queue "Standard Line" deactivated successfully.'),
+      ).toBeNull();
+      expect(screen.getByText("Express Pickup")).toBeDefined();
+    });
+
+    it("redirects to /sign-in on 401 response during status update", async () => {
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH") {
+          return jsonResponse({ error: "Unauthorized" }, 401);
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse(mockQueuesSrv1);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+
+      const deactivateBtn = await screen.findByRole("button", {
+        name: /deactivate standard line/i,
+      });
+      fireEvent.click(deactivateBtn);
+
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith(
+          `/sign-in?redirect_url=${encodeURIComponent("/admin")}`,
+        );
+      });
     });
   });
 });

@@ -36,11 +36,21 @@ export async function GET(
     return Response.json({ error: "Service not found" }, { status: 404 });
   }
 
-  // Customers can discover queues without organization membership.
+  const membership = await prisma.organizationMembership.findUnique({
+    where: {
+      userId_organizationId: {
+        userId: currentUser.id,
+        organizationId,
+      },
+    },
+  });
+
+  const isAdmin = membership?.role === "ADMIN";
+
   const queues = await prisma.queue.findMany({
     where: {
       serviceId,
-      isActive: true,
+      ...(isAdmin ? {} : { isActive: true }),
     },
     orderBy: {
       createdAt: "asc",

@@ -52,6 +52,10 @@ export async function PATCH(
     return Response.json({ error: "Queue is inactive" }, { status: 409 });
   }
 
+  if (queue.service.isActive === false) {
+    return Response.json({ error: "Service is inactive" }, { status: 409 });
+  }
+
   const organizationId = queue.service.organizationId;
 
   // 4. Verify organization membership and staff role.

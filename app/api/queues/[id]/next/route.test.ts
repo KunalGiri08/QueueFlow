@@ -253,4 +253,28 @@ describe("PATCH /api/queues/[id]/next", () => {
       calledAt: now.toISOString(),
     });
   });
+
+  it("returns 409 when the queue's service is inactive", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-staff" });
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      isActive: true,
+      service: { organizationId, isActive: false },
+    });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counterId }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Service is inactive",
+    });
+  });
 });
+

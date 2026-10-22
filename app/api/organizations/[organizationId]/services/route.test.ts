@@ -132,7 +132,7 @@ describe("POST /api/organizations/[organizationId]/services", () => {
     expect(JSON.stringify(data)).not.toContain("secret");
   });
 
-  it("successfully creates a service", async () => {
+  it("successfully creates a service (defaults to isActive: true)", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
     mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
     mockServiceCreate.mockResolvedValue({
@@ -140,6 +140,7 @@ describe("POST /api/organizations/[organizationId]/services", () => {
       name: "Service A",
       description: null,
       organizationId,
+      isActive: true,
     });
 
     const response = await POST(
@@ -152,11 +153,147 @@ describe("POST /api/organizations/[organizationId]/services", () => {
     );
 
     expect(response.status).toBe(201);
+    expect(mockServiceCreate).toHaveBeenCalledWith({
+      data: {
+        name: "Service A",
+        description: undefined,
+        organizationId,
+        isActive: true,
+      },
+    });
     expect(await response.json()).toEqual({
       id: "service-1",
       name: "Service A",
       description: null,
       organizationId,
+      isActive: true,
+    });
+  });
+
+  it("supports explicit isActive setting during service creation", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockServiceCreate.mockResolvedValue({
+      id: "service-2",
+      name: "Service B",
+      description: "Custom service",
+      organizationId,
+      isActive: false,
+    });
+
+    const response = await POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Service B",
+          description: "Custom service",
+          isActive: false,
+        }),
+      }),
+      createParams(),
+    );
+
+    expect(response.status).toBe(201);
+    expect(mockServiceCreate).toHaveBeenCalledWith({
+      data: {
+        name: "Service B",
+        description: "Custom service",
+        organizationId,
+        isActive: false,
+      },
+    });
+    expect(await response.json()).toEqual({
+      id: "service-2",
+      name: "Service B",
+      description: "Custom service",
+      organizationId,
+      isActive: false,
+    });
+  });
+});
+
+describe("GET /api/organizations/[organizationId]/services", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 401 when caller is unauthenticated", async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+
+    const response = await GET(
+      new Request("http://localhost"),
+      createParams(),
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Unauthorized" });
+  });
+
+  it("returns 404 when organization does not exist", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-1" });
+    mockOrganizationFindUnique.mockResolvedValue(null);
+
+    const response = await GET(
+      new Request("http://localhost"),
+      createParams(),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Organization not found" });
+  });
+
+  it("returns all services (including inactive) when caller is an organization ADMIN", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockOrganizationFindUnique.mockResolvedValue({ id: organizationId });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockServiceFindMany.mockResolvedValue([
+      { id: "srv-1", name: "Service 1", isActive: true },
+      { id: "srv-2", name: "Service 2", isActive: false },
+    ]);
+
+    const response = await GET(
+      new Request("http://localhost"),
+      createParams(),
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data).toHaveLength(2);
+    expect(mockServiceFindMany).toHaveBeenCalledWith({
+      where: {
+        organizationId,
+      },
+      orderBy: {
+        name: "asc",
+      },
+    });
+  });
+
+  it("returns only active services when caller is not an organization ADMIN", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-staff" });
+    mockOrganizationFindUnique.mockResolvedValue({ id: organizationId });
+    mockMembershipFindUnique.mockResolvedValue({ role: "STAFF" });
+    mockServiceFindMany.mockResolvedValue([
+      { id: "srv-1", name: "Service 1", isActive: true },
+    ]);
+
+    const response = await GET(
+      new Request("http://localhost"),
+      createParams(),
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data).toHaveLength(1);
+    expect(mockServiceFindMany).toHaveBeenCalledWith({
+      where: {
+        organizationId,
+        isActive: true,
+      },
+      orderBy: {
+        name: "asc",
+      },
     });
   });
 });

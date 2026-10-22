@@ -247,6 +247,26 @@ describe("POST /api/appointments", () => {
     expect(mockAppointmentFindFirst).not.toHaveBeenCalled();
   });
 
+  it("returns 400 when the service is inactive", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
+    mockQueryRaw.mockResolvedValue([{ id: "svc-inactive", isActive: false }]);
+
+    const response = await POST(
+      new Request("http://localhost/api/appointments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serviceId: "svc-inactive",
+          scheduledAt: futureDate,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Service is not active" });
+    expect(mockAppointmentFindFirst).not.toHaveBeenCalled();
+  });
+
   it("returns 409 when the slot is already booked by another customer", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-customer-b" });
     mockQueryRaw.mockResolvedValue([{ id: "svc-1" }]);

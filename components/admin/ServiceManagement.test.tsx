@@ -34,6 +34,7 @@ const mockServices = [
     name: "Consultation",
     description: "Walk-in general consultations",
     organizationId: "org-1",
+    isActive: true,
     createdAt: "2026-03-01T10:00:00.000Z",
     updatedAt: "2026-03-01T10:00:00.000Z",
   },
@@ -42,6 +43,7 @@ const mockServices = [
     name: "Pharmacy",
     description: null,
     organizationId: "org-1",
+    isActive: true,
     createdAt: "2026-03-02T10:00:00.000Z",
     updatedAt: "2026-03-02T10:00:00.000Z",
   },
@@ -210,6 +212,7 @@ describe("components/admin/ServiceManagement", () => {
             name: "Org B Service",
             description: "Services for Org B",
             organizationId: "org-B",
+            isActive: true,
             createdAt: "2026-03-01T00:00:00.000Z",
             updatedAt: "2026-03-01T00:00:00.000Z",
           },
@@ -226,6 +229,7 @@ describe("components/admin/ServiceManagement", () => {
             name: "Org A Stale Service",
             description: "Stale",
             organizationId: "org-A",
+            isActive: true,
             createdAt: "2026-03-01T00:00:00.000Z",
             updatedAt: "2026-03-01T00:00:00.000Z",
           },
@@ -235,6 +239,45 @@ describe("components/admin/ServiceManagement", () => {
       // Verify Org A Stale Service is NEVER displayed and Org B Service remains
       expect(screen.queryByText("Org A Stale Service")).toBeNull();
       expect(screen.getByText("Org B Service")).toBeDefined();
+    });
+
+    it("renders services safely with Active default when GET response services omit isActive instead of showing 0 services", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse([
+          {
+            id: "legacy-srv-1",
+            name: "Legacy Consultation",
+            description: "No isActive field in payload",
+            organizationId: "org-1",
+            createdAt: "2026-03-01T10:00:00.000Z",
+            updatedAt: "2026-03-01T10:00:00.000Z",
+          },
+        ]),
+      );
+
+      render(<ServiceManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Legacy Consultation")).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+      expect(screen.queryByText("No Service Categories Configured")).toBeNull();
+      expect(
+        screen.getByRole("button", { name: /deactivate legacy consultation/i }),
+      ).toBeDefined();
+    });
+
+    it("displays an error alert and does not silently turn into an empty service list when fetch fails", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ error: "Organization not found" }, 404),
+      );
+
+      render(<ServiceManagement organizationId="org-1" />);
+
+      expect(
+        await screen.findByText(
+          "Unable to load services at this time. Please try again.",
+        ),
+      ).toBeDefined();
+      expect(screen.queryByText("No Service Categories Configured")).toBeNull();
     });
   });
 
@@ -251,6 +294,7 @@ describe("components/admin/ServiceManagement", () => {
               name: "Cardiology",
               description: "Heart and vascular clinic",
               organizationId: "org-1",
+              isActive: true,
               createdAt: "2026-03-03T12:00:00.000Z",
               updatedAt: "2026-03-03T12:00:00.000Z",
             },
@@ -310,6 +354,7 @@ describe("components/admin/ServiceManagement", () => {
               name: "Pediatrics",
               description: null,
               organizationId: "org-1",
+              isActive: true,
               createdAt: "2026-03-03T12:00:00.000Z",
               updatedAt: "2026-03-03T12:00:00.000Z",
             },
@@ -336,6 +381,83 @@ describe("components/admin/ServiceManagement", () => {
       expect(postPayload).toEqual({
         name: "Pediatrics",
       });
+    });
+
+    it("displays Active badge and Deactivate button on newly created service confirmed by server", async () => {
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return jsonResponse(
+            {
+              id: "new-srv-active",
+              name: "Particular Queries",
+              description: "Support for queries",
+              organizationId: "org-1",
+              isActive: true,
+              createdAt: "2026-03-03T12:00:00.000Z",
+              updatedAt: "2026-03-03T12:00:00.000Z",
+            },
+            201,
+          );
+        }
+        return jsonResponse([]);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      await screen.findByText("No Service Categories Configured");
+
+      const nameInput = screen.getByPlaceholderText(/e\.g\., Account Services/i);
+      const submitButton = screen.getByRole("button", {
+        name: /create service/i,
+      });
+
+      fireEvent.change(nameInput, { target: { value: "Particular Queries" } });
+      fireEvent.click(submitButton);
+
+      expect(
+        await screen.findByText('Service "Particular Queries" created successfully.'),
+      ).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /deactivate particular queries/i }),
+      ).toBeDefined();
+    });
+
+    it("safely defaults newly created service to Active badge even if server response omitted isActive", async () => {
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return jsonResponse(
+            {
+              id: "new-srv-legacy",
+              name: "Particular Queries Legacy",
+              description: "Legacy server response without isActive",
+              organizationId: "org-1",
+              createdAt: "2026-03-03T12:00:00.000Z",
+              updatedAt: "2026-03-03T12:00:00.000Z",
+            },
+            201,
+          );
+        }
+        return jsonResponse([]);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      await screen.findByText("No Service Categories Configured");
+
+      const nameInput = screen.getByPlaceholderText(/e\.g\., Account Services/i);
+      const submitButton = screen.getByRole("button", {
+        name: /create service/i,
+      });
+
+      fireEvent.change(nameInput, { target: { value: "Particular Queries Legacy" } });
+      fireEvent.click(submitButton);
+
+      expect(
+        await screen.findByText('Service "Particular Queries Legacy" created successfully.'),
+      ).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /deactivate particular queries legacy/i }),
+      ).toBeDefined();
     });
 
     it("redirects to sign-in on 401 response during creation", async () => {
@@ -621,6 +743,7 @@ describe("components/admin/ServiceManagement", () => {
             name: "Org A Late Service",
             description: null,
             organizationId: "org-A",
+            isActive: true,
             createdAt: "2026-03-01T00:00:00.000Z",
             updatedAt: "2026-03-01T00:00:00.000Z",
           },
@@ -633,6 +756,315 @@ describe("components/admin/ServiceManagement", () => {
       expect(
         screen.queryByText('Service "Org A Late Service" created successfully.'),
       ).toBeNull();
+    });
+  });
+
+  describe("Service activation and deactivation controls", () => {
+    it("successfully deactivates an active service and updates UI status and button", async () => {
+      const initialServices = [
+        {
+          id: "srv-1",
+          name: "Consultation",
+          description: "General consultations",
+          organizationId: "org-1",
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-01T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (
+          init?.method === "PATCH" &&
+          url.includes("/api/organizations/org-1/services/srv-1")
+        ) {
+          const body = JSON.parse(init.body as string);
+          expect(body).toEqual({ isActive: false });
+          return jsonResponse({
+            ...initialServices[0],
+            isActive: false,
+            updatedAt: "2026-03-01T11:00:00.000Z",
+          });
+        }
+        return jsonResponse(initialServices);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Consultation")).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+
+      const deactivateBtn = screen.getByRole("button", {
+        name: /deactivate consultation/i,
+      });
+      expect(deactivateBtn).toBeDefined();
+
+      fireEvent.click(deactivateBtn);
+
+      expect(
+        await screen.findByText('Service "Consultation" deactivated successfully.'),
+      ).toBeDefined();
+      expect(screen.getByText("Inactive")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /activate consultation/i }),
+      ).toBeDefined();
+    });
+
+    it("successfully activates an inactive service and updates UI status and button", async () => {
+      const initialServices = [
+        {
+          id: "srv-2",
+          name: "Dental Care",
+          description: "Dental clinic",
+          organizationId: "org-1",
+          isActive: false,
+          createdAt: "2026-03-02T10:00:00.000Z",
+          updatedAt: "2026-03-02T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (
+          init?.method === "PATCH" &&
+          url.includes("/api/organizations/org-1/services/srv-2")
+        ) {
+          const body = JSON.parse(init.body as string);
+          expect(body).toEqual({ isActive: true });
+          return jsonResponse({
+            ...initialServices[0],
+            isActive: true,
+            updatedAt: "2026-03-02T11:00:00.000Z",
+          });
+        }
+        return jsonResponse(initialServices);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Dental Care")).toBeDefined();
+      expect(screen.getByText("Inactive")).toBeDefined();
+
+      const activateBtn = screen.getByRole("button", {
+        name: /activate dental care/i,
+      });
+      expect(activateBtn).toBeDefined();
+
+      fireEvent.click(activateBtn);
+
+      expect(
+        await screen.findByText('Service "Dental Care" activated successfully.'),
+      ).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /deactivate dental care/i }),
+      ).toBeDefined();
+    });
+
+    it("handles request failure without optimistic updates, keeping original status and displaying server error", async () => {
+      const initialServices = [
+        {
+          id: "srv-1",
+          name: "Consultation",
+          description: "General consultations",
+          organizationId: "org-1",
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-01T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return jsonResponse(
+            { error: "Insufficient permissions to change service status." },
+            403,
+          );
+        }
+        return jsonResponse(initialServices);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Consultation")).toBeDefined();
+      expect(screen.getByText("Active")).toBeDefined();
+
+      const deactivateBtn = screen.getByRole("button", {
+        name: /deactivate consultation/i,
+      });
+      fireEvent.click(deactivateBtn);
+
+      expect(
+        await screen.findByText(
+          "Insufficient permissions to change service status.",
+        ),
+      ).toBeDefined();
+
+      // UI status remains Active and button remains Deactivate
+      expect(screen.getByText("Active")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /deactivate consultation/i }),
+      ).toBeDefined();
+
+      // Dismiss button clears the error alert
+      const dismissBtn = screen.getByRole("button", { name: /dismiss/i });
+      fireEvent.click(dismissBtn);
+      expect(
+        screen.queryByText("Insufficient permissions to change service status."),
+      ).toBeNull();
+    });
+
+    it("displays pending state and disables the button during in-flight status update", async () => {
+      const deferredPatch = createDeferred<Response>();
+      const initialServices = [
+        {
+          id: "srv-1",
+          name: "Consultation",
+          description: "General consultations",
+          organizationId: "org-1",
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-01T10:00:00.000Z",
+        },
+      ];
+
+      fetchMock.mockImplementation((_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return deferredPatch.promise;
+        }
+        return Promise.resolve(jsonResponse(initialServices));
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+
+      const deactivateBtn = await screen.findByRole("button", {
+        name: /deactivate consultation/i,
+      });
+      expect((deactivateBtn as HTMLButtonElement).disabled).toBe(false);
+
+      fireEvent.click(deactivateBtn);
+
+      // Pending state: text changes to Deactivating... and button is disabled
+      expect(screen.getByText(/deactivating\.\.\./i)).toBeDefined();
+      expect((deactivateBtn as HTMLButtonElement).disabled).toBe(true);
+
+      // Resolve the request
+      deferredPatch.resolve(
+        jsonResponse({
+          ...initialServices[0],
+          isActive: false,
+        }),
+      );
+
+      // Once resolved, button returns to normal with Activate label and is enabled
+      expect(
+        await screen.findByRole("button", { name: /activate consultation/i }),
+      ).toBeDefined();
+      expect(
+        (
+          screen.getByRole("button", {
+            name: /activate consultation/i,
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+    });
+
+    it("discards status update response if organization was switched while update was in flight", async () => {
+      const deferredPatch = createDeferred<Response>();
+
+      fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH") {
+          return deferredPatch.promise;
+        }
+        if (url.includes("/api/organizations/org-A/services")) {
+          return Promise.resolve(
+            jsonResponse([
+              {
+                id: "service-a",
+                name: "Org A Service",
+                description: "Description A",
+                organizationId: "org-A",
+                isActive: true,
+                createdAt: "2026-03-01T00:00:00.000Z",
+                updatedAt: "2026-03-01T00:00:00.000Z",
+              },
+            ]),
+          );
+        }
+        if (url.includes("/api/organizations/org-B/services")) {
+          return Promise.resolve(
+            jsonResponse([
+              {
+                id: "service-b",
+                name: "Org B Service",
+                description: "Description B",
+                organizationId: "org-B",
+                isActive: true,
+                createdAt: "2026-03-01T00:00:00.000Z",
+                updatedAt: "2026-03-01T00:00:00.000Z",
+              },
+            ]),
+          );
+        }
+        return Promise.resolve(jsonResponse([]));
+      });
+
+      // 1. Initial render on org-A
+      const { rerender } = render(<ServiceManagement organizationId="org-A" />);
+      const deactivateBtn = await screen.findByRole("button", {
+        name: /deactivate org a service/i,
+      });
+
+      // 2. Click deactivate on org-A service
+      fireEvent.click(deactivateBtn);
+      expect(screen.getByText(/deactivating\.\.\./i)).toBeDefined();
+
+      // 3. User switches to org-B while request is in flight
+      rerender(<ServiceManagement organizationId="org-B" />);
+      expect(await screen.findByText("Org B Service")).toBeDefined();
+
+      // 4. Resolve org-A patch
+      deferredPatch.resolve(
+        jsonResponse({
+          id: "service-a",
+          name: "Org A Service",
+          description: "Description A",
+          organizationId: "org-A",
+          isActive: false,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-01T00:00:00.000Z",
+        }),
+      );
+
+      // 5. Ensure no success message or state pollution leaked into org-B
+      expect(
+        screen.queryByText('Service "Org A Service" deactivated successfully.'),
+      ).toBeNull();
+      expect(screen.getByText("Org B Service")).toBeDefined();
+    });
+
+    it("redirects to /sign-in on 401 response during status update", async () => {
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return jsonResponse({ error: "Unauthorized" }, 401);
+        }
+        return jsonResponse(mockServices);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+
+      const deactivateBtn = await screen.findByRole("button", {
+        name: /deactivate consultation/i,
+      });
+      fireEvent.click(deactivateBtn);
+
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith(
+          `/sign-in?redirect_url=${encodeURIComponent("/admin")}`,
+        );
+      });
     });
   });
 });

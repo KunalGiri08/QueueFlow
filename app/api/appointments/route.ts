@@ -34,15 +34,19 @@ export async function POST(request: Request) {
   try {
     const appointment = await prisma.$transaction(async (tx) => {
       // Serialize booking attempts for this service.
-      const services = await tx.$queryRaw<{ id: string }[]>`
-        SELECT "id"
+      const services = await tx.$queryRaw<{ id: string; isActive?: boolean }[]>`
+        SELECT "id", "isActive"
         FROM "Service"
         WHERE "id" = ${serviceId}
         FOR UPDATE
       `;
 
-      if (services.length === 0) {
+      if (!services || services.length === 0) {
         throw new Error("SERVICE_NOT_FOUND");
+      }
+
+      if (services[0]?.isActive === false) {
+        throw new Error("SERVICE_NOT_ACTIVE");
       }
 
       const existingAppointment = await tx.appointment.findFirst({
@@ -76,6 +80,13 @@ export async function POST(request: Request) {
     if (error instanceof Error) {
       if (error.message === "SERVICE_NOT_FOUND") {
         return Response.json({ error: "Service not found" }, { status: 404 });
+      }
+
+      if (error.message === "SERVICE_NOT_ACTIVE") {
+        return Response.json(
+          { error: "Service is not active" },
+          { status: 400 },
+        );
       }
 
       if (error.message === "APPOINTMENT_ALREADY_EXISTS") {
