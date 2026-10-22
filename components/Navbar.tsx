@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useUser, UserButton } from "@clerk/nextjs";
 
@@ -85,7 +86,45 @@ export function extractUserRoles(user: unknown): {
 
 export function Navbar() {
   const { isLoaded, isSignedIn, user } = useUser();
-  const { hasStaffRole, hasAdminRole } = extractUserRoles(user);
+  const [fetchedUser, setFetchedUser] = useState<{
+    userId: string;
+    data: unknown;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!isSignedIn || !user?.id) {
+      return;
+    }
+
+    const currentUserId = user.id;
+    const controller = new AbortController();
+
+    fetch("/api/auth/me", { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) {
+          setFetchedUser({ userId: currentUserId, data });
+        }
+      })
+      .catch((err) => {
+        if (err?.name !== "AbortError") {
+          // Gracefully fallback to Clerk user data
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [isSignedIn, user?.id]);
+
+  const dbUser =
+    isSignedIn && user?.id && fetchedUser?.userId === user.id
+      ? fetchedUser.data
+      : null;
+  const userRoles = extractUserRoles(user);
+  const dbRoles = extractUserRoles(dbUser);
+  const hasStaffRole = userRoles.hasStaffRole || dbRoles.hasStaffRole;
+  const hasAdminRole = userRoles.hasAdminRole || dbRoles.hasAdminRole;
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-gray-200 bg-white/80 backdrop-blur-md">
