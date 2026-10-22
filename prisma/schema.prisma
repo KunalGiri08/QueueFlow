@@ -105,8 +105,14 @@ model Ticket {
   userId        String
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
-  servedById    String?
-  counterId     String?
+  calledAt                    DateTime?
+  startedAt                   DateTime?
+  completedAt                 DateTime?
+  skippedAt                   DateTime?
+  cancelledAt                 DateTime?
+  initialEstimatedWaitMinutes Int?
+  servedById                  String?
+  counterId                   String?
 
   queue    Queue    @relation(fields: [queueId], references: [id], onDelete: Cascade)
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)

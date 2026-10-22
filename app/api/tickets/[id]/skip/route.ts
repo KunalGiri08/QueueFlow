@@ -126,6 +126,7 @@ export async function PATCH(
         },
         data: {
           status: "SKIPPED",
+          skippedAt: new Date(),
         },
       });
 

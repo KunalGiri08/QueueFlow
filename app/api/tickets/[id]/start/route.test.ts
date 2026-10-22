@@ -125,17 +125,32 @@ describe("PATCH /api/tickets/[id]/start", () => {
 
     mockTxTicketFindUnique.mockResolvedValue(ticketData);
     mockTxTicketUpdateMany.mockResolvedValue({ count: 1 });
+    const now = new Date();
     mockTxTicketFindUniqueOrThrow.mockResolvedValue({
       ...ticketData,
       status: "SERVING",
+      startedAt: now,
     });
 
     const response = await PATCH(new Request("http://localhost"), { params });
 
     expect(response.status).toBe(200);
+    expect(mockTxTicketUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: ticketId,
+        status: "CALLED",
+        servedById: "user-admin",
+        counterId,
+      },
+      data: {
+        status: "SERVING",
+        startedAt: expect.any(Date),
+      },
+    });
     expect(await response.json()).toEqual({
       ...ticketData,
       status: "SERVING",
+      startedAt: now.toISOString(),
     });
   });
 });

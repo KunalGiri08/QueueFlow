@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockTicketFindUnique, mockTicketCount, mockTicketFindFirst } =
-  vi.hoisted(() => ({
-    mockTicketFindUnique: vi.fn(),
-    mockTicketCount: vi.fn(),
-    mockTicketFindFirst: vi.fn(),
-  }));
+const {
+  mockTicketFindUnique,
+  mockTicketCount,
+  mockTicketFindFirst,
+  mockTicketFindMany,
+} = vi.hoisted(() => ({
+  mockTicketFindUnique: vi.fn(),
+  mockTicketCount: vi.fn(),
+  mockTicketFindFirst: vi.fn(),
+  mockTicketFindMany: vi.fn(),
+}));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -13,6 +18,7 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: mockTicketFindUnique,
       count: mockTicketCount,
       findFirst: mockTicketFindFirst,
+      findMany: mockTicketFindMany,
     },
   },
 }));
@@ -27,6 +33,7 @@ describe("GET /api/tickets/track/[trackingToken]", () => {
     vi.clearAllMocks();
     mockTicketCount.mockResolvedValue(2);
     mockTicketFindFirst.mockResolvedValue({ number: 40 });
+    mockTicketFindMany.mockResolvedValue([]);
   });
 
   it("returns 404 when the tracking token is not found", async () => {
@@ -38,7 +45,7 @@ describe("GET /api/tickets/track/[trackingToken]", () => {
     expect(await response.json()).toEqual({ error: "Ticket not found" });
   });
 
-  it("returns public tracking information with counter name when assigned", async () => {
+  it("returns public tracking information with counter name and estimatedWaitMinutes when assigned", async () => {
     mockTicketFindUnique.mockResolvedValue({
       id: "internal-ticket-id",
       number: 42,
@@ -47,6 +54,7 @@ describe("GET /api/tickets/track/[trackingToken]", () => {
       servedById: "internal-staff-id",
       queue: {
         name: "General Queue",
+        isActive: true,
         service: {
           name: "Consultation",
           organization: {
@@ -69,6 +77,7 @@ describe("GET /api/tickets/track/[trackingToken]", () => {
       status: "CALLED",
       peopleAhead: 2,
       currentlyServing: 40,
+      estimatedWaitMinutes: 0,
       queue: { name: "General Queue" },
       service: { name: "Consultation" },
       organization: { name: "Metro Health" },
@@ -82,13 +91,51 @@ describe("GET /api/tickets/track/[trackingToken]", () => {
     expect(data.counterId).toBeUndefined();
   });
 
-  it("returns counter as null when no counter is assigned", async () => {
+  it("returns counter as null when no counter is assigned and calculates estimated wait for waiting ticket", async () => {
     mockTicketFindUnique.mockResolvedValue({
       id: "internal-ticket-id",
       number: 43,
       status: "WAITING",
       queue: {
         name: "General Queue",
+        isActive: true,
+        service: {
+          name: "Consultation",
+          organization: {
+            name: "Metro Health",
+          },
+        },
+      },
+      counter: null,
+    });
+    mockTicketFindFirst.mockResolvedValue(null); // No active serving/called ticket
+    mockTicketCount.mockResolvedValue(2); // 2 people ahead
+    // Completed ticket took 4 minutes
+    mockTicketFindMany.mockResolvedValue([
+      {
+        startedAt: new Date(Date.now() - 10 * 60 * 1000),
+        completedAt: new Date(Date.now() - 6 * 60 * 1000), // 4 minutes
+      },
+    ]);
+
+    const response = await GET(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+
+    expect(data.counter).toBeNull();
+    // 2 people ahead * 4 minutes = 8 minutes
+    expect(data.estimatedWaitMinutes).toBe(8);
+  });
+
+  it("returns estimatedWaitMinutes as null for terminal tickets", async () => {
+    mockTicketFindUnique.mockResolvedValue({
+      id: "internal-ticket-id",
+      number: 43,
+      status: "COMPLETED",
+      queue: {
+        name: "General Queue",
+        isActive: true,
         service: {
           name: "Consultation",
           organization: {
@@ -103,7 +150,6 @@ describe("GET /api/tickets/track/[trackingToken]", () => {
 
     expect(response.status).toBe(200);
     const data = await response.json();
-
-    expect(data.counter).toBeNull();
+    expect(data.estimatedWaitMinutes).toBeNull();
   });
 });

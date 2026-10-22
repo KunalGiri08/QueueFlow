@@ -6,12 +6,14 @@ const {
   mockMembershipFindUnique,
   mockTicketCount,
   mockTicketFindFirst,
+  mockTicketFindMany,
 } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
   mockTicketFindUnique: vi.fn(),
   mockMembershipFindUnique: vi.fn(),
   mockTicketCount: vi.fn(),
   mockTicketFindFirst: vi.fn(),
+  mockTicketFindMany: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/current-user", () => ({
@@ -24,6 +26,7 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: mockTicketFindUnique,
       count: mockTicketCount,
       findFirst: mockTicketFindFirst,
+      findMany: mockTicketFindMany,
     },
     organizationMembership: {
       findUnique: mockMembershipFindUnique,
@@ -69,6 +72,7 @@ describe("GET /api/tickets/[id]", () => {
     vi.clearAllMocks();
     mockTicketCount.mockResolvedValue(0);
     mockTicketFindFirst.mockResolvedValue(null);
+    mockTicketFindMany.mockResolvedValue([]);
   });
 
   it("returns 401 when the caller is unauthenticated", async () => {
@@ -176,5 +180,81 @@ describe("GET /api/tickets/[id]", () => {
     const data = await response.json();
     expect(data.status).toBe("WAITING");
     expect(data.counter).toBeNull();
+  });
+
+  it("successfully reads legacy tickets with null lifecycle timestamps", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: ownerId });
+    mockTicketFindUnique.mockResolvedValue({
+      ...baseTicket,
+      status: "COMPLETED",
+      calledAt: null,
+      startedAt: null,
+      completedAt: null,
+      skippedAt: null,
+      cancelledAt: null,
+    });
+
+    const response = await GET(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.id).toBe(ticketId);
+    expect(data.status).toBe("COMPLETED");
+    expect(data.estimatedWaitMinutes).toBeNull();
+  });
+
+  it("returns estimatedWaitMinutes as 0 for CALLED tickets", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: ownerId });
+    mockTicketFindUnique.mockResolvedValue({
+      ...baseTicket,
+      status: "CALLED",
+    });
+
+    const response = await GET(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.estimatedWaitMinutes).toBe(0);
+  });
+
+  it("returns estimatedWaitMinutes calculated from peopleAhead and historical service duration for WAITING tickets", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: ownerId });
+    mockTicketFindUnique.mockResolvedValue({
+      ...baseTicket,
+      status: "WAITING",
+    });
+    mockTicketCount.mockResolvedValue(3); // 3 people ahead
+    // Queue history: completed ticket took 6 minutes
+    mockTicketFindMany.mockResolvedValue([
+      {
+        startedAt: new Date(Date.now() - 10 * 60 * 1000),
+        completedAt: new Date(Date.now() - 4 * 60 * 1000), // 6 minutes
+      },
+    ]);
+
+    const response = await GET(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    // 3 people ahead * 6 min = 18 min
+    expect(data.estimatedWaitMinutes).toBe(18);
+  });
+
+  it("returns estimatedWaitMinutes as null when queue is inactive", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: ownerId });
+    mockTicketFindUnique.mockResolvedValue({
+      ...baseTicket,
+      status: "WAITING",
+      queue: {
+        ...baseTicket.queue,
+        isActive: false,
+      },
+    });
+
+    const response = await GET(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.estimatedWaitMinutes).toBeNull();
   });
 });

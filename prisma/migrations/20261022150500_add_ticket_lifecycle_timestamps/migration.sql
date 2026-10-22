@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "Ticket" ADD COLUMN "calledAt" TIMESTAMP(3),
+ADD COLUMN "startedAt" TIMESTAMP(3),
+ADD COLUMN "completedAt" TIMESTAMP(3),
+ADD COLUMN "skippedAt" TIMESTAMP(3),
+ADD COLUMN "cancelledAt" TIMESTAMP(3);

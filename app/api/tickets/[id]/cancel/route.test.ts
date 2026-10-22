@@ -135,9 +135,11 @@ describe("PATCH /api/tickets/[id]/cancel", () => {
       status: "WAITING",
       queueId: "queue-1",
     };
+    const now = new Date();
     const cancelledTicket = {
       ...initialTicket,
       status: "CANCELLED",
+      cancelledAt: now,
     };
 
     mockTxTicketFindUniqueOrThrow
@@ -148,7 +150,11 @@ describe("PATCH /api/tickets/[id]/cancel", () => {
     const response = await PATCH(new Request("http://localhost"), { params });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(cancelledTicket);
+    expect(await response.json()).toEqual({
+      ...initialTicket,
+      status: "CANCELLED",
+      cancelledAt: now.toISOString(),
+    });
 
     expect(mockTransaction).toHaveBeenCalledTimes(1);
     expect(mockQueryRaw).toHaveBeenCalledTimes(1);
@@ -167,6 +173,7 @@ describe("PATCH /api/tickets/[id]/cancel", () => {
       },
       data: {
         status: "CANCELLED",
+        cancelledAt: expect.any(Date),
       },
     });
   });

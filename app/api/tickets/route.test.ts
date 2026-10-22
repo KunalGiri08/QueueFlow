@@ -7,6 +7,8 @@ const {
   mockQueueFindUnique,
   mockTicketFindFirst,
   mockTicketCreate,
+  mockTicketCount,
+  mockTicketFindMany,
   mockQueryRaw,
 } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
@@ -15,6 +17,8 @@ const {
   mockQueueFindUnique: vi.fn(),
   mockTicketFindFirst: vi.fn(),
   mockTicketCreate: vi.fn(),
+  mockTicketCount: vi.fn(),
+  mockTicketFindMany: vi.fn(),
   mockQueryRaw: vi.fn(),
 }));
 
@@ -112,6 +116,8 @@ describe("POST /api/tickets", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockTicketCount.mockResolvedValue(0);
+    mockTicketFindMany.mockResolvedValue([]);
     mockTransaction.mockImplementation(async (callback) => {
       const mockTx = {
         $queryRaw: mockQueryRaw,
@@ -120,6 +126,8 @@ describe("POST /api/tickets", () => {
         },
         ticket: {
           findFirst: mockTicketFindFirst,
+          findMany: mockTicketFindMany,
+          count: mockTicketCount,
           create: mockTicketCreate,
         },
       };
@@ -425,6 +433,7 @@ describe("POST /api/tickets", () => {
         queueId,
         userId,
         trackingToken: expect.stringMatching(/^[a-f0-9]{64}$/),
+        initialEstimatedWaitMinutes: 0,
       },
     });
   });
@@ -462,5 +471,219 @@ describe("POST /api/tickets", () => {
     expect(JSON.stringify(body)).not.toContain("database disk full");
 
     consoleErrorSpy.mockRestore();
+  });
+
+  it("calculates and persists initial estimated wait minutes based on completed ticket history and people ahead", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: userId });
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      isActive: true,
+    });
+    mockQueryRaw.mockResolvedValue([{ number: 5 }]);
+    mockTicketFindFirst.mockResolvedValue(null);
+    mockTicketCount.mockResolvedValue(2);
+    // Completed ticket history with 8-minute duration: (completedAt - startedAt) = 8 min
+    mockTicketFindMany.mockResolvedValue([
+      {
+        startedAt: new Date("2026-10-22T08:00:00.000Z"),
+        completedAt: new Date("2026-10-22T08:08:00.000Z"),
+      },
+    ]);
+    mockTicketCreate.mockImplementation(({ data }) =>
+      Promise.resolve({ id: "ticket-101", ...data }),
+    );
+
+    const request = new Request("http://localhost/api/tickets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queueId }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(201);
+    // 2 people ahead * 8 min average = 16 minutes
+    expect(mockTicketCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        number: 5,
+        queueId,
+        userId,
+        initialEstimatedWaitMinutes: 16,
+      }),
+    });
+    // Verify correct queue position scoping: counts waiting tickets with number < 5
+    expect(mockTicketCount).toHaveBeenCalledWith({
+      where: {
+        queueId,
+        number: { lt: 5 },
+        status: "WAITING",
+      },
+    });
+  });
+
+  it("falls back to default service duration (5 min) when there is insufficient history", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: userId });
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      isActive: true,
+    });
+    mockQueryRaw.mockResolvedValue([{ number: 4 }]);
+    mockTicketFindFirst.mockResolvedValue(null);
+    mockTicketCount.mockResolvedValue(3);
+    mockTicketFindMany.mockResolvedValue([]); // No historical tickets -> 5 min fallback
+    mockTicketCreate.mockImplementation(({ data }) =>
+      Promise.resolve({ id: "ticket-102", ...data }),
+    );
+
+    const request = new Request("http://localhost/api/tickets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queueId }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(201);
+    // 3 people ahead * 5 min fallback = 15 minutes
+    expect(mockTicketCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        number: 4,
+        queueId,
+        userId,
+        initialEstimatedWaitMinutes: 15,
+      }),
+    });
+  });
+
+  it("persists null initial estimate safely without failing ticket creation when estimation throws", async () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    mockGetCurrentUser.mockResolvedValue({ id: userId });
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      isActive: true,
+    });
+    mockQueryRaw.mockResolvedValue([{ number: 3 }]);
+    mockTicketFindFirst.mockImplementation(({ where }) => {
+      if (where.userId) return Promise.resolve(null);
+      return Promise.resolve(null);
+    });
+    // Force estimation query failure
+    mockTicketCount.mockRejectedValue(new Error("Unexpected DB count timeout"));
+    mockTicketCreate.mockImplementation(({ data }) =>
+      Promise.resolve({ id: "ticket-103", ...data }),
+    );
+
+    const request = new Request("http://localhost/api/tickets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queueId }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(201);
+    // Ticket creation succeeded and initialEstimatedWaitMinutes is null
+    expect(mockTicketCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        number: 3,
+        queueId,
+        userId,
+        initialEstimatedWaitMinutes: null,
+      }),
+    });
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "Failed to calculate initial wait time estimate:",
+      expect.any(Error),
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("accounts for currently serving ticket remaining time in initial estimate", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: userId });
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      isActive: true,
+    });
+    mockQueryRaw.mockResolvedValue([{ number: 2 }]);
+    const now = Date.now();
+    mockTicketFindFirst.mockImplementation(({ where }) => {
+      if (where.userId) return Promise.resolve(null);
+      if (where.status === "SERVING") {
+        // Started 2 minutes ago
+        return Promise.resolve({
+          startedAt: new Date(now - 2 * 60 * 1000),
+        });
+      }
+      return Promise.resolve(null);
+    });
+    mockTicketCount.mockResolvedValue(1); // 1 waiting person ahead
+    mockTicketFindMany.mockResolvedValue([]); // fallback 5 min
+    mockTicketCreate.mockImplementation(({ data }) =>
+      Promise.resolve({ id: "ticket-104", ...data }),
+    );
+
+    const request = new Request("http://localhost/api/tickets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queueId }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(201);
+    // Remaining serving: 5 - 2 = 3 min. Ahead: 1 * 5 = 5 min. Total: 8 min.
+    expect(mockTicketCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        number: 2,
+        queueId,
+        userId,
+        initialEstimatedWaitMinutes: 8,
+      }),
+    });
+  });
+
+  it("accounts for active CALLED ticket in initial estimate when none is SERVING", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: userId });
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      isActive: true,
+    });
+    mockQueryRaw.mockResolvedValue([{ number: 1 }]);
+    mockTicketFindFirst.mockImplementation(({ where }) => {
+      if (where.userId) return Promise.resolve(null);
+      if (where.status === "SERVING") return Promise.resolve(null);
+      if (where.status === "CALLED") {
+        return Promise.resolve({ calledAt: new Date() });
+      }
+      return Promise.resolve(null);
+    });
+    mockTicketCount.mockResolvedValue(0); // first waiting ticket
+    mockTicketFindMany.mockResolvedValue([]); // fallback 5 min
+    mockTicketCreate.mockImplementation(({ data }) =>
+      Promise.resolve({ id: "ticket-105", ...data }),
+    );
+
+    const request = new Request("http://localhost/api/tickets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queueId }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(201);
+    // Active called ticket: 5 min. Ahead: 0. Total: 5 min.
+    expect(mockTicketCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        number: 1,
+        queueId,
+        userId,
+        initialEstimatedWaitMinutes: 5,
+      }),
+    });
   });
 });

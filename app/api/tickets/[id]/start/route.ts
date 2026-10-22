@@ -117,6 +117,7 @@ export async function PATCH(
         },
         data: {
           status: "SERVING",
+          startedAt: new Date(),
         },
       });
 

@@ -47,6 +47,7 @@ export async function PATCH(
         },
         data: {
           status: "CANCELLED",
+          cancelledAt: new Date(),
         },
       });
 

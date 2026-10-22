@@ -145,11 +145,13 @@ describe("PATCH /api/tickets/[id]/call", () => {
 
     mockTicketFindFirst.mockResolvedValue(null);
     mockTicketUpdateMany.mockResolvedValue({ count: 1 });
+    const now = new Date();
     mockTicketFindUniqueOrThrow.mockResolvedValue({
       id: ticketId,
       status: "CALLED",
       servedById: "user-admin",
       counterId,
+      calledAt: now,
     });
 
     const response = await PATCH(
@@ -162,11 +164,24 @@ describe("PATCH /api/tickets/[id]/call", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(mockTicketUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: ticketId,
+        status: "WAITING",
+      },
+      data: {
+        status: "CALLED",
+        servedById: "user-admin",
+        counterId,
+        calledAt: expect.any(Date),
+      },
+    });
     expect(await response.json()).toEqual({
       id: ticketId,
       status: "CALLED",
       servedById: "user-admin",
       counterId,
+      calledAt: now.toISOString(),
     });
   });
 });

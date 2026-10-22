@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { estimateTicketWaitTime } from "@/lib/services/prediction.service";
 
 export async function GET(
   request: Request,
@@ -49,7 +50,35 @@ export async function GET(
     },
     select: {
       number: true,
+      startedAt: true,
     },
+  });
+
+  const activeCalled =
+    !currentlyServing && ticket.status === "WAITING"
+      ? await prisma.ticket.findFirst({
+          where: {
+            queueId: ticket.queueId,
+            status: "CALLED",
+          },
+          select: {
+            calledAt: true,
+          },
+        })
+      : null;
+
+  const activeTicket = currentlyServing
+    ? { status: "SERVING" as const, startedAt: currentlyServing.startedAt }
+    : activeCalled
+      ? { status: "CALLED" as const, calledAt: activeCalled.calledAt }
+      : null;
+
+  const estimatedWaitMinutes = await estimateTicketWaitTime(prisma, {
+    queueId: ticket.queueId,
+    ticketStatus: ticket.status,
+    peopleAhead,
+    queueIsActive: ticket.queue.isActive,
+    activeTicket,
   });
 
   return Response.json({
@@ -57,6 +86,7 @@ export async function GET(
     status: ticket.status,
     peopleAhead,
     currentlyServing: currentlyServing?.number ?? null,
+    estimatedWaitMinutes,
     queue: {
       name: ticket.queue.name,
     },

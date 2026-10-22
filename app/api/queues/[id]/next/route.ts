@@ -155,6 +155,7 @@ export async function PATCH(
           status: "CALLED",
           servedById: staffId,
           counterId,
+          calledAt: new Date(),
         },
       });
 

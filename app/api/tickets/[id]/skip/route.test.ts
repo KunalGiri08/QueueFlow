@@ -131,17 +131,77 @@ describe("PATCH /api/tickets/[id]/skip", () => {
 
     mockTxTicketFindUnique.mockResolvedValue(ticketData);
     mockTxTicketUpdateMany.mockResolvedValue({ count: 1 });
+    const now = new Date();
     mockTxTicketFindUniqueOrThrow.mockResolvedValue({
       ...ticketData,
       status: "SKIPPED",
+      skippedAt: now,
     });
 
     const response = await PATCH(new Request("http://localhost"), { params });
 
     expect(response.status).toBe(200);
+    expect(mockTxTicketUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: ticketId,
+        status: "CALLED",
+        servedById: "user-admin",
+        counterId: ticketData.counterId,
+      },
+      data: {
+        status: "SKIPPED",
+        skippedAt: expect.any(Date),
+      },
+    });
     expect(await response.json()).toEqual({
       ...ticketData,
       status: "SKIPPED",
+      skippedAt: now.toISOString(),
+    });
+  });
+
+  it("successfully allows an assigned operator to skip a ticket in SERVING status", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    const ticketData = {
+      id: ticketId,
+      status: "SERVING",
+      servedById: "user-admin",
+      counterId,
+      queue: { service: { organizationId } },
+    };
+    mockTicketFindUnique.mockResolvedValue(ticketData);
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockAssignmentFindUnique.mockResolvedValue({ id: "assign-1" });
+    mockCounterFindFirst.mockResolvedValue({ id: counterId, organizationId });
+
+    mockTxTicketFindUnique.mockResolvedValue(ticketData);
+    mockTxTicketUpdateMany.mockResolvedValue({ count: 1 });
+    const now = new Date();
+    mockTxTicketFindUniqueOrThrow.mockResolvedValue({
+      ...ticketData,
+      status: "SKIPPED",
+      skippedAt: now,
+    });
+
+    const response = await PATCH(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(200);
+    expect(mockTxTicketUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: ticketId,
+        status: "SERVING",
+        servedById: "user-admin",
+        counterId: ticketData.counterId,
+      },
+      data: {
+        status: "SKIPPED",
+        skippedAt: expect.any(Date),
+      },
+    });
+    expect(await response.json()).toEqual({
+      ...ticketData,
+      status: "SKIPPED",
+      skippedAt: now.toISOString(),
     });
   });
 });

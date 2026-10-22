@@ -20,6 +20,7 @@ interface PublicTicketTrackingData {
   status: TicketStatus | string;
   peopleAhead: number;
   currentlyServing: number | null;
+  estimatedWaitMinutes: number | null;
   queue: {
     name: string;
   };
@@ -46,9 +47,13 @@ function TicketTrackingSkeleton() {
         <div className="mx-auto mt-4 h-16 w-36 rounded bg-gray-200" />
         <div className="mx-auto mt-4 h-6 w-28 rounded-full bg-gray-100" />
       </div>
-      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-xl border border-gray-200 bg-white p-6 text-center shadow-sm">
           <div className="mx-auto h-3 w-20 rounded bg-gray-200" />
+          <div className="mx-auto mt-3 h-8 w-12 rounded bg-gray-200" />
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-6 text-center shadow-sm">
+          <div className="mx-auto h-3 w-24 rounded bg-gray-200" />
           <div className="mx-auto mt-3 h-8 w-12 rounded bg-gray-200" />
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-6 text-center shadow-sm">
@@ -420,6 +425,7 @@ function TicketTrackingContent({
         <TrackingPositionMetrics
           peopleAhead={data.peopleAhead}
           currentlyServing={data.currentlyServing}
+          estimatedWaitMinutes={data.estimatedWaitMinutes}
         />
       )}
 

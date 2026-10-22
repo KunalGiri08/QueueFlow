@@ -37,6 +37,7 @@ const mockWaitingTicket = {
   status: "WAITING",
   peopleAhead: 3,
   currentlyServing: 39,
+  estimatedWaitMinutes: 15,
   queue: {
     name: "Standard Line",
   },
@@ -56,6 +57,7 @@ const mockCalledTicket = {
   status: "CALLED",
   peopleAhead: 0,
   currentlyServing: 42,
+  estimatedWaitMinutes: 0,
   queue: {
     name: "Standard Line",
   },
@@ -75,6 +77,7 @@ const mockCompletedTicket = {
   status: "COMPLETED",
   peopleAhead: 0,
   currentlyServing: null,
+  estimatedWaitMinutes: null,
   queue: {
     name: "Standard Line",
   },
@@ -181,6 +184,10 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       expect(screen.getByText("#39")).toBeDefined();
       expect(screen.getByText("Active ticket at counter")).toBeDefined();
 
+      expect(screen.getByText("Estimated Wait")).toBeDefined();
+      expect(screen.getByText("~15 min")).toBeDefined();
+      expect(screen.getByText("Estimated time, not a guarantee")).toBeDefined();
+
       // Queue details section
       expect(screen.getByRole("heading", { name: /queue details/i, level: 2 })).toBeDefined();
       expect(screen.getByText("Standard Line")).toBeDefined();
@@ -263,6 +270,27 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       expect(await screen.findByText("None")).toBeDefined();
       expect(screen.getByText("No ticket being served yet")).toBeDefined();
     });
+
+    it("displays '~0 min' when ticket is CALLED", async () => {
+      activeFetchHandler = async () => jsonResponse(mockCalledTicket);
+
+      await renderPage();
+
+      expect(await screen.findByText("~0 min")).toBeDefined();
+    });
+
+    it("displays 'Unavailable' when estimatedWaitMinutes is null in API response", async () => {
+      activeFetchHandler = async () =>
+        jsonResponse({
+          ...mockWaitingTicket,
+          estimatedWaitMinutes: null,
+        });
+
+      await renderPage();
+
+      expect(await screen.findByText("Unavailable")).toBeDefined();
+      expect(screen.getByText("Estimate currently unavailable")).toBeDefined();
+    });
   });
 
   describe("Terminal ticket states and metric visibility", () => {
@@ -282,6 +310,7 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       // Position metrics and assigned counter must be hidden when counter is null
       expect(screen.queryByText("People Ahead")).toBeNull();
       expect(screen.queryByText("Currently Serving")).toBeNull();
+      expect(screen.queryByText("Estimated Wait")).toBeNull();
       expect(screen.queryByText("Assigned Counter")).toBeNull();
     });
 
@@ -303,6 +332,7 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       // Position metrics are hidden for SERVING tickets despite being active
       expect(screen.queryByText("People Ahead")).toBeNull();
       expect(screen.queryByText("Currently Serving")).toBeNull();
+      expect(screen.queryByText("Estimated Wait")).toBeNull();
     });
 
     it("renders CANCELLED status using shared StatusBadge and message", async () => {
@@ -321,6 +351,7 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       expect(screen.getByText("This ticket has been cancelled.")).toBeDefined();
       expect(screen.queryByText("People Ahead")).toBeNull();
       expect(screen.queryByText("Currently Serving")).toBeNull();
+      expect(screen.queryByText("Estimated Wait")).toBeNull();
     });
   });
 

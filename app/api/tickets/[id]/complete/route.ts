@@ -125,6 +125,7 @@ export async function PATCH(
         },
         data: {
           status: "COMPLETED",
+          completedAt: new Date(),
         },
       });
 
