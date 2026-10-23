@@ -225,7 +225,7 @@ export function Navbar() {
               >
                 My Appointments
               </Link>
-              {hasStaffRole && (
+              {(hasStaffRole || hasAdminRole) && (
                 <Link
                   href="/staff"
                   className="text-xs sm:text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 rounded-md px-1.5 py-1 sm:px-2"

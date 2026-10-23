@@ -272,19 +272,22 @@ describe("components/Navbar", () => {
       };
     });
 
-    it("exposes Admin Dashboard link alongside customer links and hides Staff Console", () => {
+    it("exposes both Admin Dashboard and Staff Console links alongside customer links", () => {
       render(<Navbar />);
 
       const adminLink = screen.getByRole("link", { name: /admin dashboard/i });
       expect(adminLink).toBeDefined();
       expect(adminLink.getAttribute("href")).toBe("/admin");
 
+      const staffLink = screen.getByRole("link", { name: /staff console/i });
+      expect(staffLink).toBeDefined();
+      expect(staffLink.getAttribute("href")).toBe("/staff");
+
       expect(screen.getByRole("link", { name: /my tickets/i })).toBeDefined();
       expect(
         screen.getByRole("link", { name: /my appointments/i }),
       ).toBeDefined();
 
-      expect(screen.queryByRole("link", { name: /staff console/i })).toBeNull();
       expect(screen.getByTestId("user-button")).toBeDefined();
     });
   });
@@ -382,7 +385,7 @@ describe("components/Navbar", () => {
   });
 
   describe("Production Role-Aware Navigation (/api/auth/me synchronization)", () => {
-    it("reproduces the missing-link scenario: Admin user with empty Clerk organizationMemberships renders Admin Dashboard once /api/auth/me resolves", async () => {
+    it("reproduces the missing-link scenario: Admin user with empty Clerk organizationMemberships renders Admin Dashboard and Staff Console once /api/auth/me resolves", async () => {
       mockUserState = {
         isLoaded: true,
         isSignedIn: true,
@@ -430,7 +433,11 @@ describe("components/Navbar", () => {
       expect(adminLink).toBeDefined();
       expect(adminLink.getAttribute("href")).toBe("/admin");
 
-      expect(screen.queryByRole("link", { name: /staff console/i })).toBeNull();
+      const staffLink = await screen.findByRole("link", {
+        name: /staff console/i,
+      });
+      expect(staffLink).toBeDefined();
+      expect(staffLink.getAttribute("href")).toBe("/staff");
     });
 
     it("reproduces Staff user with empty Clerk organizationMemberships: renders Staff Console and hides Admin Dashboard", async () => {
