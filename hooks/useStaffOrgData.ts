@@ -151,12 +151,21 @@ export function useStaffOrgData(
   const [assignedQueues, setAssignedQueues] = useState<OperatorQueueItem[]>([]);
   const [isRefreshingQueues, setIsRefreshingQueues] = useState(false);
   const [queuesError, setQueuesError] = useState<string | null>(null);
+  const [hasInitialLoaded, setHasInitialLoaded] = useState(false);
 
   const orgIdRef = useRef<string | null>(orgId);
   const staffIdRef = useRef<string | null>(staffId);
   const orgDataAbortControllerRef = useRef<AbortController | null>(null);
   const orgDataGenerationRef = useRef(0);
   const queueRefreshAbortControllerRef = useRef<AbortController | null>(null);
+
+  const backgroundPollAbortControllerRef = useRef<AbortController | null>(null);
+  const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const queueUpdateSeqRef = useRef(0);
+  const lastAppliedQueueSeqRef = useRef(0);
+  const isRefreshingQueuesRef = useRef(false);
+  const isOrgDataLoadingRef = useRef(false);
+  const schedulePollRef = useRef<(() => void) | null>(null);
 
   const redirectUrl =
     options.signInRedirectUrl ??
@@ -167,11 +176,35 @@ export function useStaffOrgData(
     staffIdRef.current = staffId;
   }, [orgId, staffId]);
 
+  useEffect(() => {
+    isRefreshingQueuesRef.current = isRefreshingQueues;
+  }, [isRefreshingQueues]);
+
+  useEffect(() => {
+    isOrgDataLoadingRef.current = isOrgDataLoading;
+  }, [isOrgDataLoading]);
+
+  const clearPollTimer = useCallback(() => {
+    if (pollTimerRef.current !== null) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const setAssignedQueuesExternal = useCallback<
+    React.Dispatch<React.SetStateAction<OperatorQueueItem[]>>
+  >((action) => {
+    const nextSeq = ++queueUpdateSeqRef.current;
+    lastAppliedQueueSeqRef.current = nextSeq;
+    setAssignedQueues(action);
+  }, []);
+
   const fetchQueueStatusesOnly = useCallback(
     async (
       targetOrgId: string,
       targetStaffId: string,
       signal?: AbortSignal,
+      options?: { skipAuthRedirect?: boolean },
     ): Promise<OperatorQueueItem[] | null> => {
       const queuesRes = await fetch(
         `/api/organizations/${encodeURIComponent(targetOrgId)}/staff/${encodeURIComponent(targetStaffId)}/queues`,
@@ -179,7 +212,9 @@ export function useStaffOrgData(
       );
 
       if (queuesRes.status === 401) {
-        router.push(redirectUrl);
+        if (!options?.skipAuthRedirect) {
+          router.push(redirectUrl);
+        }
         return null;
       }
 
@@ -223,7 +258,9 @@ export function useStaffOrgData(
           );
 
           if (statusRes.status === 401) {
-            router.push(redirectUrl);
+            if (!options?.skipAuthRedirect) {
+              router.push(redirectUrl);
+            }
             throw new Error("Unauthorized");
           }
 
@@ -404,6 +441,13 @@ export function useStaffOrgData(
   );
 
   const resetOrgData = useCallback(() => {
+    clearPollTimer();
+    schedulePollRef.current = null;
+    backgroundPollAbortControllerRef.current?.abort();
+    backgroundPollAbortControllerRef.current = null;
+    const nextSeq = ++queueUpdateSeqRef.current;
+    lastAppliedQueueSeqRef.current = nextSeq;
+
     orgDataAbortControllerRef.current?.abort();
     orgDataAbortControllerRef.current = null;
     queueRefreshAbortControllerRef.current?.abort();
@@ -418,17 +462,27 @@ export function useStaffOrgData(
     setQueuesError(null);
     setOrgDataError(null);
     setIsRefreshingQueues(false);
+    isRefreshingQueuesRef.current = false;
     setIsOrgDataLoading(false);
-  }, []);
+    isOrgDataLoadingRef.current = false;
+    setHasInitialLoaded(false);
+  }, [clearPollTimer]);
 
   // Primary load effect triggered when orgId or staffId changes
   useEffect(() => {
     if (!orgId || !staffId) {
+      clearPollTimer();
+      schedulePollRef.current = null;
+      backgroundPollAbortControllerRef.current?.abort();
+      backgroundPollAbortControllerRef.current = null;
       orgDataAbortControllerRef.current?.abort();
       orgDataAbortControllerRef.current = null;
       queueRefreshAbortControllerRef.current?.abort();
       queueRefreshAbortControllerRef.current = null;
+      /* eslint-disable-next-line react-hooks/set-state-in-effect */
       setIsOrgDataLoading(false);
+      isOrgDataLoadingRef.current = false;
+      setHasInitialLoaded(false);
       return;
     }
 
@@ -437,6 +491,10 @@ export function useStaffOrgData(
     const currentOrg = orgId;
     const currentStaff = staffId;
 
+    clearPollTimer();
+    backgroundPollAbortControllerRef.current?.abort();
+    backgroundPollAbortControllerRef.current = null;
+
     orgDataAbortControllerRef.current?.abort();
     queueRefreshAbortControllerRef.current?.abort();
 
@@ -444,6 +502,8 @@ export function useStaffOrgData(
     orgDataAbortControllerRef.current = controller;
 
     setIsOrgDataLoading(true);
+    isOrgDataLoadingRef.current = true;
+    setHasInitialLoaded(false);
     setOrgDataError(null);
     setQueuesError(null);
 
@@ -465,11 +525,14 @@ export function useStaffOrgData(
         ) {
           return;
         }
+        const nextSeq = ++queueUpdateSeqRef.current;
+        lastAppliedQueueSeqRef.current = nextSeq;
         setAssignedCounters(data.assignments);
         setActiveTicket(data.activeTicket);
         setSelectedCounterId(data.counterId);
         setCounterWarning(data.warning);
         setAssignedQueues(data.queues);
+        setHasInitialLoaded(true);
       })
       .catch((err: unknown) => {
         if (
@@ -503,6 +566,7 @@ export function useStaffOrgData(
           !controller.signal.aborted
         ) {
           setIsOrgDataLoading(false);
+          isOrgDataLoadingRef.current = false;
           if (orgDataAbortControllerRef.current === controller) {
             orgDataAbortControllerRef.current = null;
           }
@@ -517,22 +581,168 @@ export function useStaffOrgData(
       }
       queueRefreshAbortControllerRef.current?.abort();
       queueRefreshAbortControllerRef.current = null;
+      backgroundPollAbortControllerRef.current?.abort();
+      backgroundPollAbortControllerRef.current = null;
+      clearPollTimer();
+      schedulePollRef.current = null;
     };
-  }, [orgId, staffId, fetchOrgOperatorData]);
+  }, [orgId, staffId, fetchOrgOperatorData, clearPollTimer]);
+
+  // Visibility-aware background queue polling every 10 seconds while context is valid
+  useEffect(() => {
+    if (!orgId || !staffId || !hasInitialLoaded || isOrgDataLoading || orgDataError) {
+      clearPollTimer();
+      schedulePollRef.current = null;
+      backgroundPollAbortControllerRef.current?.abort();
+      backgroundPollAbortControllerRef.current = null;
+      return;
+    }
+
+    let isCancelled = false;
+    const currentOrg = orgId;
+    const currentStaff = staffId;
+
+    const schedulePoll = () => {
+      if (isCancelled) return;
+      clearPollTimer();
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      ) {
+        return;
+      }
+      pollTimerRef.current = setTimeout(async () => {
+        if (isCancelled) return;
+        await runPoll();
+      }, 10000);
+    };
+
+    schedulePollRef.current = schedulePoll;
+
+    const runPoll = async () => {
+      if (isCancelled) return;
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      ) {
+        return;
+      }
+      if (isRefreshingQueuesRef.current || isOrgDataLoadingRef.current) {
+        schedulePoll();
+        return;
+      }
+
+      backgroundPollAbortControllerRef.current?.abort();
+      const controller = new AbortController();
+      backgroundPollAbortControllerRef.current = controller;
+      const pollSeq = ++queueUpdateSeqRef.current;
+
+      try {
+        const queues = await fetchQueueStatusesOnly(
+          currentOrg,
+          currentStaff,
+          controller.signal,
+          { skipAuthRedirect: true },
+        );
+
+        if (
+          !isCancelled &&
+          !controller.signal.aborted &&
+          orgIdRef.current === currentOrg &&
+          staffIdRef.current === currentStaff &&
+          backgroundPollAbortControllerRef.current === controller &&
+          pollSeq >= lastAppliedQueueSeqRef.current &&
+          queues !== null
+        ) {
+          lastAppliedQueueSeqRef.current = pollSeq;
+          setAssignedQueues(queues);
+        }
+      } catch {
+        // Non-destructive: transient background errors do not overwrite UI
+      } finally {
+        if (backgroundPollAbortControllerRef.current === controller) {
+          backgroundPollAbortControllerRef.current = null;
+        }
+        if (
+          !isCancelled &&
+          orgIdRef.current === currentOrg &&
+          staffIdRef.current === currentStaff &&
+          (typeof document === "undefined" ||
+            document.visibilityState === "visible")
+        ) {
+          schedulePoll();
+        }
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined") return;
+      if (document.visibilityState === "hidden") {
+        clearPollTimer();
+        backgroundPollAbortControllerRef.current?.abort();
+        backgroundPollAbortControllerRef.current = null;
+      } else if (document.visibilityState === "visible") {
+        clearPollTimer();
+        void runPoll();
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+
+    // Schedule initial poll if tab is visible
+    if (
+      typeof document === "undefined" ||
+      document.visibilityState === "visible"
+    ) {
+      schedulePoll();
+    }
+
+    return () => {
+      isCancelled = true;
+      schedulePollRef.current = null;
+      clearPollTimer();
+      backgroundPollAbortControllerRef.current?.abort();
+      backgroundPollAbortControllerRef.current = null;
+      if (typeof document !== "undefined") {
+        document.removeEventListener(
+          "visibilitychange",
+          handleVisibilityChange,
+        );
+      }
+    };
+  }, [
+    orgId,
+    staffId,
+    hasInitialLoaded,
+    isOrgDataLoading,
+    orgDataError,
+    clearPollTimer,
+    fetchQueueStatusesOnly,
+  ]);
 
   // Global unmount cleanup
   useEffect(() => {
     return () => {
+      clearPollTimer();
+      schedulePollRef.current = null;
+      backgroundPollAbortControllerRef.current?.abort();
       orgDataAbortControllerRef.current?.abort();
       queueRefreshAbortControllerRef.current?.abort();
     };
-  }, []);
+  }, [clearPollTimer]);
 
   const retryOrgData = useCallback(() => {
     if (!orgId || !staffId) return;
     const currentGen = ++orgDataGenerationRef.current;
     const currentOrg = orgId;
     const currentStaff = staffId;
+
+    clearPollTimer();
+    schedulePollRef.current = null;
+    backgroundPollAbortControllerRef.current?.abort();
+    backgroundPollAbortControllerRef.current = null;
 
     orgDataAbortControllerRef.current?.abort();
     queueRefreshAbortControllerRef.current?.abort();
@@ -541,6 +751,8 @@ export function useStaffOrgData(
     orgDataAbortControllerRef.current = controller;
 
     setIsOrgDataLoading(true);
+    isOrgDataLoadingRef.current = true;
+    setHasInitialLoaded(false);
     setOrgDataError(null);
     setQueuesError(null);
 
@@ -554,11 +766,14 @@ export function useStaffOrgData(
         ) {
           return;
         }
+        const nextSeq = ++queueUpdateSeqRef.current;
+        lastAppliedQueueSeqRef.current = nextSeq;
         setAssignedCounters(data.assignments);
         setActiveTicket(data.activeTicket);
         setSelectedCounterId(data.counterId);
         setCounterWarning(data.warning);
         setAssignedQueues(data.queues);
+        setHasInitialLoaded(true);
       })
       .catch((err: unknown) => {
         if (
@@ -590,24 +805,32 @@ export function useStaffOrgData(
           !controller.signal.aborted
         ) {
           setIsOrgDataLoading(false);
+          isOrgDataLoadingRef.current = false;
           if (orgDataAbortControllerRef.current === controller) {
             orgDataAbortControllerRef.current = null;
           }
         }
       });
-  }, [orgId, staffId, fetchOrgOperatorData]);
+  }, [orgId, staffId, fetchOrgOperatorData, clearPollTimer]);
 
   const refreshQueues = useCallback(async () => {
     if (!orgId || !staffId || isRefreshingQueues) return;
     const currentOrg = orgId;
     const currentStaff = staffId;
 
+    // Abort in-flight background poll and clear timer while manual refresh is running
+    clearPollTimer();
+    backgroundPollAbortControllerRef.current?.abort();
+    backgroundPollAbortControllerRef.current = null;
+
     queueRefreshAbortControllerRef.current?.abort();
     const controller = new AbortController();
     queueRefreshAbortControllerRef.current = controller;
 
     setIsRefreshingQueues(true);
+    isRefreshingQueuesRef.current = true;
     setQueuesError(null);
+    const refreshSeq = ++queueUpdateSeqRef.current;
 
     try {
       const queues = await fetchQueueStatusesOnly(
@@ -619,8 +842,10 @@ export function useStaffOrgData(
         orgIdRef.current === currentOrg &&
         staffIdRef.current === currentStaff &&
         queueRefreshAbortControllerRef.current === controller &&
+        refreshSeq >= lastAppliedQueueSeqRef.current &&
         queues !== null
       ) {
+        lastAppliedQueueSeqRef.current = refreshSeq;
         setAssignedQueues(queues);
       }
     } catch (err: unknown) {
@@ -651,10 +876,19 @@ export function useStaffOrgData(
         queueRefreshAbortControllerRef.current === controller
       ) {
         setIsRefreshingQueues(false);
+        isRefreshingQueuesRef.current = false;
         queueRefreshAbortControllerRef.current = null;
+
+        // Resume background polling cadence after manual refresh completes
+        if (
+          typeof document === "undefined" ||
+          document.visibilityState === "visible"
+        ) {
+          schedulePollRef.current?.();
+        }
       }
     }
-  }, [orgId, staffId, isRefreshingQueues, fetchQueueStatusesOnly]);
+  }, [orgId, staffId, isRefreshingQueues, fetchQueueStatusesOnly, clearPollTimer]);
 
   const fetchQueueStatuses = useCallback(
     async (
@@ -717,7 +951,7 @@ export function useStaffOrgData(
     setSelectedCounterId,
     setCounterWarning,
     setActiveTicket,
-    setAssignedQueues,
+    setAssignedQueues: setAssignedQueuesExternal,
     retryOrgData,
     refreshQueues,
     fetchQueueStatuses,

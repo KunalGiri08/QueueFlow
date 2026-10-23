@@ -1,7 +1,11 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, act, waitFor } from "@testing-library/react";
-import { useStaffOrgData } from "./useStaffOrgData";
+import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
+import {
+  useStaffOrgData,
+  type UseStaffOrgDataReturn,
+  type UseStaffOrgDataOptions,
+} from "./useStaffOrgData";
 
 // 1. Mock Next.js navigation with a stable router object identity
 const mockPush = vi.fn();
@@ -132,6 +136,11 @@ describe("hooks/useStaffOrgData", () => {
   }
 
   beforeEach(() => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      writable: true,
+      value: "visible",
+    });
     mockPush.mockReset();
     activeFetchHandler = (url) => defaultFetchHandler(url);
     fetchMock = vi
@@ -144,8 +153,15 @@ describe("hooks/useStaffOrgData", () => {
   });
 
   afterEach(() => {
+    cleanup();
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      writable: true,
+      value: "visible",
+    });
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   describe("1. Identity & Missing Props Guarding", () => {
@@ -631,6 +647,486 @@ describe("hooks/useStaffOrgData", () => {
 
       const recovered = await result.current.recoverActiveTicket();
       expect(recovered).toEqual(mockActiveTicket);
+    });
+  });
+
+  describe("9. Visibility-Aware Background Queue Polling Lifecycle", () => {
+    it("automatically refreshes queue metrics after 10-second polling interval", async () => {
+      vi.useFakeTimers();
+
+      let queuePollCount = 0;
+      activeFetchHandler = (url) => {
+        if (url === "/api/queues/queue-1") {
+          queuePollCount++;
+          return jsonResponse({
+            id: "queue-1",
+            waitingCount: queuePollCount === 1 ? 3 : 5,
+            currentlyServing: null,
+          });
+        }
+        return defaultFetchHandler(url);
+      };
+
+      let hook!: ReturnType<
+        typeof renderHook<UseStaffOrgDataReturn, UseStaffOrgDataOptions>
+      >;
+      await act(async () => {
+        hook = renderHook(() =>
+          useStaffOrgData({ orgId: "org-1", staffId: "user-staff-1" }),
+        );
+      });
+
+      expect(hook.result.current.isOrgDataLoading).toBe(false);
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(3);
+      expect(queuePollCount).toBe(1);
+
+      // Advance by 10s to trigger background poll
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(queuePollCount).toBe(2);
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(5);
+
+      // Advance another 10s to verify repeated cadence
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(queuePollCount).toBe(3);
+    });
+
+    it("does not poll without valid organization and staff context", async () => {
+      vi.useFakeTimers();
+
+      let fetchCount = 0;
+      activeFetchHandler = (url) => {
+        fetchCount++;
+        return defaultFetchHandler(url);
+      };
+
+      await act(async () => {
+        renderHook(() =>
+          useStaffOrgData({ orgId: null, staffId: null }),
+        );
+      });
+
+      expect(fetchCount).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Advance time by 30 seconds
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+
+      expect(fetchCount).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("does not poll when initial load results in orgDataError", async () => {
+      vi.useFakeTimers();
+
+      let fetchCount = 0;
+      activeFetchHandler = (url) => {
+        fetchCount++;
+        if (url.includes("/counters")) {
+          return jsonResponse({ error: "Failed" }, 500);
+        }
+        return defaultFetchHandler(url);
+      };
+
+      let hook!: ReturnType<
+        typeof renderHook<UseStaffOrgDataReturn, UseStaffOrgDataOptions>
+      >;
+      await act(async () => {
+        hook = renderHook(() =>
+          useStaffOrgData({ orgId: "org-1", staffId: "user-staff-1" }),
+        );
+      });
+
+      expect(hook.result.current.orgDataError).not.toBeNull();
+      const callsBefore = fetchCount;
+
+      // Advance time by 30 seconds
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+
+      // No background polling occurred
+      expect(fetchCount).toBe(callsBefore);
+    });
+
+    it("pauses polling while document visibility is hidden", async () => {
+      vi.useFakeTimers();
+
+      let queueFetchCount = 0;
+      activeFetchHandler = (url) => {
+        if (url === "/api/queues/queue-1") {
+          queueFetchCount++;
+        }
+        return defaultFetchHandler(url);
+      };
+
+      await act(async () => {
+        renderHook(() =>
+          useStaffOrgData({ orgId: "org-1", staffId: "user-staff-1" }),
+        );
+      });
+
+      expect(queueFetchCount).toBe(1);
+
+      // Tab hidden
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          writable: true,
+          value: "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Advance by 30 seconds while hidden
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+
+      // No additional queue fetch occurred
+      expect(queueFetchCount).toBe(1);
+    });
+
+    it("immediately refreshes queue metrics when tab becomes visible and resumes 10s cadence", async () => {
+      vi.useFakeTimers();
+
+      let queueFetchCount = 0;
+      activeFetchHandler = (url) => {
+        if (url === "/api/queues/queue-1") {
+          queueFetchCount++;
+          return jsonResponse({
+            id: "queue-1",
+            waitingCount: queueFetchCount === 1 ? 3 : 9,
+            currentlyServing: null,
+          });
+        }
+        return defaultFetchHandler(url);
+      };
+
+      let hook!: ReturnType<
+        typeof renderHook<UseStaffOrgDataReturn, UseStaffOrgDataOptions>
+      >;
+      await act(async () => {
+        hook = renderHook(() =>
+          useStaffOrgData({ orgId: "org-1", staffId: "user-staff-1" }),
+        );
+      });
+
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(3);
+
+      // Hide tab
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          writable: true,
+          value: "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      // Advance 20s while hidden
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20000);
+      });
+
+      expect(queueFetchCount).toBe(1);
+
+      // Make tab visible
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          writable: true,
+          value: "visible",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      // Immediate refresh happened
+      expect(queueFetchCount).toBe(2);
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(9);
+
+      // Verify 10-second cadence resumed
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(queueFetchCount).toBe(3);
+    });
+
+    it("cleans up timers and visibility event listener on unmount", async () => {
+      vi.useFakeTimers();
+
+      let hook!: ReturnType<
+        typeof renderHook<UseStaffOrgDataReturn, UseStaffOrgDataOptions>
+      >;
+      await act(async () => {
+        hook = renderHook(() =>
+          useStaffOrgData({ orgId: "org-1", staffId: "user-staff-1" }),
+        );
+      });
+
+      expect(vi.getTimerCount()).toBe(1);
+
+      act(() => {
+        hook.unmount();
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Dispatching visibility change after unmount does not trigger calls or throw
+      const callsBefore = fetchMock.mock.calls.length;
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(fetchMock.mock.calls.length).toBe(callsBefore);
+    });
+
+    it("prevents stale background responses from previous organization from overwriting new organization state", async () => {
+      vi.useFakeTimers();
+
+      let resolveSlowOrg1Queues!: (res: Response) => void;
+      let org1PollAttempt = 0;
+
+      activeFetchHandler = (url) => {
+        if (url === "/api/organizations/org-1/staff/user-staff-1/queues") {
+          org1PollAttempt++;
+          if (org1PollAttempt > 1) {
+            // Slow poll response
+            return new Promise((resolve) => {
+              resolveSlowOrg1Queues = resolve;
+            });
+          }
+        }
+        return defaultFetchHandler(url);
+      };
+
+      let hook!: ReturnType<
+        typeof renderHook<
+          UseStaffOrgDataReturn,
+          { orgId: string; staffId: string }
+        >
+      >;
+      await act(async () => {
+        hook = renderHook(
+          (props: { orgId: string; staffId: string }) =>
+            useStaffOrgData(props),
+          {
+            initialProps: { orgId: "org-1", staffId: "user-staff-1" },
+          },
+        );
+      });
+
+      expect(hook.result.current.assignedQueues[0].id).toBe("queue-1");
+
+      // Advance by 10s to trigger background poll for org-1
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // While org-1 poll is pending, switch to org-2
+      await act(async () => {
+        hook.rerender({ orgId: "org-2", staffId: "user-staff-1" });
+      });
+
+      expect(hook.result.current.assignedQueues[0].id).toBe("queue-2");
+
+      // Now resolve the stale org-1 poll
+      await act(async () => {
+        resolveSlowOrg1Queues(
+          jsonResponse([
+            {
+              id: "queue-1-stale",
+              name: "Stale Queue Org 1",
+              isActive: true,
+              service: { id: "service-1", name: "Check-in" },
+            },
+          ]),
+        );
+      });
+
+      // org-2 data must NOT be overwritten
+      expect(hook.result.current.assignedQueues[0].id).toBe("queue-2");
+    });
+
+    it("preserves existing queue data and avoids disruptive errors when background polling request fails", async () => {
+      vi.useFakeTimers();
+
+      let failPoll = false;
+      activeFetchHandler = (url) => {
+        if (url === "/api/queues/queue-1" && failPoll) {
+          return jsonResponse({ error: "Temporary outage" }, 500);
+        }
+        return defaultFetchHandler(url);
+      };
+
+      let hook!: ReturnType<
+        typeof renderHook<UseStaffOrgDataReturn, UseStaffOrgDataOptions>
+      >;
+      await act(async () => {
+        hook = renderHook(() =>
+          useStaffOrgData({ orgId: "org-1", staffId: "user-staff-1" }),
+        );
+      });
+
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(3);
+      expect(hook.result.current.queuesError).toBeNull();
+
+      // Trigger failing background poll
+      failPoll = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // State is preserved and NO error message is shown
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(3);
+      expect(hook.result.current.queuesError).toBeNull();
+      expect(hook.result.current.orgDataError).toBeNull();
+      expect(hook.result.current.isRefreshingQueues).toBe(false);
+
+      // Recover on subsequent poll
+      failPoll = false;
+      activeFetchHandler = (url) => {
+        if (url === "/api/queues/queue-1") {
+          return jsonResponse({
+            id: "queue-1",
+            waitingCount: 4,
+            currentlyServing: null,
+          });
+        }
+        return defaultFetchHandler(url);
+      };
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(4);
+    });
+
+    it("does not overwrite newer state from local actions with older background poll responses", async () => {
+      vi.useFakeTimers();
+
+      let resolveSlowPoll!: (res: Response) => void;
+      let pollCallCount = 0;
+
+      activeFetchHandler = (url) => {
+        if (url === "/api/organizations/org-1/staff/user-staff-1/queues") {
+          pollCallCount++;
+          if (pollCallCount > 1) {
+            return new Promise((resolve) => {
+              resolveSlowPoll = resolve;
+            });
+          }
+        }
+        return defaultFetchHandler(url);
+      };
+
+      let hook!: ReturnType<
+        typeof renderHook<UseStaffOrgDataReturn, UseStaffOrgDataOptions>
+      >;
+      await act(async () => {
+        hook = renderHook(() =>
+          useStaffOrgData({ orgId: "org-1", staffId: "user-staff-1" }),
+        );
+      });
+
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(3);
+
+      // Advance by 10s to start background poll
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // Local ticket mutation updates assigned queues while background poll is pending
+      act(() => {
+        hook.result.current.setAssignedQueues([
+          {
+            id: "queue-1",
+            name: "General Line",
+            isActive: true,
+            service: { id: "service-1", name: "Check-in" },
+            waitingCount: 1,
+            currentlyServing: 101,
+          },
+        ]);
+      });
+
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(1);
+
+      // Now resolve the older slow poll
+      await act(async () => {
+        resolveSlowPoll(jsonResponse([mockQueueOrg1]));
+      });
+
+      // Older background poll response did NOT overwrite local update
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(1);
+      expect(hook.result.current.assignedQueues[0].currentlyServing).toBe(101);
+    });
+
+    it("resets background polling cadence when manual refresh completes", async () => {
+      vi.useFakeTimers();
+
+      let queueStatusCalls = 0;
+      activeFetchHandler = (url) => {
+        if (url === "/api/queues/queue-1") {
+          queueStatusCalls++;
+          return jsonResponse({
+            id: "queue-1",
+            waitingCount: queueStatusCalls === 1 ? 3 : queueStatusCalls === 2 ? 6 : 8,
+            currentlyServing: null,
+          });
+        }
+        return defaultFetchHandler(url);
+      };
+
+      let hook!: ReturnType<
+        typeof renderHook<UseStaffOrgDataReturn, UseStaffOrgDataOptions>
+      >;
+      await act(async () => {
+        hook = renderHook(() =>
+          useStaffOrgData({ orgId: "org-1", staffId: "user-staff-1" }),
+        );
+      });
+
+      expect(queueStatusCalls).toBe(1);
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(3);
+
+      // Advance 6s
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6000);
+      });
+
+      expect(queueStatusCalls).toBe(1);
+
+      // User performs manual refresh at 6s
+      await act(async () => {
+        await hook.result.current.refreshQueues();
+      });
+
+      expect(queueStatusCalls).toBe(2);
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(6);
+
+      // Advance 4s (at t=10s from initial load) - no poll should fire because cadence reset
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+      expect(queueStatusCalls).toBe(2);
+
+      // Advance 6 more seconds (10s after manual refresh finished)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6000);
+      });
+      expect(queueStatusCalls).toBe(3);
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(8);
     });
   });
 });
