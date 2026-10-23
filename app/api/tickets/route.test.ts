@@ -114,10 +114,68 @@ describe("POST /api/tickets", () => {
   const userId = "user-customer-1";
   const queueId = "queue-general-1";
 
+  const defaultOpenOrg = {
+    id: "org-1",
+    timezone: "Asia/Kolkata",
+    scheduleIntervals: [
+      { id: "int-0", dayOfWeek: 0, startTime: "00:00", endTime: "23:59", isActive: true },
+      { id: "int-1", dayOfWeek: 1, startTime: "00:00", endTime: "23:59", isActive: true },
+      { id: "int-2", dayOfWeek: 2, startTime: "00:00", endTime: "23:59", isActive: true },
+      { id: "int-3", dayOfWeek: 3, startTime: "00:00", endTime: "23:59", isActive: true },
+      { id: "int-4", dayOfWeek: 4, startTime: "00:00", endTime: "23:59", isActive: true },
+      { id: "int-5", dayOfWeek: 5, startTime: "00:00", endTime: "23:59", isActive: true },
+      { id: "int-6", dayOfWeek: 6, startTime: "00:00", endTime: "23:59", isActive: true },
+    ],
+    closures: [],
+  };
+
+  const expectedQueueSelect = {
+    id: true,
+    isActive: true,
+    service: {
+      select: {
+        id: true,
+        isActive: true,
+        organization: {
+          select: {
+            id: true,
+            timezone: true,
+            scheduleIntervals: {
+              select: {
+                id: true,
+                dayOfWeek: true,
+                startTime: true,
+                endTime: true,
+                isActive: true,
+              },
+            },
+            closures: {
+              select: {
+                id: true,
+                startDate: true,
+                endDate: true,
+                reason: true,
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockTicketCount.mockResolvedValue(0);
     mockTicketFindMany.mockResolvedValue([]);
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
+    });
     mockTransaction.mockImplementation(async (callback) => {
       const mockTx = {
         $queryRaw: mockQueryRaw,
@@ -207,13 +265,7 @@ describe("POST /api/tickets", () => {
     });
     expect(mockQueueFindUnique).toHaveBeenCalledWith({
       where: { id: queueId },
-      select: {
-        id: true,
-        isActive: true,
-        service: {
-          select: { id: true, isActive: true },
-        },
-      },
+      select: expectedQueueSelect,
     });
     expect(mockQueryRaw).not.toHaveBeenCalled();
     expect(mockTicketCreate).not.toHaveBeenCalled();
@@ -274,6 +326,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     // Simulates 0 rows updated by reserveNextTicketNumber SQL query
     mockQueryRaw.mockResolvedValue([]);
@@ -300,6 +357,11 @@ describe("POST /api/tickets", () => {
       mockQueueFindUnique.mockResolvedValue({
         id: queueId,
         isActive: true,
+        service: {
+          id: "svc-1",
+          isActive: true,
+          organization: defaultOpenOrg,
+        },
       });
       mockQueryRaw.mockResolvedValue([{ number: 5 }]);
       mockTicketFindFirst.mockResolvedValue({
@@ -338,6 +400,11 @@ describe("POST /api/tickets", () => {
       mockQueueFindUnique.mockResolvedValue({
         id: queueId,
         isActive: true,
+        service: {
+          id: "svc-1",
+          isActive: true,
+          organization: defaultOpenOrg,
+        },
       });
       mockQueryRaw.mockResolvedValue([{ number: 10 }]);
       // Simulates findFirst returning null because prior ticket is terminal, not active
@@ -383,6 +450,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     mockQueryRaw.mockResolvedValue([{ number: 42 }]);
     mockTicketFindFirst.mockResolvedValue(null);
@@ -410,6 +482,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     mockQueryRaw.mockResolvedValue([{ number: 42 }]);
     mockTicketFindFirst.mockResolvedValue(null);
@@ -453,6 +530,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     mockQueryRaw.mockResolvedValue([{ number: 1 }]);
     mockTicketFindFirst.mockResolvedValue(null);
@@ -499,6 +581,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     mockQueryRaw.mockResolvedValue([{ number: 10 }]);
     mockTicketFindFirst.mockResolvedValue(null);
@@ -523,13 +610,7 @@ describe("POST /api/tickets", () => {
     expect(mockTransaction).toHaveBeenCalledTimes(1);
     expect(mockQueueFindUnique).toHaveBeenCalledWith({
       where: { id: queueId },
-      select: {
-        id: true,
-        isActive: true,
-        service: {
-          select: { id: true, isActive: true },
-        },
-      },
+      select: expectedQueueSelect,
     });
     expect(mockQueryRaw).toHaveBeenCalledTimes(1);
     expect(mockTicketFindFirst).toHaveBeenCalledWith({
@@ -560,6 +641,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     mockQueryRaw.mockResolvedValue([{ number: 10 }]);
     mockTicketFindFirst.mockResolvedValue(null);
@@ -591,6 +677,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     mockQueryRaw.mockResolvedValue([{ number: 5 }]);
     mockTicketFindFirst.mockResolvedValue(null);
@@ -639,6 +730,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     mockQueryRaw.mockResolvedValue([{ number: 4 }]);
     mockTicketFindFirst.mockResolvedValue(null);
@@ -677,6 +773,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     mockQueryRaw.mockResolvedValue([{ number: 3 }]);
     mockTicketFindFirst.mockImplementation(({ where }) => {
@@ -720,6 +821,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     mockQueryRaw.mockResolvedValue([{ number: 2 }]);
     const now = Date.now();
@@ -764,6 +870,11 @@ describe("POST /api/tickets", () => {
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
+      service: {
+        id: "svc-1",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
     });
     mockQueryRaw.mockResolvedValue([{ number: 1 }]);
     mockTicketFindFirst.mockImplementation(({ where }) => {
@@ -797,6 +908,372 @@ describe("POST /api/tickets", () => {
         userId,
         initialEstimatedWaitMinutes: 5,
       }),
+    });
+  });
+
+  describe("Operating Hours Admission Enforcement", () => {
+    it("rejects ticket creation when the organization has no active schedule for today (NO_ACTIVE_SCHEDULE)", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        service: {
+          id: "svc-1",
+          isActive: true,
+          organization: {
+            id: "org-1",
+            timezone: "Asia/Kolkata",
+            scheduleIntervals: [], // No intervals configured
+            closures: [],
+          },
+        },
+      });
+
+      const request = new Request("http://localhost/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queueId }),
+      });
+
+      const response = await POST(request);
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.code).toBe("NO_ACTIVE_SCHEDULE");
+      expect(data.reason).toBe("NO_ACTIVE_SCHEDULE");
+      expect(data.error).toContain("No active schedule intervals configured");
+      expect(mockQueryRaw).not.toHaveBeenCalled();
+      expect(mockTicketCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects ticket creation when outside operating hours", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      // Schedule interval: 00:00 to 00:01 (closed at almost any realistic current time)
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        service: {
+          id: "svc-1",
+          isActive: true,
+          organization: {
+            id: "org-1",
+            timezone: "Asia/Kolkata",
+            scheduleIntervals: [
+              { id: "int-0", dayOfWeek: 0, startTime: "00:00", endTime: "00:01", isActive: true },
+              { id: "int-1", dayOfWeek: 1, startTime: "00:00", endTime: "00:01", isActive: true },
+              { id: "int-2", dayOfWeek: 2, startTime: "00:00", endTime: "00:01", isActive: true },
+              { id: "int-3", dayOfWeek: 3, startTime: "00:00", endTime: "00:01", isActive: true },
+              { id: "int-4", dayOfWeek: 4, startTime: "00:00", endTime: "00:01", isActive: true },
+              { id: "int-5", dayOfWeek: 5, startTime: "00:00", endTime: "00:01", isActive: true },
+              { id: "int-6", dayOfWeek: 6, startTime: "00:00", endTime: "00:01", isActive: true },
+            ],
+            closures: [],
+          },
+        },
+      });
+
+      const request = new Request("http://localhost/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queueId }),
+      });
+
+      const response = await POST(request);
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.code).toBe("OUTSIDE_WORKING_HOURS");
+      expect(data.reason).toBe("OUTSIDE_WORKING_HOURS");
+      expect(data.error).toBe("Current time is outside organization working hours");
+      expect(mockQueryRaw).not.toHaveBeenCalled();
+      expect(mockTicketCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects ticket creation when an exceptional closure is active", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      // Cover all of 2026
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        service: {
+          id: "svc-1",
+          isActive: true,
+          organization: {
+            id: "org-1",
+            timezone: "Asia/Kolkata",
+            scheduleIntervals: [
+              { id: "int-0", dayOfWeek: 0, startTime: "00:00", endTime: "23:59", isActive: true },
+              { id: "int-1", dayOfWeek: 1, startTime: "00:00", endTime: "23:59", isActive: true },
+              { id: "int-2", dayOfWeek: 2, startTime: "00:00", endTime: "23:59", isActive: true },
+              { id: "int-3", dayOfWeek: 3, startTime: "00:00", endTime: "23:59", isActive: true },
+              { id: "int-4", dayOfWeek: 4, startTime: "00:00", endTime: "23:59", isActive: true },
+              { id: "int-5", dayOfWeek: 5, startTime: "00:00", endTime: "23:59", isActive: true },
+              { id: "int-6", dayOfWeek: 6, startTime: "00:00", endTime: "23:59", isActive: true },
+            ],
+            closures: [
+              {
+                id: "cls-1",
+                startDate: "2020-01-01",
+                endDate: "2030-12-31",
+                reason: "Scheduled System Maintenance",
+              },
+            ],
+          },
+        },
+      });
+
+      const request = new Request("http://localhost/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queueId }),
+      });
+
+      const response = await POST(request);
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.code).toBe("ORGANIZATION_CLOSED");
+      expect(data.reason).toBe("ORGANIZATION_CLOSED");
+      expect(data.error).toBe("Organization is closed: Scheduled System Maintenance");
+      expect(mockQueryRaw).not.toHaveBeenCalled();
+      expect(mockTicketCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects ticket creation with misconfigured schedule error when organization timezone is invalid", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        service: {
+          id: "svc-1",
+          isActive: true,
+          organization: {
+            id: "org-1",
+            timezone: "Invalid/Fake_Timezone",
+            scheduleIntervals: [],
+            closures: [],
+          },
+        },
+      });
+
+      const request = new Request("http://localhost/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queueId }),
+      });
+
+      const response = await POST(request);
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.code).toBe("INVALID_SCHEDULE_CONFIGURATION");
+      expect(data.reason).toBe("INVALID_TIMEZONE");
+      expect(data.error).toBe("Organization schedule is temporarily misconfigured");
+      expect(mockQueryRaw).not.toHaveBeenCalled();
+      expect(mockTicketCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects ticket creation with misconfigured schedule error when interval time format is corrupted", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        service: {
+          id: "svc-1",
+          isActive: true,
+          organization: {
+            id: "org-1",
+            timezone: "UTC",
+            scheduleIntervals: [
+              { id: "int-corrupt", dayOfWeek: 3, startTime: "99:99", endTime: "23:00", isActive: true },
+            ],
+            closures: [],
+          },
+        },
+      });
+
+      const request = new Request("http://localhost/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queueId }),
+      });
+
+      const response = await POST(request);
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.code).toBe("INVALID_SCHEDULE_CONFIGURATION");
+      expect(data.error).toBe("Organization schedule is temporarily misconfigured");
+      expect(mockQueryRaw).not.toHaveBeenCalled();
+      expect(mockTicketCreate).not.toHaveBeenCalled();
+    });
+
+    it("successfully admits ticket inside an active schedule interval using deterministic time", async () => {
+      vi.useFakeTimers();
+      try {
+        // Wednesday at 10:00 UTC (day 3)
+        vi.setSystemTime(new Date("2026-10-21T10:00:00.000Z"));
+        mockGetCurrentUser.mockResolvedValue({ id: userId });
+        mockQueueFindUnique.mockResolvedValue({
+          id: queueId,
+          isActive: true,
+          service: {
+            id: "svc-1",
+            isActive: true,
+            organization: {
+              id: "org-1",
+              timezone: "UTC",
+              scheduleIntervals: [
+                { id: "int-wed", dayOfWeek: 3, startTime: "09:00", endTime: "17:00", isActive: true },
+              ],
+              closures: [],
+            },
+          },
+        });
+        mockQueryRaw.mockResolvedValue([{ number: 5 }]);
+        mockTicketFindFirst.mockResolvedValue(null);
+        mockTicketCreate.mockResolvedValue({
+          id: "ticket-det-1",
+          number: 5,
+          queueId,
+          userId,
+          status: "WAITING",
+        });
+
+        const request = new Request("http://localhost/api/tickets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ queueId }),
+        });
+
+        const response = await POST(request);
+
+        expect(response.status).toBe(201);
+        expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+        expect(mockTicketCreate).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("rejects ticket creation at the exclusive interval end boundary", async () => {
+      vi.useFakeTimers();
+      try {
+        // Wednesday at exactly 17:00:00 UTC (exclusive boundary)
+        vi.setSystemTime(new Date("2026-10-21T17:00:00.000Z"));
+        mockGetCurrentUser.mockResolvedValue({ id: userId });
+        mockQueueFindUnique.mockResolvedValue({
+          id: queueId,
+          isActive: true,
+          service: {
+            id: "svc-1",
+            isActive: true,
+            organization: {
+              id: "org-1",
+              timezone: "UTC",
+              scheduleIntervals: [
+                { id: "int-wed", dayOfWeek: 3, startTime: "09:00", endTime: "17:00", isActive: true },
+              ],
+              closures: [],
+            },
+          },
+        });
+
+        const request = new Request("http://localhost/api/tickets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ queueId }),
+        });
+
+        const response = await POST(request);
+
+        expect(response.status).toBe(400);
+        const data = await response.json();
+        expect(data.code).toBe("OUTSIDE_WORKING_HOURS");
+        expect(data.reason).toBe("OUTSIDE_WORKING_HOURS");
+        expect(mockQueryRaw).not.toHaveBeenCalled();
+        expect(mockTicketCreate).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("evaluates operating hours using organization local timezone rather than UTC", async () => {
+      vi.useFakeTimers();
+      try {
+        // Wednesday 2026-10-21 at 22:30:00 UTC
+        // In "Asia/Tokyo" (UTC+9), local time is Thursday 2026-10-22 at 07:30 (Day 4)
+        vi.setSystemTime(new Date("2026-10-21T22:30:00.000Z"));
+        mockGetCurrentUser.mockResolvedValue({ id: userId });
+        mockQueueFindUnique.mockResolvedValue({
+          id: queueId,
+          isActive: true,
+          service: {
+            id: "svc-1",
+            isActive: true,
+            organization: {
+              id: "org-1",
+              timezone: "Asia/Tokyo",
+              scheduleIntervals: [
+                // Open Thursday 07:00 to 12:00 Tokyo time
+                { id: "int-thu", dayOfWeek: 4, startTime: "07:00", endTime: "12:00", isActive: true },
+              ],
+              closures: [],
+            },
+          },
+        });
+        mockQueryRaw.mockResolvedValue([{ number: 9 }]);
+        mockTicketFindFirst.mockResolvedValue(null);
+        mockTicketCreate.mockResolvedValue({
+          id: "ticket-tokyo-1",
+          number: 9,
+          queueId,
+          userId,
+          status: "WAITING",
+        });
+
+        const request = new Request("http://localhost/api/tickets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ queueId }),
+        });
+
+        const response = await POST(request);
+
+        expect(response.status).toBe(201);
+        expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+        expect(mockTicketCreate).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("returns 404 when queue has no organization", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        service: {
+          id: "svc-1",
+          isActive: true,
+          organization: null,
+        },
+      });
+
+      const request = new Request("http://localhost/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queueId }),
+      });
+
+      const response = await POST(request);
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: "Queue not found or inactive",
+      });
+      expect(mockQueryRaw).not.toHaveBeenCalled();
+      expect(mockTicketCreate).not.toHaveBeenCalled();
     });
   });
 });

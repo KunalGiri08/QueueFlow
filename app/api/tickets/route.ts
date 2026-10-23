@@ -2,6 +2,11 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { reserveNextTicketNumber } from "@/lib/services/ticket.service";
 import { estimateTicketWaitTime } from "@/lib/services/prediction.service";
+import {
+  evaluateOperatingHours,
+  isValidClosureItem,
+  isValidIntervalItem,
+} from "@/lib/services/schedule.service";
 import { createTicketSchema } from "@/lib/validations/ticket";
 import { randomBytes } from "node:crypto";
 
@@ -88,7 +93,33 @@ export async function POST(request: Request) {
           id: true,
           isActive: true,
           service: {
-            select: { id: true, isActive: true },
+            select: {
+              id: true,
+              isActive: true,
+              organization: {
+                select: {
+                  id: true,
+                  timezone: true,
+                  scheduleIntervals: {
+                    select: {
+                      id: true,
+                      dayOfWeek: true,
+                      startTime: true,
+                      endTime: true,
+                      isActive: true,
+                    },
+                  },
+                  closures: {
+                    select: {
+                      id: true,
+                      startDate: true,
+                      endDate: true,
+                      reason: true,
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       });
@@ -97,13 +128,51 @@ export async function POST(request: Request) {
         throw new Error("QUEUE_NOT_FOUND_OR_INACTIVE");
       }
 
-      if (queue.service && queue.service.isActive === false) {
+      if (!queue.service || queue.service.isActive === false) {
         throw new Error("SERVICE_NOT_ACTIVE");
+      }
+
+      if (!queue.service.organization) {
+        throw new Error("QUEUE_NOT_FOUND_OR_INACTIVE");
+      }
+
+      const org = queue.service.organization;
+      if (
+        org.scheduleIntervals.some((item) => !isValidIntervalItem(item)) ||
+        org.closures.some((item) => !isValidClosureItem(item))
+      ) {
+        const error = new Error("ORGANIZATION_NOT_OPEN");
+        (error as unknown as { evaluation: unknown }).evaluation = {
+          isOpen: false,
+          reason: "INVALID_SCHEDULE_DATA",
+          message: "Organization schedule is temporarily misconfigured",
+        };
+        throw error;
+      }
+
+      // Check operating hours using one explicit Date instance
+      const admissionInstant = new Date();
+      const evaluation = evaluateOperatingHours({
+        timezone: org.timezone,
+        intervals: org.scheduleIntervals,
+        closures: org.closures,
+        instant: admissionInstant,
+      });
+
+      if (!evaluation.isOpen) {
+        const error = new Error("ORGANIZATION_NOT_OPEN");
+        (error as unknown as { evaluation: typeof evaluation }).evaluation =
+          evaluation;
+        throw error;
       }
 
       // Acquire the queue-row lock before checking active tickets.
       // Concurrent ticket creations for this queue must wait here.
-      const number = await reserveNextTicketNumber(tx, queueId);
+      const number = await reserveNextTicketNumber(
+        tx,
+        queueId,
+        admissionInstant,
+      );
 
       const existingActiveTicket = await tx.ticket.findFirst({
         where: {
@@ -182,6 +251,42 @@ export async function POST(request: Request) {
     return Response.json(ticket, { status: 201 });
   } catch (error) {
     if (error instanceof Error) {
+      if (error.message === "ORGANIZATION_NOT_OPEN") {
+        const evalResult = (
+          error as unknown as {
+            evaluation?: {
+              reason?: string;
+              message?: string;
+            };
+          }
+        ).evaluation;
+
+        if (
+          evalResult?.reason === "INVALID_TIMEZONE" ||
+          evalResult?.reason === "INVALID_SCHEDULE_DATA"
+        ) {
+          return Response.json(
+            {
+              error: "Organization schedule is temporarily misconfigured",
+              code: "INVALID_SCHEDULE_CONFIGURATION",
+              reason: evalResult.reason,
+              message: "Organization schedule is temporarily misconfigured",
+            },
+            { status: 400 },
+          );
+        }
+
+        return Response.json(
+          {
+            error: evalResult?.message || "Organization is currently closed",
+            code: evalResult?.reason || "ORGANIZATION_CLOSED",
+            reason: evalResult?.reason || "ORGANIZATION_CLOSED",
+            message: evalResult?.message || "Organization is currently closed",
+          },
+          { status: 400 },
+        );
+      }
+
       if (error.message === "ACTIVE_TICKET_EXISTS") {
         return Response.json(
           { error: "You already have an active ticket in this queue" },
