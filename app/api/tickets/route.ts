@@ -211,6 +211,18 @@ export async function POST(request: Request) {
       }
     }
 
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2002"
+    ) {
+      return Response.json(
+        { error: "You already have an active ticket in this queue" },
+        { status: 409 },
+      );
+    }
+
     console.error("Failed to create ticket:", error);
 
     return Response.json({ error: "Internal server error" }, { status: 500 });

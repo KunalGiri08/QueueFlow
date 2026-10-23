@@ -331,6 +331,80 @@ describe("POST /api/tickets", () => {
     },
   );
 
+  it.each(["COMPLETED", "SKIPPED", "CANCELLED"] as const)(
+    "successfully creates a ticket when the user's prior ticket in the queue is terminal (%s)",
+    async (terminalStatus) => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+      });
+      mockQueryRaw.mockResolvedValue([{ number: 10 }]);
+      // Simulates findFirst returning null because prior ticket is terminal, not active
+      mockTicketFindFirst.mockResolvedValue(null);
+
+      const createdTicket = {
+        id: "ticket-new-1",
+        number: 10,
+        queueId,
+        userId,
+        status: "WAITING",
+        trackingToken: "b".repeat(64),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      mockTicketCreate.mockResolvedValue(createdTicket);
+
+      const request = new Request("http://localhost/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queueId }),
+      });
+
+      const response = await POST(request);
+
+      expect(response.status).toBe(201);
+      const json = await response.json();
+      expect(json.number).toBe(10);
+      expect(mockTicketFindFirst).toHaveBeenCalledWith({
+        where: {
+          queueId,
+          userId,
+          status: { in: ["WAITING", "CALLED", "SERVING"] },
+        },
+        select: { id: true },
+      });
+      expect(mockTicketCreate).toHaveBeenCalled();
+    },
+  );
+
+  it("returns 409 when the database throws a unique constraint violation (P2002)", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: userId });
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      isActive: true,
+    });
+    mockQueryRaw.mockResolvedValue([{ number: 42 }]);
+    mockTicketFindFirst.mockResolvedValue(null);
+
+    const prismaError = new Error("Unique constraint failed on the constraint: ticket_active_user_queue_idx");
+    (prismaError as unknown as { code: string }).code = "P2002";
+    mockTicketCreate.mockRejectedValue(prismaError);
+
+    const request = new Request("http://localhost/api/tickets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queueId }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "You already have an active ticket in this queue",
+    });
+  });
+
   it("successfully creates a ticket and returns 201 with expected ticket fields", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: userId });
     mockQueueFindUnique.mockResolvedValue({
