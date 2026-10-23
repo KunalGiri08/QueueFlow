@@ -152,4 +152,44 @@ describe("GET /api/tickets/track/[trackingToken]", () => {
     const data = await response.json();
     expect(data.estimatedWaitMinutes).toBeNull();
   });
+
+  it("returns public tracking info with estimatedWaitMinutes as null when the queue is inactive", async () => {
+    mockTicketFindUnique.mockResolvedValue({
+      id: "internal-ticket-id",
+      number: 44,
+      status: "WAITING",
+      userId: "internal-user-id",
+      servedById: null,
+      queue: {
+        name: "Inactive Queue",
+        isActive: false,
+        service: {
+          name: "Consultation",
+          organization: {
+            name: "Metro Health",
+          },
+        },
+      },
+      counter: null,
+    });
+    mockTicketFindFirst.mockResolvedValue(null);
+    mockTicketCount.mockResolvedValue(1);
+
+    const response = await GET(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+
+    expect(data).toEqual({
+      ticketNumber: 44,
+      status: "WAITING",
+      peopleAhead: 1,
+      currentlyServing: null,
+      estimatedWaitMinutes: null,
+      queue: { name: "Inactive Queue" },
+      service: { name: "Consultation" },
+      organization: { name: "Metro Health" },
+      counter: null,
+    });
+  });
 });

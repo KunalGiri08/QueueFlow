@@ -54,6 +54,10 @@ export async function PATCH(
     return Response.json({ error: "Queue is inactive" }, { status: 409 });
   }
 
+  if (ticket.queue.service.isActive === false) {
+    return Response.json({ error: "Service is inactive" }, { status: 409 });
+  }
+
   if (ticket.status !== "WAITING") {
     return Response.json({ error: "Ticket is not waiting" }, { status: 409 });
   }

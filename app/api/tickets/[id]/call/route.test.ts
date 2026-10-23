@@ -106,6 +106,48 @@ describe("PATCH /api/tickets/[id]/call", () => {
     expect(await response.json()).toEqual({ error: "Ticket is not waiting" });
   });
 
+  it("returns 409 when the ticket's queue is inactive", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockTicketFindUnique.mockResolvedValue({
+      id: ticketId,
+      status: "WAITING",
+      queue: { isActive: false, service: { organizationId, isActive: true } },
+    });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counterId }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Queue is inactive" });
+  });
+
+  it("returns 409 when the ticket's parent service is inactive", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockTicketFindUnique.mockResolvedValue({
+      id: ticketId,
+      status: "WAITING",
+      queue: { isActive: true, service: { organizationId, isActive: false } },
+    });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counterId }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Service is inactive" });
+  });
+
   it("returns 403 when an unassigned ADMIN attempts to call ticket", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
     mockTicketFindUnique.mockResolvedValue({

@@ -175,6 +175,48 @@ describe("app/organizations/[organizationId]/page", () => {
       expect(screen.getByText("No active queues")).toBeDefined();
     });
 
+    it("defensively excludes queues marked inactive from being rendered as joinable", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          organization: mockOrg,
+          services: [
+            {
+              id: "srv-defensive",
+              name: "General Consultation",
+              description: "Walk-in consultations",
+              queues: [
+                { id: "q-active", name: "Active Queue", isActive: true },
+                { id: "q-inactive", name: "Inactive Queue", isActive: false },
+                { id: "q-legacy", name: "Legacy Queue" },
+              ],
+            },
+            {
+              id: "srv-all-inactive",
+              name: "Pharmacy",
+              description: null,
+              queues: [
+                { id: "q-only-inactive", name: "Closed Queue", isActive: false },
+              ],
+            },
+          ],
+        }),
+      );
+
+      await renderPage();
+
+      expect(screen.getByText("Active Queue")).toBeDefined();
+      expect(screen.getByRole("button", { name: "Join Active Queue" })).toBeDefined();
+
+      expect(screen.getByText("Legacy Queue")).toBeDefined();
+      expect(screen.getByRole("button", { name: "Join Legacy Queue" })).toBeDefined();
+
+      expect(screen.queryByText("Inactive Queue")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Join Inactive Queue" })).toBeNull();
+
+      expect(screen.queryByText("Closed Queue")).toBeNull();
+      expect(screen.getByText("No active queues")).toBeDefined();
+    });
+
     it("displays 404 organization not found state with back link", async () => {
       fetchMock.mockResolvedValueOnce(
         new Response(JSON.stringify({ error: "Organization not found" }), {
@@ -495,6 +537,47 @@ describe("app/organizations/[organizationId]/page", () => {
       expect(joinBtn.getAttribute("aria-describedby")).toBe("queue-error-q-1");
       const alertContainer = screen.getByRole("alert");
       expect(alertContainer.getAttribute("id")).toBe("queue-error-q-1");
+    });
+
+    it("displays server-provided error message when queue join returns HTTP 400", async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes("/services")) return jsonResponse(mockCatalogData);
+        if (url === "/api/tickets" && init?.method === "POST") {
+          return jsonResponse(
+            { error: "Service category is not active" },
+            400,
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      fireEvent.click(screen.getByRole("button", { name: "Join Standard Line" }));
+
+      expect(
+        await screen.findByText("Service category is not active"),
+      ).toBeDefined();
+    });
+
+    it("displays generic fallback error message when queue join returns HTTP 400 without error text", async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes("/services")) return jsonResponse(mockCatalogData);
+        if (url === "/api/tickets" && init?.method === "POST") {
+          return new Response("Bad Request", { status: 400 });
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      fireEvent.click(screen.getByRole("button", { name: "Join Standard Line" }));
+
+      expect(
+        await screen.findByText(
+          "Unable to join the queue at this time. Please try again.",
+        ),
+      ).toBeDefined();
     });
 
     it("handles 409 conflict response with custom API message and fallback", async () => {

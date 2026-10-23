@@ -316,6 +316,33 @@ describe("PATCH /api/appointments/[id]", () => {
     });
   });
 
+  it("returns 400 when the appointment's parent service is inactive", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
+    mockQueryRaw
+      .mockResolvedValueOnce([{ id: "appointment-123" }])
+      .mockResolvedValueOnce([{ id: "svc-1", isActive: false }]);
+    mockFindUniqueOrThrow.mockResolvedValue({
+      id: "appointment-123",
+      userId: "user-123",
+      status: "BOOKED",
+      serviceId: "svc-1",
+    });
+
+    const response = await PATCH(
+      new Request("http://localhost/api/appointments/appointment-123", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduledAt: futureDate }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Service is not active",
+    });
+  });
+
   it("returns 409 when target slot is already booked by another customer", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
     mockQueryRaw.mockResolvedValue([{ id: "appointment-123" }]);

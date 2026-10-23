@@ -11,7 +11,7 @@ import type { BookedAppointmentSuccessData } from "@/components/appointments/typ
 interface PublicQueue {
   id: string;
   name: string;
-  isActive: boolean;
+  isActive?: boolean;
 }
 
 interface PublicService {
@@ -42,7 +42,7 @@ function isValidQueue(q: unknown): q is PublicQueue {
     item.id.trim() !== "" &&
     typeof item.name === "string" &&
     item.name.trim() !== "" &&
-    typeof item.isActive === "boolean"
+    (item.isActive === undefined || typeof item.isActive === "boolean")
   );
 }
 
@@ -342,6 +342,35 @@ function OrganizationServicesContent({
         router.push(
           `/sign-in?redirect_url=${encodeURIComponent(`/organizations/${organizationId}`)}`,
         );
+        return;
+      }
+
+      if (response.status === 400) {
+        let errorMessage =
+          "Unable to join the queue at this time. Please try again.";
+        try {
+          const errJson: unknown = await response.json();
+          if (
+            errJson &&
+            typeof errJson === "object" &&
+            "error" in errJson &&
+            typeof (errJson as { error: unknown }).error === "string" &&
+            (errJson as { error: string }).error.trim() !== ""
+          ) {
+            errorMessage = (errJson as { error: string }).error;
+          }
+        } catch {
+          // Fall back to default safe message
+        }
+
+        if (!isMountedRef.current || joinGenRef.current !== currentJoinGen) {
+          return;
+        }
+
+        setQueueError({
+          queueId,
+          message: errorMessage,
+        });
         return;
       }
 
@@ -687,135 +716,141 @@ function OrganizationServicesContent({
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {data.services.map((service) => (
-            <article
-              key={service.id}
-              className="flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md"
-            >
-              <div>
-                <h2 className="text-xl font-semibold tracking-tight text-gray-900">
-                  {service.name}
-                </h2>
-                {service.description && (
-                  <p className="mt-2 text-sm text-gray-600">
-                    {service.description}
-                  </p>
-                )}
+          {data.services.map((service) => {
+            const joinableQueues = service.queues.filter(
+              (queue) => queue.isActive !== false,
+            );
 
-                <div className="mt-4">
-                  <button
-                    type="button"
-                    onClick={() => handleOpenBookAppointment(service)}
-                    aria-label={`Book appointment for ${service.name}`}
-                    className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
-                  >
-                    <svg
-                      className="mr-1.5 h-3.5 w-3.5 text-gray-500"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      strokeWidth="2"
-                      stroke="currentColor"
-                      aria-hidden="true"
+            return (
+              <article
+                key={service.id}
+                className="flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md"
+              >
+                <div>
+                  <h2 className="text-xl font-semibold tracking-tight text-gray-900">
+                    {service.name}
+                  </h2>
+                  {service.description && (
+                    <p className="mt-2 text-sm text-gray-600">
+                      {service.description}
+                    </p>
+                  )}
+
+                  <div className="mt-4">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenBookAppointment(service)}
+                      aria-label={`Book appointment for ${service.name}`}
+                      className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
                     >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5"
-                      />
-                    </svg>
-                    Book Appointment
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-6 border-t border-gray-100 pt-4">
-                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                  Active Queues
-                </h3>
-                {service.queues.length > 0 ? (
-                  <div className="space-y-2.5">
-                    {service.queues.map((queue) => {
-                      const isSubmitting = joiningQueueId === queue.id;
-                      const hasError = queueError?.queueId === queue.id;
-                      const errorId = `queue-error-${queue.id}`;
-
-                      return (
-                        <div
-                          key={queue.id}
-                          className="flex flex-col rounded-lg border border-gray-200/80 bg-gray-50/60 p-3 transition-colors hover:border-gray-300"
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <span
-                                className="h-2 w-2 shrink-0 rounded-full bg-green-500"
-                                aria-hidden="true"
-                              />
-                              <span className="truncate text-sm font-medium text-gray-900">
-                                {queue.name}
-                              </span>
-                            </div>
-
-                            <button
-                              type="button"
-                              onClick={() => handleJoinQueue(queue.id)}
-                              disabled={
-                                isSubmitting || joiningQueueId !== null
-                              }
-                              aria-describedby={hasError ? errorId : undefined}
-                              aria-label={
-                                isSubmitting
-                                  ? `Joining ${queue.name}...`
-                                  : `Join ${queue.name}`
-                              }
-                              className="inline-flex shrink-0 items-center justify-center rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {isSubmitting ? (
-                                <span className="inline-flex items-center gap-1.5">
-                                  <svg
-                                    className="h-3.5 w-3.5 animate-spin"
-                                    fill="none"
-                                    viewBox="0 0 24 24"
-                                    strokeWidth="2.5"
-                                    stroke="currentColor"
-                                    aria-hidden="true"
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"
-                                    />
-                                  </svg>
-                                  Joining...
-                                </span>
-                              ) : (
-                                "Join Queue"
-                              )}
-                            </button>
-                          </div>
-
-                          {hasError && (
-                            <div
-                              id={errorId}
-                              role="alert"
-                              className="mt-2.5 rounded-md border border-red-200 bg-red-50/80 p-2 text-xs text-red-700"
-                            >
-                              <p className="font-medium">
-                                {queueError.message}
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                      <svg
+                        className="mr-1.5 h-3.5 w-3.5 text-gray-500"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        strokeWidth="2"
+                        stroke="currentColor"
+                        aria-hidden="true"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5"
+                        />
+                      </svg>
+                      Book Appointment
+                    </button>
                   </div>
-                ) : (
-                  <p className="text-xs font-medium text-gray-500">
-                    No active queues
-                  </p>
-                )}
-              </div>
-            </article>
-          ))}
+                </div>
+
+                <div className="mt-6 border-t border-gray-100 pt-4">
+                  <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    Active Queues
+                  </h3>
+                  {joinableQueues.length > 0 ? (
+                    <div className="space-y-2.5">
+                      {joinableQueues.map((queue) => {
+                        const isSubmitting = joiningQueueId === queue.id;
+                        const hasError = queueError?.queueId === queue.id;
+                        const errorId = `queue-error-${queue.id}`;
+
+                        return (
+                          <div
+                            key={queue.id}
+                            className="flex flex-col rounded-lg border border-gray-200/80 bg-gray-50/60 p-3 transition-colors hover:border-gray-300"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span
+                                  className="h-2 w-2 shrink-0 rounded-full bg-green-500"
+                                  aria-hidden="true"
+                                />
+                                <span className="truncate text-sm font-medium text-gray-900">
+                                  {queue.name}
+                                </span>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => handleJoinQueue(queue.id)}
+                                disabled={
+                                  isSubmitting || joiningQueueId !== null
+                                }
+                                aria-describedby={hasError ? errorId : undefined}
+                                aria-label={
+                                  isSubmitting
+                                    ? `Joining ${queue.name}...`
+                                    : `Join ${queue.name}`
+                                }
+                                className="inline-flex shrink-0 items-center justify-center rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isSubmitting ? (
+                                  <span className="inline-flex items-center gap-1.5">
+                                    <svg
+                                      className="h-3.5 w-3.5 animate-spin"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      strokeWidth="2.5"
+                                      stroke="currentColor"
+                                      aria-hidden="true"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"
+                                      />
+                                    </svg>
+                                    Joining...
+                                  </span>
+                                ) : (
+                                  "Join Queue"
+                                )}
+                              </button>
+                            </div>
+
+                            {hasError && (
+                              <div
+                                id={errorId}
+                                role="alert"
+                                className="mt-2.5 rounded-md border border-red-200 bg-red-50/80 p-2 text-xs text-red-700"
+                              >
+                                <p className="font-medium">
+                                  {queueError.message}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs font-medium text-gray-500">
+                      No active queues
+                    </p>
+                  )}
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
 
