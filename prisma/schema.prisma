@@ -29,14 +29,17 @@ enum OrganizationRole {
 }
 
 model Organization {
-  id          String                   @id @default(cuid())
-  name        String
-  slug        String                   @unique
-  createdAt   DateTime                 @default(now())
-  updatedAt   DateTime                 @updatedAt
-  memberships OrganizationMembership[]
-  services    Service[]
-  counters    Counter[]
+  id                String                         @id @default(cuid())
+  name              String
+  slug              String                         @unique
+  timezone          String                         @default("Asia/Kolkata")
+  createdAt         DateTime                       @default(now())
+  updatedAt         DateTime                       @updatedAt
+  memberships       OrganizationMembership[]
+  services          Service[]
+  counters          Counter[]
+  scheduleIntervals OrganizationScheduleInterval[]
+  closures          OrganizationClosure[]
 }
 
 model User {
@@ -167,3 +170,31 @@ model StaffCounterAssignment {
 
   @@unique([userId, counterId])
 }
+
+model OrganizationScheduleInterval {
+  id             String       @id @default(cuid())
+  organizationId String
+  dayOfWeek      Int          // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+  startTime      String       // Format: "HH:mm" (24-hour local time)
+  endTime        String       // Format: "HH:mm" (24-hour local time)
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, dayOfWeek])
+}
+
+model OrganizationClosure {
+  id             String       @id @default(cuid())
+  organizationId String
+  startDate      String       // Format: "YYYY-MM-DD" in organization's local timezone
+  endDate        String       // Format: "YYYY-MM-DD" in organization's local timezone
+  reason         String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, startDate, endDate])
+}
+
