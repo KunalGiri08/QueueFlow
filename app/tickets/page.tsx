@@ -6,7 +6,7 @@ import { useAuth } from "@clerk/nextjs";
 import { Navbar } from "@/components/Navbar";
 import { CustomerTicketCard } from "@/components/tickets/CustomerTicketCard";
 import { CustomerTicketsEmptyState } from "@/components/tickets/CustomerTicketsEmptyState";
-import type { TicketStatus } from "@/lib/formatters/ticket";
+import { isTicketActive, type TicketStatus } from "@/lib/formatters/ticket";
 
 export type { TicketStatus };
 
@@ -29,6 +29,32 @@ export interface CustomerTicket {
       };
     };
   };
+}
+
+export function hasActiveCustomerTickets(tickets: CustomerTicket[]): boolean {
+  return tickets.some((t) => isTicketActive(t.status));
+}
+
+export function parseCustomerTickets(json: unknown): CustomerTicket[] {
+  if (!Array.isArray(json)) return [];
+  return json.filter(
+    (item): item is CustomerTicket =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof item.id === "string" &&
+      typeof item.number === "number" &&
+      typeof item.status === "string" &&
+      typeof item.createdAt === "string" &&
+      typeof item.queue === "object" &&
+      item.queue !== null &&
+      typeof item.queue.name === "string" &&
+      typeof item.queue.service === "object" &&
+      item.queue.service !== null &&
+      typeof item.queue.service.name === "string" &&
+      typeof item.queue.service.organization === "object" &&
+      item.queue.service.organization !== null &&
+      typeof item.queue.service.organization.name === "string",
+  );
 }
 
 function TicketsLoadingSkeleton() {
@@ -75,8 +101,116 @@ export default function MyTicketsPage() {
   const activeFetchControllerRef = useRef<AbortController | null>(null);
   const fetchGenerationRef = useRef<number>(0);
 
+  const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const backgroundPollAbortRef = useRef<AbortController | null>(null);
+  const ticketUpdateSeqRef = useRef<number>(0);
+  const lastAppliedSeqRef = useRef<number>(0);
+  const ticketsRef = useRef<CustomerTicket[]>([]);
+  const isPrimaryLoadingRef = useRef<boolean>(true);
+  const isCancellingRef = useRef<boolean>(false);
+  const isCancelledRef = useRef<boolean>(false);
+  const schedulePollRef = useRef<(() => void) | null>(null);
+  const runPollRef = useRef<(() => Promise<void>) | null>(null);
+
+  const clearPollTimer = useCallback(() => {
+    if (pollTimerRef.current !== null) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const schedulePoll = useCallback(() => {
+    if (isCancelledRef.current) return;
+    clearPollTimer();
+    if (
+      typeof document !== "undefined" &&
+      document.visibilityState === "hidden"
+    ) {
+      return;
+    }
+    pollTimerRef.current = setTimeout(async () => {
+      if (isCancelledRef.current) return;
+      await runPollRef.current?.();
+    }, 10000);
+  }, [clearPollTimer]);
+
+  const runPoll = useCallback(async () => {
+    if (isCancelledRef.current) return;
+    if (
+      typeof document !== "undefined" &&
+      document.visibilityState === "hidden"
+    ) {
+      return;
+    }
+    if (isPrimaryLoadingRef.current || isCancellingRef.current) {
+      if (hasActiveCustomerTickets(ticketsRef.current)) {
+        schedulePollRef.current?.();
+      }
+      return;
+    }
+
+    backgroundPollAbortRef.current?.abort();
+    const controller = new AbortController();
+    backgroundPollAbortRef.current = controller;
+    const pollSeq = ++ticketUpdateSeqRef.current;
+    let nextHasActive = hasActiveCustomerTickets(ticketsRef.current);
+
+    try {
+      const response = await fetch("/api/tickets", {
+        signal: controller.signal,
+      });
+
+      if (isCancelledRef.current || controller.signal.aborted) return;
+
+      if (response.status === 401) {
+        router.push(`/sign-in?redirect_url=${encodeURIComponent("/tickets")}`);
+        return;
+      }
+
+      if (response.ok) {
+        const json: unknown = await response.json();
+        if (isCancelledRef.current || controller.signal.aborted) return;
+
+        const validTickets = parseCustomerTickets(json);
+        if (
+          !isCancelledRef.current &&
+          !controller.signal.aborted &&
+          pollSeq >= lastAppliedSeqRef.current
+        ) {
+          lastAppliedSeqRef.current = pollSeq;
+          setTickets(validTickets);
+          ticketsRef.current = validTickets;
+          nextHasActive = hasActiveCustomerTickets(validTickets);
+        }
+      }
+    } catch {
+      // Non-destructive: transient background errors do not overwrite UI or set error banner
+    } finally {
+      if (backgroundPollAbortRef.current === controller) {
+        backgroundPollAbortRef.current = null;
+      }
+      if (
+        !isCancelledRef.current &&
+        (typeof document === "undefined" ||
+          document.visibilityState === "visible") &&
+        nextHasActive
+      ) {
+        schedulePollRef.current?.();
+      }
+    }
+  }, [router]);
+
+  useEffect(() => {
+    schedulePollRef.current = schedulePoll;
+    runPollRef.current = runPoll;
+  }, [schedulePoll, runPoll]);
+
   const fetchTickets = useCallback(
     async (showSkeleton = true) => {
+      clearPollTimer();
+      backgroundPollAbortRef.current?.abort();
+      backgroundPollAbortRef.current = null;
+
       if (activeFetchControllerRef.current) {
         activeFetchControllerRef.current.abort();
       }
@@ -84,9 +218,11 @@ export default function MyTicketsPage() {
       const controller = new AbortController();
       activeFetchControllerRef.current = controller;
       const currentGen = ++fetchGenerationRef.current;
+      const updateSeq = ++ticketUpdateSeqRef.current;
 
       if (showSkeleton) {
         setIsLoading(true);
+        isPrimaryLoadingRef.current = true;
       }
       setError(null);
 
@@ -114,27 +250,24 @@ export default function MyTicketsPage() {
           throw new Error("Malformed response format");
         }
 
-        const validTickets: CustomerTicket[] = json.filter(
-          (item): item is CustomerTicket =>
-            typeof item === "object" &&
-            item !== null &&
-            typeof item.id === "string" &&
-            typeof item.number === "number" &&
-            typeof item.status === "string" &&
-            typeof item.createdAt === "string" &&
-            typeof item.queue === "object" &&
-            item.queue !== null &&
-            typeof item.queue.name === "string" &&
-            typeof item.queue.service === "object" &&
-            item.queue.service !== null &&
-            typeof item.queue.service.name === "string" &&
-            typeof item.queue.service.organization === "object" &&
-            item.queue.service.organization !== null &&
-            typeof item.queue.service.organization.name === "string",
-        );
+        const validTickets = parseCustomerTickets(json);
 
         if (currentGen !== fetchGenerationRef.current) return;
-        setTickets(validTickets);
+        if (updateSeq >= lastAppliedSeqRef.current) {
+          lastAppliedSeqRef.current = updateSeq;
+          setTickets(validTickets);
+          ticketsRef.current = validTickets;
+        }
+
+        if (
+          hasActiveCustomerTickets(validTickets) &&
+          (typeof document === "undefined" ||
+            document.visibilityState === "visible")
+        ) {
+          schedulePollRef.current?.();
+        } else {
+          clearPollTimer();
+        }
       } catch (err: unknown) {
         if (currentGen !== fetchGenerationRef.current) return;
         if (
@@ -147,11 +280,12 @@ export default function MyTicketsPage() {
       } finally {
         if (currentGen === fetchGenerationRef.current) {
           setIsLoading(false);
+          isPrimaryLoadingRef.current = false;
           activeFetchControllerRef.current = null;
         }
       }
     },
-    [router],
+    [router, clearPollTimer],
   );
 
   const handleCancelTicket = async (ticket: CustomerTicket) => {
@@ -162,8 +296,13 @@ export default function MyTicketsPage() {
     );
     if (!confirmed) return;
 
+    clearPollTimer();
+    backgroundPollAbortRef.current?.abort();
+    backgroundPollAbortRef.current = null;
+
     setActionError(null);
     setCancellingTicketId(ticket.id);
+    isCancellingRef.current = true;
 
     try {
       const response = await fetch(
@@ -213,11 +352,20 @@ export default function MyTicketsPage() {
       }
 
       // Update only that ticket's local status to CANCELLED
-      setTickets((prev) =>
-        prev.map((t) =>
-          t.id === ticket.id ? { ...t, status: "CANCELLED" } : t,
-        ),
-      );
+      const cancelSeq = ++ticketUpdateSeqRef.current;
+      lastAppliedSeqRef.current = cancelSeq;
+      setTickets((prev) => {
+        const updated = prev.map((t) =>
+          t.id === ticket.id ? { ...t, status: "CANCELLED" as TicketStatus } : t,
+        );
+        ticketsRef.current = updated;
+        if (hasActiveCustomerTickets(updated)) {
+          schedulePollRef.current?.();
+        } else {
+          clearPollTimer();
+        }
+        return updated;
+      });
     } catch {
       setActionError({
         ticketId: ticket.id,
@@ -226,8 +374,49 @@ export default function MyTicketsPage() {
       });
     } finally {
       setCancellingTicketId(null);
+      isCancellingRef.current = false;
     }
   };
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) {
+      clearPollTimer();
+      backgroundPollAbortRef.current?.abort();
+      backgroundPollAbortRef.current = null;
+      return;
+    }
+
+    isCancelledRef.current = false;
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined") return;
+      if (document.visibilityState === "hidden") {
+        clearPollTimer();
+        backgroundPollAbortRef.current?.abort();
+        backgroundPollAbortRef.current = null;
+      } else if (document.visibilityState === "visible") {
+        clearPollTimer();
+        void runPollRef.current?.();
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+
+    return () => {
+      isCancelledRef.current = true;
+      clearPollTimer();
+      backgroundPollAbortRef.current?.abort();
+      backgroundPollAbortRef.current = null;
+      if (typeof document !== "undefined") {
+        document.removeEventListener(
+          "visibilitychange",
+          handleVisibilityChange,
+        );
+      }
+    };
+  }, [isLoaded, isSignedIn, clearPollTimer]);
 
   useEffect(() => {
     if (!isLoaded) return;

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
 import MyTicketsPage from "./page";
 
 // 1. Mock Next.js navigation with a stable router object identity
@@ -115,6 +115,11 @@ describe("app/tickets/page (My Tickets Customer Frontend)", () => {
   let mockConfirm: ReturnType<typeof vi.fn<() => boolean>>;
 
   beforeEach(() => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      writable: true,
+      value: "visible",
+    });
     mockAuthState = {
       isSignedIn: true,
       isLoaded: true,
@@ -139,8 +144,14 @@ describe("app/tickets/page (My Tickets Customer Frontend)", () => {
 
   afterEach(() => {
     cleanup();
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      writable: true,
+      value: "visible",
+    });
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   describe("Authentication and session management", () => {
@@ -546,6 +557,366 @@ describe("app/tickets/page (My Tickets Customer Frontend)", () => {
 
       // Verify AbortError is silently ignored and does not render an error alert
       expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+
+  describe("Automatic background polling and visibility lifecycle", () => {
+    it("automatically refreshes active tickets every 10 seconds", async () => {
+      vi.useFakeTimers();
+      let pollCount = 0;
+      activeFetchHandler = async (url: string) => {
+        if (url === "/api/tickets") {
+          pollCount++;
+          if (pollCount === 1) {
+            return jsonResponse([mockWaitingTicket]);
+          }
+          return jsonResponse([
+            {
+              ...mockWaitingTicket,
+              status: "CALLED",
+            },
+          ]);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(screen.getByText("Waiting in Line")).toBeDefined();
+      expect(pollCount).toBe(1);
+
+      // Advance 10s to trigger background poll
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(pollCount).toBe(2);
+      expect(screen.getByText("Ticket Called")).toBeDefined();
+    });
+
+    it("does not continuously poll when customer has no active tickets", async () => {
+      vi.useFakeTimers();
+      let pollCount = 0;
+      activeFetchHandler = async (url: string) => {
+        if (url === "/api/tickets") {
+          pollCount++;
+          return jsonResponse([mockCompletedTicketWithoutToken]);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(screen.getByText("Completed")).toBeDefined();
+      expect(pollCount).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Advance 30s
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+
+      // No background poll occurred
+      expect(pollCount).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("pauses polling while document visibility is hidden", async () => {
+      vi.useFakeTimers();
+      let pollCount = 0;
+      activeFetchHandler = async (url: string) => {
+        if (url === "/api/tickets") {
+          pollCount++;
+          return jsonResponse([mockWaitingTicket]);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(pollCount).toBe(1);
+
+      // Tab hidden
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          writable: true,
+          value: "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Advance 30s while hidden
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+
+      expect(pollCount).toBe(1);
+    });
+
+    it("immediately refreshes tickets when tab becomes visible and resumes 10s cadence", async () => {
+      vi.useFakeTimers();
+      let pollCount = 0;
+      activeFetchHandler = async (url: string) => {
+        if (url === "/api/tickets") {
+          pollCount++;
+          if (pollCount === 1) return jsonResponse([mockWaitingTicket]);
+          if (pollCount === 2) return jsonResponse([mockServingTicket]);
+          return jsonResponse([mockWaitingTicket]);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(pollCount).toBe(1);
+      expect(screen.getByText("#42")).toBeDefined();
+
+      // Tab hidden
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          writable: true,
+          value: "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      // Advance 20s while hidden
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20000);
+      });
+      expect(pollCount).toBe(1);
+
+      // Tab becomes visible
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          writable: true,
+          value: "visible",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      // Immediate refresh happened
+      expect(pollCount).toBe(2);
+      expect(screen.getByText("#105")).toBeDefined();
+
+      // Cadence resumes after 10s
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(pollCount).toBe(3);
+    });
+
+    it("cleans up polling timers and event listeners on unmount", async () => {
+      vi.useFakeTimers();
+      activeFetchHandler = async () => jsonResponse([mockWaitingTicket]);
+
+      let renderResult!: ReturnType<typeof render>;
+      await act(async () => {
+        renderResult = render(<MyTicketsPage />);
+      });
+
+      expect(vi.getTimerCount()).toBe(1);
+
+      act(() => {
+        renderResult.unmount();
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+
+      const callsBefore = fetchMock.mock.calls.length;
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(fetchMock.mock.calls.length).toBe(callsBefore);
+    });
+
+    it("preserves existing ticket list and does not render error alert when background poll fails", async () => {
+      vi.useFakeTimers();
+      let pollCount = 0;
+      activeFetchHandler = async (url: string) => {
+        if (url === "/api/tickets") {
+          pollCount++;
+          if (pollCount === 1) return jsonResponse([mockWaitingTicket]);
+          return jsonResponse({ error: "Temporary error" }, 500);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(screen.getByText("#42")).toBeDefined();
+      expect(screen.getByText("Waiting in Line")).toBeDefined();
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      // Trigger failing poll at 10s
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // Tickets preserved, no disruptive error alert displayed
+      expect(screen.getByText("#42")).toBeDefined();
+      expect(screen.getByText("Waiting in Line")).toBeDefined();
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      // Recover on subsequent poll
+      activeFetchHandler = async () => jsonResponse([mockServingTicket]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(screen.getByText("#105")).toBeDefined();
+      expect(screen.getByText("Now Serving")).toBeDefined();
+    });
+
+    it("stops recurring polling when ticket status transitions from active to terminal", async () => {
+      vi.useFakeTimers();
+      let pollCount = 0;
+      activeFetchHandler = async (url: string) => {
+        if (url === "/api/tickets") {
+          pollCount++;
+          if (pollCount === 1) return jsonResponse([mockWaitingTicket]);
+          // Poll reports ticket has completed
+          return jsonResponse([
+            {
+              ...mockWaitingTicket,
+              status: "COMPLETED",
+            },
+          ]);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(screen.getByText("Waiting in Line")).toBeDefined();
+      expect(pollCount).toBe(1);
+
+      // Poll at 10s reports ticket COMPLETED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(pollCount).toBe(2);
+      expect(screen.getByText("Completed")).toBeDefined();
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Advance another 30 seconds; verify no further polls occur
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+
+      expect(pollCount).toBe(2);
+    });
+
+    it("stops polling immediately when user cancels their only active ticket", async () => {
+      vi.useFakeTimers();
+      mockConfirm.mockReturnValue(true);
+
+      activeFetchHandler = async (url: string, init?: RequestInit) => {
+        if (url === "/api/tickets") {
+          return jsonResponse([mockWaitingTicket]);
+        }
+        if (url.includes("/cancel") && init?.method === "PATCH") {
+          return jsonResponse({
+            ...mockWaitingTicket,
+            status: "CANCELLED",
+          });
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(screen.getByText("Waiting in Line")).toBeDefined();
+      expect(vi.getTimerCount()).toBe(1);
+
+      // User cancels ticket
+      const cancelBtn = screen.getByRole("button", { name: /cancel ticket/i });
+      await act(async () => {
+        fireEvent.click(cancelBtn);
+      });
+
+      expect(screen.getByText("Cancelled")).toBeDefined();
+      // No active tickets remain, timer is cleared
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Advance 30s; no polls fire
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+      expect(fetchMock.mock.calls.filter((c) => c[0] === "/api/tickets").length).toBe(1);
+    });
+
+    it("prevents stale background poll responses from overwriting newer ticket state", async () => {
+      vi.useFakeTimers();
+      let resolveSlowPoll!: (res: Response) => void;
+      let callCount = 0;
+
+      activeFetchHandler = async (url: string) => {
+        if (url === "/api/tickets") {
+          callCount++;
+          if (callCount === 1) return jsonResponse([mockWaitingTicket]);
+          if (callCount === 2) {
+            return new Promise((resolve) => {
+              resolveSlowPoll = resolve;
+            });
+          }
+          return jsonResponse([mockServingTicket]);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(screen.getByText("#42")).toBeDefined();
+
+      // Trigger background poll at 10s (callCount 2, pending)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(callCount).toBe(2);
+
+      // User performs manual retry/refresh or tab visibility refresh
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          writable: true,
+          value: "visible",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(callCount).toBe(3);
+      expect(screen.getByText("#105")).toBeDefined();
+
+      // Now resolve slow background poll with older ticket (#42)
+      await act(async () => {
+        resolveSlowPoll(jsonResponse([mockWaitingTicket]));
+      });
+
+      // Stale ticket does NOT overwrite newer ticket
+      expect(screen.getByText("#105")).toBeDefined();
+      expect(screen.queryByText("#42")).toBeNull();
     });
   });
 });
