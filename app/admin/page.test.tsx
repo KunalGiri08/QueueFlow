@@ -52,6 +52,14 @@ vi.mock("@/components/admin/QueueManagement", () => ({
   ),
 }));
 
+vi.mock("@/components/admin/OrganizationAnalytics", () => ({
+  OrganizationAnalytics: ({ organizationId }: { organizationId: string }) => (
+    <div data-testid="organization-analytics" data-org-id={organizationId}>
+      Organization Analytics ({organizationId})
+    </div>
+  ),
+}));
+
 vi.mock("@/components/admin/StaffManagement", () => ({
   StaffManagement: ({ organizationId }: { organizationId: string }) => (
     <div data-testid="staff-management" data-org-id={organizationId}>

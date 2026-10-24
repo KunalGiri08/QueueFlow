@@ -5,10 +5,8 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { Navbar } from "@/components/Navbar";
-import {
-  OrganizationSelector,
-  type OrganizationItem,
-} from "@/components/admin/OrganizationSelector";
+import { OrganizationSelector, type OrganizationItem } from "@/components/admin/OrganizationSelector";
+import { OrganizationAnalytics } from "@/components/admin/OrganizationAnalytics";
 import { CounterManagement } from "@/components/admin/CounterManagement";
 import { ServiceManagement } from "@/components/admin/ServiceManagement";
 import { QueueManagement } from "@/components/admin/QueueManagement";
@@ -481,6 +479,9 @@ export default function OrganizationAdminPage() {
                       </div>
                     </div>
                   </div>
+
+                  {/* Section: Organization Analytics */}
+                  <OrganizationAnalytics organizationId={selectedOrg.id} />
 
                   {/* Section: Counter Management (Step 2) */}
                   <CounterManagement organizationId={selectedOrg.id} />
