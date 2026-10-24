@@ -186,6 +186,43 @@ describe("POST /api/organizations/[organizationId]/services/[serviceId]/queues",
       isActive: true,
     });
   });
+
+  it("supports configuring maxWaitingTickets and maxDailyTickets during queue creation", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockServiceFindFirst.mockResolvedValue({ id: serviceId, organizationId });
+    mockQueueCreate.mockResolvedValue({
+      id: "queue-2",
+      name: "Capacity Controlled Queue",
+      serviceId,
+      maxWaitingTickets: 50,
+      maxDailyTickets: 200,
+      isActive: true,
+    });
+
+    const response = await POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Capacity Controlled Queue",
+          maxWaitingTickets: 50,
+          maxDailyTickets: 200,
+        }),
+      }),
+      createParams(),
+    );
+
+    expect(response.status).toBe(201);
+    expect(mockQueueCreate).toHaveBeenCalledWith({
+      data: {
+        name: "Capacity Controlled Queue",
+        serviceId,
+        maxWaitingTickets: 50,
+        maxDailyTickets: 200,
+      },
+    });
+  });
 });
 
 describe("GET /api/organizations/[organizationId]/services/[serviceId]/queues", () => {

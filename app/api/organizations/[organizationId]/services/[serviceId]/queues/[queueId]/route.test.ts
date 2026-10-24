@@ -280,4 +280,109 @@ describe("PATCH /api/organizations/[organizationId]/services/[serviceId]/queues/
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "Internal server error" });
   });
+
+  it("successfully updates maxWaitingTickets and maxDailyTickets", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockQueueFindFirst.mockResolvedValue({
+      id: queueId,
+      name: "Line 1",
+      serviceId,
+      isActive: true,
+      maxWaitingTickets: 10,
+      maxDailyTickets: 100,
+    });
+    mockQueueUpdate.mockResolvedValue({
+      id: queueId,
+      name: "Line 1",
+      serviceId,
+      isActive: true,
+      maxWaitingTickets: 30,
+      maxDailyTickets: 250,
+    });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          maxWaitingTickets: 30,
+          maxDailyTickets: 250,
+        }),
+      }),
+      createParams(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockQueueUpdate).toHaveBeenCalledWith({
+      where: { id: queueId },
+      data: {
+        maxWaitingTickets: 30,
+        maxDailyTickets: 250,
+      },
+    });
+  });
+
+  it("successfully clears maxWaitingTickets and maxDailyTickets to null", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockQueueFindFirst.mockResolvedValue({
+      id: queueId,
+      name: "Line 1",
+      serviceId,
+      isActive: true,
+      maxWaitingTickets: 30,
+      maxDailyTickets: 250,
+    });
+    mockQueueUpdate.mockResolvedValue({
+      id: queueId,
+      name: "Line 1",
+      serviceId,
+      isActive: true,
+      maxWaitingTickets: null,
+      maxDailyTickets: null,
+    });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          maxWaitingTickets: null,
+          maxDailyTickets: null,
+        }),
+      }),
+      createParams(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockQueueUpdate).toHaveBeenCalledWith({
+      where: { id: queueId },
+      data: {
+        maxWaitingTickets: null,
+        maxDailyTickets: null,
+      },
+    });
+  });
+
+  it("rejects updating with invalid capacity limit values (< 1)", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          maxWaitingTickets: 0,
+        }),
+      }),
+      createParams(),
+    );
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toBe("Invalid request body");
+    expect(mockQueueUpdate).not.toHaveBeenCalled();
+  });
 });

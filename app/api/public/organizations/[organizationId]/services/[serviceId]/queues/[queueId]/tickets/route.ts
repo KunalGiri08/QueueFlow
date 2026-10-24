@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/current-user";
-import { reserveNextTicketNumber } from "@/lib/services/ticket.service";
+import {
+  acquireQueueLock,
+  evaluateQueueCapacity,
+  reserveNextTicketNumber,
+} from "@/lib/services/ticket.service";
 import { estimateTicketWaitTime } from "@/lib/services/prediction.service";
 import {
   evaluateOperatingHours,
@@ -39,6 +43,8 @@ export async function POST(
         select: {
           id: true,
           isActive: true,
+          maxWaitingTickets: true,
+          maxDailyTickets: true,
           serviceId: true,
           service: {
             select: {
@@ -109,14 +115,14 @@ export async function POST(
         throw error;
       }
 
-      // Acquire the queue-row lock before checking active tickets.
-      // Concurrent ticket creations for this queue must wait here.
-      const number = await reserveNextTicketNumber(
-        tx,
-        queueId,
-        admissionInstant,
-      );
+      // 5. Acquire the existing Queue row lock before active tickets and capacity checks.
+      // Concurrent ticket creations for this queue will serialize here.
+      const lockedQueue = await acquireQueueLock(tx, queueId);
 
+      // 6. Capture one authoritative timestamp immediately after acquiring the lock
+      const now = new Date();
+
+      // 7. Check whether this user already has an active ticket in this queue before capacity evaluation
       const existingActiveTicket = await tx.ticket.findFirst({
         where: {
           queueId,
@@ -129,6 +135,35 @@ export async function POST(
       if (existingActiveTicket) {
         throw new Error("ACTIVE_TICKET_EXISTS");
       }
+
+      // 8. Check current WAITING-ticket count and local-day ticket count using the locked queue and authoritative timestamp
+      const capacity = await evaluateQueueCapacity({
+        tx,
+        queueId,
+        maxWaitingTickets:
+          lockedQueue.maxWaitingTickets !== undefined
+            ? lockedQueue.maxWaitingTickets
+            : queue.maxWaitingTickets,
+        maxDailyTickets:
+          lockedQueue.maxDailyTickets !== undefined
+            ? lockedQueue.maxDailyTickets
+            : queue.maxDailyTickets,
+        timezone: org.timezone,
+        instant: now,
+      });
+
+      // 9. If either limit is reached, reject without allocating a ticket number or creating a ticket.
+      if (!capacity.allowed) {
+        throw new Error(capacity.code);
+      }
+
+      // 10. Reserve the number using the authoritative timestamp
+      const number = await reserveNextTicketNumber(
+        tx,
+        queueId,
+        now,
+        org.timezone,
+      );
 
       let initialEstimatedWaitMinutes: number | null = null;
       try {
@@ -185,6 +220,7 @@ export async function POST(
           number,
           queueId,
           userId,
+          createdAt: now,
           trackingToken: randomBytes(32).toString("hex"),
           initialEstimatedWaitMinutes,
         },
@@ -253,6 +289,26 @@ export async function POST(
             code: reason || "ORGANIZATION_CLOSED",
             reason: reason || "ORGANIZATION_CLOSED",
             message: message || "Organization is currently closed",
+          },
+          { status: 400 },
+        );
+      }
+
+      if (error.message === "QUEUE_CAPACITY_REACHED") {
+        return Response.json(
+          {
+            error: "Queue waiting capacity reached",
+            code: "QUEUE_CAPACITY_REACHED",
+          },
+          { status: 400 },
+        );
+      }
+
+      if (error.message === "DAILY_TICKET_LIMIT_REACHED") {
+        return Response.json(
+          {
+            error: "Daily ticket limit reached",
+            code: "DAILY_TICKET_LIMIT_REACHED",
           },
           { status: 400 },
         );

@@ -131,6 +131,8 @@ export async function POST(
       data: {
         name: result.data.name,
         serviceId,
+        maxWaitingTickets: result.data.maxWaitingTickets,
+        maxDailyTickets: result.data.maxDailyTickets,
       },
     });
 

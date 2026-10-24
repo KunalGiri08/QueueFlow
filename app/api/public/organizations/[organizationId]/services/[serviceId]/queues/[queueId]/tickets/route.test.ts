@@ -134,7 +134,7 @@ describe("POST /api/public/organizations/[organizationId]/services/[serviceId]/q
     expect(data.id).toBe("ticket-public-101");
     expect(data.queueId).toBe(queueId);
     expect(data.userId).toBe(userId);
-    expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+    expect(mockQueryRaw).toHaveBeenCalledTimes(2);
     expect(mockTicketCreate).toHaveBeenCalledTimes(1);
   });
 
@@ -400,7 +400,7 @@ describe("POST /api/public/organizations/[organizationId]/services/[serviceId]/q
       );
 
       expect(response.status).toBe(201);
-      expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+      expect(mockQueryRaw).toHaveBeenCalledTimes(2);
       expect(mockTicketCreate).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
@@ -481,7 +481,7 @@ describe("POST /api/public/organizations/[organizationId]/services/[serviceId]/q
       );
 
       expect(response.status).toBe(201);
-      expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+      expect(mockQueryRaw).toHaveBeenCalledTimes(2);
       expect(mockTicketCreate).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
@@ -581,7 +581,7 @@ describe("POST /api/public/organizations/[organizationId]/services/[serviceId]/q
         );
 
         expect(response.status).toBe(201);
-        expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+        expect(mockQueryRaw).toHaveBeenCalledTimes(2);
         expect(mockTicketCreate).toHaveBeenCalledTimes(1);
       } finally {
         vi.useRealTimers();
@@ -668,6 +668,304 @@ describe("POST /api/public/organizations/[organizationId]/services/[serviceId]/q
         expect(data.code).toBe("ADMISSION_CUTOFF_REACHED");
         expect(mockQueryRaw).not.toHaveBeenCalled();
         expect(mockTicketCreate).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("Queue Capacity Limits Enforcement in POST /api/public/...", () => {
+    it("admits customer when capacity limits are null (unlimited)", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        maxWaitingTickets: null,
+        maxDailyTickets: null,
+        serviceId,
+        service: {
+          id: serviceId,
+          isActive: true,
+          admissionCutoffMinutes: null,
+          organizationId,
+          organization: {
+            id: organizationId,
+            timezone: "UTC",
+            scheduleIntervals: [
+              { id: "int-all", dayOfWeek: new Date().getDay(), startTime: "00:00", endTime: "23:59", isActive: true },
+            ],
+            closures: [],
+          },
+        },
+      });
+      mockQueryRaw.mockResolvedValue([{ number: 1 }]);
+      mockTicketFindFirst.mockResolvedValue(null);
+      mockTicketCreate.mockResolvedValue({ id: "ticket-public-1", number: 1 });
+
+      const response = await POST(
+        new Request("http://localhost"),
+        createParams(),
+      );
+
+      expect(response.status).toBe(201);
+      expect(mockTicketCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects ticket creation with 400 QUEUE_CAPACITY_REACHED when waiting count reaches maxWaitingTickets", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        maxWaitingTickets: 5,
+        maxDailyTickets: null,
+        serviceId,
+        service: {
+          id: serviceId,
+          isActive: true,
+          admissionCutoffMinutes: null,
+          organizationId,
+          organization: {
+            id: organizationId,
+            timezone: "UTC",
+            scheduleIntervals: [
+              { id: "int-all", dayOfWeek: new Date().getDay(), startTime: "00:00", endTime: "23:59", isActive: true },
+            ],
+            closures: [],
+          },
+        },
+      });
+      mockTicketCount.mockResolvedValue(5); // 5 waiting
+      mockQueryRaw.mockResolvedValue([{ id: queueId }]);
+
+      const response = await POST(
+        new Request("http://localhost"),
+        createParams(),
+      );
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data).toEqual({
+        error: "Queue waiting capacity reached",
+        code: "QUEUE_CAPACITY_REACHED",
+      });
+      // acquireQueueLock was called, but reserveNextTicketNumber was NOT called!
+      expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+      expect(mockTicketCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects ticket creation with 400 DAILY_TICKET_LIMIT_REACHED when daily limit is reached", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        maxWaitingTickets: null,
+        maxDailyTickets: 20,
+        serviceId,
+        service: {
+          id: serviceId,
+          isActive: true,
+          admissionCutoffMinutes: null,
+          organizationId,
+          organization: {
+            id: organizationId,
+            timezone: "UTC",
+            scheduleIntervals: [
+              { id: "int-all", dayOfWeek: new Date().getDay(), startTime: "00:00", endTime: "23:59", isActive: true },
+            ],
+            closures: [],
+          },
+        },
+      });
+      mockTicketCount.mockResolvedValue(20); // 20 tickets created today
+      mockQueryRaw.mockResolvedValue([{ id: queueId }]);
+
+      const response = await POST(
+        new Request("http://localhost"),
+        createParams(),
+      );
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data).toEqual({
+        error: "Daily ticket limit reached",
+        code: "DAILY_TICKET_LIMIT_REACHED",
+      });
+      expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+      expect(mockTicketCreate).not.toHaveBeenCalled();
+    });
+
+    it("returns 409 when user already has an active ticket even if queue is at capacity", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        maxWaitingTickets: 5,
+        maxDailyTickets: 10,
+        serviceId,
+        service: {
+          id: serviceId,
+          isActive: true,
+          admissionCutoffMinutes: null,
+          organizationId,
+          organization: defaultOpenOrg,
+        },
+      });
+      // Lock query succeeds
+      mockQueryRaw.mockResolvedValue([{ id: queueId, maxWaitingTickets: 5, maxDailyTickets: 10 }]);
+      // User already has an active ticket
+      mockTicketFindFirst.mockResolvedValue({ id: "existing-ticket", status: "WAITING" });
+      // If capacity were evaluated, it would report full
+      mockTicketCount.mockResolvedValue(5);
+
+      const response = await POST(
+        new Request("http://localhost"),
+        createParams(),
+      );
+
+      expect(response.status).toBe(409);
+      const data = await response.json();
+      expect(data).toEqual({
+        error: "You already have an active ticket in this queue",
+      });
+      // Lock query was executed, but sequence reservation was NOT executed
+      expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+      // Capacity check count was NOT reached
+      expect(mockTicketCount).not.toHaveBeenCalled();
+      expect(mockTicketCreate).not.toHaveBeenCalled();
+    });
+
+    it("captures authoritative timestamp after acquiring queue lock and passes exact timestamp to capacity, reservation, and ticket creation", async () => {
+      vi.useFakeTimers();
+      try {
+        const initialInstant = new Date("2026-10-24T10:00:00.000Z");
+        const postLockInstant = new Date("2026-10-24T10:00:05.000Z");
+        vi.setSystemTime(initialInstant);
+
+        mockGetCurrentUser.mockResolvedValue({ id: userId });
+        mockQueueFindUnique.mockResolvedValue({
+          id: queueId,
+          isActive: true,
+          maxWaitingTickets: null,
+          maxDailyTickets: 25,
+          serviceId,
+          service: {
+            id: serviceId,
+            isActive: true,
+            admissionCutoffMinutes: null,
+            organizationId,
+            organization: defaultOpenOrg,
+          },
+        });
+        mockTicketFindFirst.mockResolvedValue(null);
+        mockTicketCount.mockResolvedValue(10);
+        let queryCallCount = 0;
+        mockQueryRaw.mockImplementation(async () => {
+          queryCallCount++;
+          if (queryCallCount === 1) {
+            // Simulate lock wait duration
+            vi.setSystemTime(postLockInstant);
+            return [{ id: queueId, maxWaitingTickets: null, maxDailyTickets: 25 }];
+          }
+          return [{ number: 11 }];
+        });
+        mockTicketCreate.mockResolvedValue({ id: "ticket-11", number: 11 });
+
+        const response = await POST(
+          new Request("http://localhost"),
+          createParams(),
+        );
+
+        expect(response.status).toBe(201);
+
+        // Daily capacity query must evaluate against bounds containing the post-lock timestamp
+        expect(mockTicketCount).toHaveBeenCalledWith({
+          where: {
+            queueId,
+            createdAt: {
+              gte: new Date("2026-10-23T18:30:00.000Z"), // Asia/Kolkata midnight for 2026-10-24
+              lt: new Date("2026-10-24T18:30:00.000Z"),
+            },
+          },
+        });
+
+        // Ticket creation receives the exact post-lock authoritative timestamp
+        expect(mockTicketCreate).toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            createdAt: postLockInstant,
+            number: 11,
+          }),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("evaluates correct local calendar day for daily capacity when request waits for lock across local midnight", async () => {
+      vi.useFakeTimers();
+      try {
+        // Request initiated before midnight in Asia/Kolkata: 2026-10-24 23:58:59 IST = 18:28:59 UTC (within 23:59 interval)
+        const beforeMidnight = new Date("2026-10-24T18:28:59.000Z");
+        // Lock acquired after midnight: 2026-10-25 00:00:01 IST = 18:30:01 UTC
+        const afterMidnight = new Date("2026-10-24T18:30:01.000Z");
+
+        vi.setSystemTime(beforeMidnight);
+
+        mockGetCurrentUser.mockResolvedValue({ id: userId });
+        mockQueueFindUnique.mockResolvedValue({
+          id: queueId,
+          isActive: true,
+          maxWaitingTickets: null,
+          maxDailyTickets: 50,
+          serviceId,
+          service: {
+            id: serviceId,
+            isActive: true,
+            admissionCutoffMinutes: null,
+            organizationId,
+            organization: defaultOpenOrg,
+          },
+        });
+        mockTicketFindFirst.mockResolvedValue(null);
+        // Day 2 has 0 tickets created so far (quota 50)
+        mockTicketCount.mockResolvedValue(0);
+
+        let queryCallCount = 0;
+        mockQueryRaw.mockImplementation(async () => {
+          queryCallCount++;
+          if (queryCallCount === 1) {
+            // Lock granted across midnight
+            vi.setSystemTime(afterMidnight);
+            return [{ id: queueId, maxWaitingTickets: null, maxDailyTickets: 50 }];
+          }
+          return [{ number: 1 }];
+        });
+        mockTicketCreate.mockResolvedValue({ id: "ticket-1", number: 1 });
+
+        const response = await POST(
+          new Request("http://localhost"),
+          createParams(),
+        );
+
+        expect(response.status).toBe(201);
+
+        // Crucial verification: daily capacity count evaluated bounds for Day 2 (2026-10-25 in India), NOT Day 1
+        expect(mockTicketCount).toHaveBeenCalledWith({
+          where: {
+            queueId,
+            createdAt: {
+              gte: new Date("2026-10-24T18:30:00.000Z"), // 2026-10-25 00:00:00 IST
+              lt: new Date("2026-10-25T18:30:00.000Z"),  // 2026-10-26 00:00:00 IST
+            },
+          },
+        });
+
+        // Persisted ticket receives Day 2 timestamp
+        expect(mockTicketCreate).toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            createdAt: afterMidnight,
+            number: 1,
+          }),
+        });
       } finally {
         vi.useRealTimers();
       }

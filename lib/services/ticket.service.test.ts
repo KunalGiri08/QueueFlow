@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  getCalendarDate,
   getIndiaCalendarDate,
   INDIA_TIMEZONE,
   reserveNextTicketNumber,
+  getLocalCalendarDayBounds,
+  acquireQueueLock,
+  evaluateQueueCapacity,
 } from "./ticket.service";
 import type { Prisma } from "@/app/generated/prisma/client";
 
@@ -315,4 +319,272 @@ describe("ticket.service - Daily Ticket Number Reset", () => {
       expect(queueState.lastResetDate).toBe("2026-10-21");
     });
   });
+
+  describe("getLocalCalendarDayBounds", () => {
+    it("returns null for invalid timezone or invalid instant", () => {
+      expect(getLocalCalendarDayBounds(new Date(), "Invalid/Fake_Zone")).toBeNull();
+      expect(getLocalCalendarDayBounds(new Date("invalid-date"), "Asia/Kolkata")).toBeNull();
+    });
+
+    it("calculates exact UTC boundaries for Asia/Kolkata (UTC+5:30)", () => {
+      // 2026-10-24 10:00:00 IST = 2026-10-24 04:30:00 UTC
+      const instant = new Date("2026-10-24T04:30:00.000Z");
+      const bounds = getLocalCalendarDayBounds(instant, "Asia/Kolkata");
+
+      expect(bounds).not.toBeNull();
+      expect(bounds?.dateStr).toBe("2026-10-24");
+      // Day starts at 00:00:00 IST -> 2026-10-23 18:30:00 UTC
+      expect(bounds?.start.toISOString()).toBe("2026-10-23T18:30:00.000Z");
+      // Day ends at 00:00:00 IST next day -> 2026-10-24 18:30:00 UTC
+      expect(bounds?.end.toISOString()).toBe("2026-10-24T18:30:00.000Z");
+      expect(bounds!.end.getTime() - bounds!.start.getTime()).toBe(24 * 3600 * 1000);
+    });
+
+    it("calculates exact boundaries for America/New_York (EDT, UTC-4)", () => {
+      // 2026-07-04 12:00:00 EDT = 2026-07-04 16:00:00 UTC
+      const instant = new Date("2026-07-04T16:00:00.000Z");
+      const bounds = getLocalCalendarDayBounds(instant, "America/New_York");
+
+      expect(bounds).not.toBeNull();
+      expect(bounds?.dateStr).toBe("2026-07-04");
+      // 00:00:00 EDT = 04:00:00 UTC
+      expect(bounds?.start.toISOString()).toBe("2026-07-04T04:00:00.000Z");
+      expect(bounds?.end.toISOString()).toBe("2026-07-05T04:00:00.000Z");
+    });
+
+    it("handles 25-hour fall-back Daylight Saving Time transition in America/New_York", () => {
+      // Fall Back in US Eastern: Sunday, November 1, 2026
+      // Day starts at 00:00:00 EDT (04:00:00 UTC)
+      // At 02:00:00 EDT, clock rolls back to 01:00:00 EST
+      // Day ends at 00:00:00 EST on Nov 2 (05:00:00 UTC)
+      const instant = new Date("2026-11-01T12:00:00.000Z");
+      const bounds = getLocalCalendarDayBounds(instant, "America/New_York");
+
+      expect(bounds).not.toBeNull();
+      expect(bounds?.dateStr).toBe("2026-11-01");
+      expect(bounds?.start.toISOString()).toBe("2026-11-01T04:00:00.000Z");
+      expect(bounds?.end.toISOString()).toBe("2026-11-02T05:00:00.000Z");
+      // Total duration must be exactly 25 hours (90,000,000 ms)
+      expect(bounds!.end.getTime() - bounds!.start.getTime()).toBe(25 * 3600 * 1000);
+    });
+
+    it("handles 23-hour spring-forward Daylight Saving Time transition in America/New_York", () => {
+      // Spring Forward in US Eastern: Sunday, March 8, 2026
+      // Day starts at 00:00:00 EST (05:00:00 UTC)
+      // At 02:00:00 EST, clock springs forward to 03:00:00 EDT
+      // Day ends at 00:00:00 EDT on March 9 (04:00:00 UTC)
+      const instant = new Date("2026-03-08T12:00:00.000Z");
+      const bounds = getLocalCalendarDayBounds(instant, "America/New_York");
+
+      expect(bounds).not.toBeNull();
+      expect(bounds?.dateStr).toBe("2026-03-08");
+      expect(bounds?.start.toISOString()).toBe("2026-03-08T05:00:00.000Z");
+      expect(bounds?.end.toISOString()).toBe("2026-03-09T04:00:00.000Z");
+      // Total duration must be exactly 23 hours (82,800,000 ms)
+      expect(bounds!.end.getTime() - bounds!.start.getTime()).toBe(23 * 3600 * 1000);
+    });
+  });
+
+  describe("acquireQueueLock", () => {
+    it("locks and returns the queue row when queue exists and is active", async () => {
+      const mockTx = {
+        $queryRaw: vi.fn().mockResolvedValue([
+          {
+            id: "queue-1",
+            nextTicketNumber: 15,
+            lastResetDate: "2026-10-24",
+            maxWaitingTickets: 20,
+            maxDailyTickets: 100,
+          },
+        ]),
+      } as unknown as Prisma.TransactionClient;
+
+      const row = await acquireQueueLock(mockTx, "queue-1");
+      expect(row.id).toBe("queue-1");
+      expect(row.nextTicketNumber).toBe(15);
+      expect(row.maxWaitingTickets).toBe(20);
+      expect(row.maxDailyTickets).toBe(100);
+      expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws error when queue is not found or inactive", async () => {
+      const mockTx = {
+        $queryRaw: vi.fn().mockResolvedValue([]),
+      } as unknown as Prisma.TransactionClient;
+
+      await expect(acquireQueueLock(mockTx, "missing-queue")).rejects.toThrow(
+        "Queue not found or inactive",
+      );
+    });
+  });
+
+  describe("evaluateQueueCapacity", () => {
+    it("allows admission when both limits are null", async () => {
+      const mockCount = vi.fn();
+      const mockTx = {
+        ticket: { count: mockCount },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await evaluateQueueCapacity({
+        tx: mockTx,
+        queueId: "queue-1",
+        maxWaitingTickets: null,
+        maxDailyTickets: null,
+        timezone: "Asia/Kolkata",
+      });
+
+      expect(result.allowed).toBe(true);
+      expect(mockCount).not.toHaveBeenCalled();
+    });
+
+    it("allows admission when waiting count is below maxWaitingTickets", async () => {
+      const mockCount = vi.fn().mockResolvedValue(4); // 4 waiting
+      const mockTx = {
+        ticket: { count: mockCount },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await evaluateQueueCapacity({
+        tx: mockTx,
+        queueId: "queue-1",
+        maxWaitingTickets: 5,
+        maxDailyTickets: null,
+        timezone: "Asia/Kolkata",
+      });
+
+      expect(result.allowed).toBe(true);
+      expect(mockCount).toHaveBeenCalledWith({
+        where: {
+          queueId: "queue-1",
+          status: "WAITING",
+        },
+      });
+    });
+
+    it("rejects admission when waiting count equals maxWaitingTickets", async () => {
+      const mockCount = vi.fn().mockResolvedValue(5); // 5 waiting, limit is 5
+      const mockTx = {
+        ticket: { count: mockCount },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await evaluateQueueCapacity({
+        tx: mockTx,
+        queueId: "queue-1",
+        maxWaitingTickets: 5,
+        maxDailyTickets: null,
+        timezone: "Asia/Kolkata",
+      });
+
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe("QUEUE_CAPACITY_REACHED");
+      expect(result.error).toBe("Queue waiting capacity reached");
+      expect(result.waitingCount).toBe(5);
+    });
+
+    it("rejects admission when waiting count exceeds maxWaitingTickets", async () => {
+      const mockCount = vi.fn().mockResolvedValue(6); // 6 waiting, limit is 5
+      const mockTx = {
+        ticket: { count: mockCount },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await evaluateQueueCapacity({
+        tx: mockTx,
+        queueId: "queue-1",
+        maxWaitingTickets: 5,
+        maxDailyTickets: null,
+        timezone: "Asia/Kolkata",
+      });
+
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe("QUEUE_CAPACITY_REACHED");
+      expect(result.waitingCount).toBe(6);
+    });
+
+    it("allows admission when daily count is below maxDailyTickets", async () => {
+      const mockCount = vi.fn().mockResolvedValue(9); // 9 tickets created today, limit is 10
+      const mockTx = {
+        ticket: { count: mockCount },
+      } as unknown as Prisma.TransactionClient;
+
+      const instant = new Date("2026-10-24T10:00:00.000Z");
+      const result = await evaluateQueueCapacity({
+        tx: mockTx,
+        queueId: "queue-1",
+        maxWaitingTickets: null,
+        maxDailyTickets: 10,
+        timezone: "Asia/Kolkata",
+        instant,
+      });
+
+      expect(result.allowed).toBe(true);
+      expect(mockCount).toHaveBeenCalledWith({
+        where: {
+          queueId: "queue-1",
+          createdAt: {
+            gte: new Date("2026-10-23T18:30:00.000Z"),
+            lt: new Date("2026-10-24T18:30:00.000Z"),
+          },
+        },
+      });
+    });
+
+    it("rejects admission when daily count equals maxDailyTickets", async () => {
+      const mockCount = vi.fn().mockResolvedValue(10); // 10 tickets, limit 10
+      const mockTx = {
+        ticket: { count: mockCount },
+      } as unknown as Prisma.TransactionClient;
+
+      const instant = new Date("2026-10-24T10:00:00.000Z");
+      const result = await evaluateQueueCapacity({
+        tx: mockTx,
+        queueId: "queue-1",
+        maxWaitingTickets: null,
+        maxDailyTickets: 10,
+        timezone: "Asia/Kolkata",
+        instant,
+      });
+
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe("DAILY_TICKET_LIMIT_REACHED");
+      expect(result.error).toBe("Daily ticket limit reached");
+      expect(result.dailyCount).toBe(10);
+    });
+
+    it("checks waiting capacity first when both limits are configured", async () => {
+      // Both limits are reached: waiting should trigger first
+      const mockCount = vi.fn().mockResolvedValue(5);
+      const mockTx = {
+        ticket: { count: mockCount },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await evaluateQueueCapacity({
+        tx: mockTx,
+        queueId: "queue-1",
+        maxWaitingTickets: 5,
+        maxDailyTickets: 10,
+        timezone: "Asia/Kolkata",
+      });
+
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe("QUEUE_CAPACITY_REACHED");
+      // Daily count query should not have been executed
+      expect(mockCount).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects with INVALID_SCHEDULE_CONFIGURATION when timezone is invalid and daily limit configured", async () => {
+      const mockTx = {
+        ticket: { count: vi.fn() },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await evaluateQueueCapacity({
+        tx: mockTx,
+        queueId: "queue-1",
+        maxDailyTickets: 10,
+        timezone: "Invalid/Fake_Zone",
+      });
+
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe("INVALID_SCHEDULE_CONFIGURATION");
+    });
+  });
 });
+

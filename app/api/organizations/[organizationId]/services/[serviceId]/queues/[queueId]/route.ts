@@ -84,6 +84,12 @@ export async function PATCH(
         ...(result.data.isActive !== undefined && {
           isActive: result.data.isActive,
         }),
+        ...(result.data.maxWaitingTickets !== undefined && {
+          maxWaitingTickets: result.data.maxWaitingTickets,
+        }),
+        ...(result.data.maxDailyTickets !== undefined && {
+          maxDailyTickets: result.data.maxDailyTickets,
+        }),
       },
     });
 

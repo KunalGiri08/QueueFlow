@@ -87,16 +87,18 @@ model Service {
 }
 
 model Queue {
-  id               String   @id @default(cuid())
-  name             String
-  serviceId        String
-  nextTicketNumber Int      @default(1)
-  lastResetDate    String?
-  isActive         Boolean  @default(true)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  tickets          Ticket[]
-  service          Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  id                String   @id @default(cuid())
+  name              String
+  serviceId         String
+  nextTicketNumber  Int      @default(1)
+  lastResetDate     String?
+  maxWaitingTickets Int?
+  maxDailyTickets   Int?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  tickets           Ticket[]
+  service           Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
 
   @@unique([serviceId, name])
 }
@@ -126,6 +128,7 @@ model Ticket {
 
   @@index([queueId, number])
   @@index([queueId, status, number])
+  @@index([queueId, createdAt])
   @@index([servedById, status])
   @@index([userId])
 }
