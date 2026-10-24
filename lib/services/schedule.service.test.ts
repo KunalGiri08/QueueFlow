@@ -5,6 +5,8 @@ import {
   getLocalTimeDetails,
   isValidIntervalItem,
   isValidClosureItem,
+  getContinuousOperatingBlocks,
+  evaluateServiceAdmission,
   ClosureItem,
 } from "./schedule.service";
 import { ScheduleIntervalItem } from "@/lib/validations/schedule";
@@ -605,6 +607,410 @@ describe("Operating Hours Evaluation Engine (schedule.service)", () => {
           endDate: "2026-12-25",
         }),
       ).toBe(false);
+    });
+  });
+
+  describe("getContinuousOperatingBlocks", () => {
+    it("returns empty array when no intervals are present for day", () => {
+      expect(getContinuousOperatingBlocks([], 1)).toEqual([]);
+    });
+
+    it("returns single block for a single active interval", () => {
+      const intervals: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "09:00", endTime: "17:00", isActive: true },
+      ];
+      expect(getContinuousOperatingBlocks(intervals, 1)).toEqual([
+        {
+          dayOfWeek: 1,
+          startMinutes: 540,
+          endMinutes: 1020,
+          startTime: "09:00",
+          endTime: "17:00",
+        },
+      ]);
+    });
+
+    it("merges consecutive active intervals that touch exactly (09:00-12:00 and 12:00-17:00)", () => {
+      const intervals: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "09:00", endTime: "12:00", isActive: true },
+        { dayOfWeek: 1, startTime: "12:00", endTime: "17:00", isActive: true },
+      ];
+      expect(getContinuousOperatingBlocks(intervals, 1)).toEqual([
+        {
+          dayOfWeek: 1,
+          startMinutes: 540,
+          endMinutes: 1020,
+          startTime: "09:00",
+          endTime: "17:00",
+        },
+      ]);
+    });
+
+    it("merges three consecutive touching intervals", () => {
+      const intervals: ScheduleIntervalItem[] = [
+        { dayOfWeek: 2, startTime: "08:00", endTime: "10:00", isActive: true },
+        { dayOfWeek: 2, startTime: "10:00", endTime: "13:00", isActive: true },
+        { dayOfWeek: 2, startTime: "13:00", endTime: "18:00", isActive: true },
+      ];
+      expect(getContinuousOperatingBlocks(intervals, 2)).toEqual([
+        {
+          dayOfWeek: 2,
+          startMinutes: 480,
+          endMinutes: 1080,
+          startTime: "08:00",
+          endTime: "18:00",
+        },
+      ]);
+    });
+
+    it("keeps separate blocks when there is a genuine gap (09:00-12:00 and 13:00-17:00)", () => {
+      const intervals: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "09:00", endTime: "12:00", isActive: true },
+        { dayOfWeek: 1, startTime: "13:00", endTime: "17:00", isActive: true },
+      ];
+      expect(getContinuousOperatingBlocks(intervals, 1)).toEqual([
+        {
+          dayOfWeek: 1,
+          startMinutes: 540,
+          endMinutes: 720,
+          startTime: "09:00",
+          endTime: "12:00",
+        },
+        {
+          dayOfWeek: 1,
+          startMinutes: 780,
+          endMinutes: 1020,
+          startTime: "13:00",
+          endTime: "17:00",
+        },
+      ]);
+    });
+
+    it("excludes inactive intervals from continuous blocks", () => {
+      const intervals: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "09:00", endTime: "12:00", isActive: true },
+        { dayOfWeek: 1, startTime: "12:00", endTime: "13:00", isActive: false },
+        { dayOfWeek: 1, startTime: "13:00", endTime: "17:00", isActive: true },
+      ];
+      expect(getContinuousOperatingBlocks(intervals, 1)).toEqual([
+        {
+          dayOfWeek: 1,
+          startMinutes: 540,
+          endMinutes: 720,
+          startTime: "09:00",
+          endTime: "12:00",
+        },
+        {
+          dayOfWeek: 1,
+          startMinutes: 780,
+          endMinutes: 1020,
+          startTime: "13:00",
+          endTime: "17:00",
+        },
+      ]);
+    });
+
+    it("defensively merges overlapping intervals", () => {
+      const intervals: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "09:00", endTime: "12:30", isActive: true },
+        { dayOfWeek: 1, startTime: "12:00", endTime: "17:00", isActive: true },
+      ];
+      expect(getContinuousOperatingBlocks(intervals, 1)).toEqual([
+        {
+          dayOfWeek: 1,
+          startMinutes: 540,
+          endMinutes: 1020,
+          startTime: "09:00",
+          endTime: "17:00",
+        },
+      ]);
+    });
+  });
+
+  describe("evaluateServiceAdmission", () => {
+    const mondayIntervals: ScheduleIntervalItem[] = [
+      { dayOfWeek: 1, startTime: "09:00", endTime: "17:00", isActive: true },
+    ];
+
+    it("admits customer when cutoff is null", () => {
+      // Monday 16:55 IST (11:25 UTC)
+      const instant = new Date("2026-10-26T11:25:00.000Z");
+      const result = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: mondayIntervals,
+        admissionCutoffMinutes: null,
+        instant,
+      });
+
+      expect(result.isAdmitted).toBe(true);
+      expect(result.reason).toBe("ADMITTED");
+      expect(result.cutoffMinutes).toBe(0);
+    });
+
+    it("admits customer when cutoff is 0", () => {
+      // Monday 16:59 IST (11:29 UTC)
+      const instant = new Date("2026-10-26T11:29:00.000Z");
+      const result = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: mondayIntervals,
+        admissionCutoffMinutes: 0,
+        instant,
+      });
+
+      expect(result.isAdmitted).toBe(true);
+      expect(result.reason).toBe("ADMITTED");
+      expect(result.cutoffMinutes).toBe(0);
+    });
+
+    it("admits customer just before the positive cutoff (e.g. 16:29 for 16:30 cutoff)", () => {
+      // Monday 16:29 IST (10:59 UTC)
+      const instant = new Date("2026-10-26T10:59:00.000Z");
+      const result = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: mondayIntervals,
+        admissionCutoffMinutes: 30, // cutoff at 16:30
+        instant,
+      });
+
+      expect(result.isAdmitted).toBe(true);
+      expect(result.reason).toBe("ADMITTED");
+      expect(result.effectiveCutoffTime).toBe("16:30");
+      expect(result.blockEndTime).toBe("17:00");
+    });
+
+    it("rejects admission at the exact cutoff boundary (16:30:00 for 16:30 cutoff)", () => {
+      // Monday 16:30 IST (11:00 UTC)
+      const instant = new Date("2026-10-26T11:00:00.000Z");
+      const result = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: mondayIntervals,
+        admissionCutoffMinutes: 30,
+        instant,
+      });
+
+      expect(result.isAdmitted).toBe(false);
+      expect(result.reason).toBe("ADMISSION_CUTOFF_REACHED");
+      expect(result.code).toBe("ADMISSION_CUTOFF_REACHED");
+      expect(result.effectiveCutoffTime).toBe("16:30");
+      expect(result.blockEndTime).toBe("17:00");
+      expect(result.message).toContain("Admission cutoff reached for this service");
+    });
+
+    it("rejects admission just after the cutoff (16:31 for 16:30 cutoff)", () => {
+      // Monday 16:31 IST (11:01 UTC)
+      const instant = new Date("2026-10-26T11:01:00.000Z");
+      const result = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: mondayIntervals,
+        admissionCutoffMinutes: 30,
+        instant,
+      });
+
+      expect(result.isAdmitted).toBe(false);
+      expect(result.reason).toBe("ADMISSION_CUTOFF_REACHED");
+    });
+
+    it("rejects admission throughout interval when cutoff equals interval duration", () => {
+      const shortInterval: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "09:00", endTime: "09:30", isActive: true },
+      ];
+      // Monday 09:00 IST (03:30 UTC)
+      const instant = new Date("2026-10-26T03:30:00.000Z");
+      const result = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: shortInterval,
+        admissionCutoffMinutes: 30, // 30 min duration, 30 min cutoff -> cutoff at 09:00
+        instant,
+      });
+
+      expect(result.isAdmitted).toBe(false);
+      expect(result.reason).toBe("ADMISSION_CUTOFF_REACHED");
+    });
+
+    it("rejects admission throughout interval when cutoff is longer than interval duration", () => {
+      const shortInterval: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "09:00", endTime: "09:30", isActive: true },
+      ];
+      // Monday 09:05 IST (03:35 UTC)
+      const instant = new Date("2026-10-26T03:35:00.000Z");
+      const result = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: shortInterval,
+        admissionCutoffMinutes: 45,
+        instant,
+      });
+
+      expect(result.isAdmitted).toBe(false);
+      expect(result.reason).toBe("ADMISSION_CUTOFF_REACHED");
+    });
+
+    it("handles consecutive touching intervals as one continuous block (09:00-12:00, 12:00-17:00, cutoff 30m)", () => {
+      const touchingIntervals: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "09:00", endTime: "12:00", isActive: true },
+        { dayOfWeek: 1, startTime: "12:00", endTime: "17:00", isActive: true },
+      ];
+
+      // Monday 11:45 IST (06:15 UTC): Should be admitted because continuous block ends at 17:00 (cutoff 16:30)
+      const instant1 = new Date("2026-10-26T06:15:00.000Z");
+      const result1 = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: touchingIntervals,
+        admissionCutoffMinutes: 30,
+        instant: instant1,
+      });
+      expect(result1.isAdmitted).toBe(true);
+      expect(result1.effectiveCutoffTime).toBe("16:30");
+      expect(result1.blockEndTime).toBe("17:00");
+
+      // Monday 16:30 IST (11:00 UTC): Cutoff reached for the 17:00 block end
+      const instant2 = new Date("2026-10-26T11:00:00.000Z");
+      const result2 = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: touchingIntervals,
+        admissionCutoffMinutes: 30,
+        instant: instant2,
+      });
+      expect(result2.isAdmitted).toBe(false);
+      expect(result2.reason).toBe("ADMISSION_CUTOFF_REACHED");
+    });
+
+    it("applies cutoff to each separate operating block when there is a real break (09:00-12:00, 13:00-17:00)", () => {
+      const splitIntervals: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "09:00", endTime: "12:00", isActive: true },
+        { dayOfWeek: 1, startTime: "13:00", endTime: "17:00", isActive: true },
+      ];
+
+      // Morning block cutoff is 11:30
+      // 11:29 IST: Admitted
+      const instantMorningBefore = new Date("2026-10-26T05:59:00.000Z");
+      const resultMorningBefore = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: splitIntervals,
+        admissionCutoffMinutes: 30,
+        instant: instantMorningBefore,
+      });
+      expect(resultMorningBefore.isAdmitted).toBe(true);
+      expect(resultMorningBefore.effectiveCutoffTime).toBe("11:30");
+
+      // 11:30 IST: Morning cutoff reached
+      const instantMorningAt = new Date("2026-10-26T06:00:00.000Z");
+      const resultMorningAt = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: splitIntervals,
+        admissionCutoffMinutes: 30,
+        instant: instantMorningAt,
+      });
+      expect(resultMorningAt.isAdmitted).toBe(false);
+      expect(resultMorningAt.reason).toBe("ADMISSION_CUTOFF_REACHED");
+      expect(resultMorningAt.effectiveCutoffTime).toBe("11:30");
+      expect(resultMorningAt.blockEndTime).toBe("12:00");
+
+      // 13:00 IST: Afternoon block opens, admitted
+      const instantAfternoonOpen = new Date("2026-10-26T07:30:00.000Z");
+      const resultAfternoonOpen = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: splitIntervals,
+        admissionCutoffMinutes: 30,
+        instant: instantAfternoonOpen,
+      });
+      expect(resultAfternoonOpen.isAdmitted).toBe(true);
+      expect(resultAfternoonOpen.effectiveCutoffTime).toBe("16:30");
+      expect(resultAfternoonOpen.blockEndTime).toBe("17:00");
+    });
+
+    it("preserves exceptional closure precedence over cutoff", () => {
+      const closure: ClosureItem = {
+        startDate: "2026-10-26",
+        endDate: "2026-10-26",
+        reason: "Diwali Holiday",
+      };
+      // Monday 10:00 IST during normal hours
+      const instant = new Date("2026-10-26T04:30:00.000Z");
+      const result = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: mondayIntervals,
+        closures: [closure],
+        admissionCutoffMinutes: 30,
+        instant,
+      });
+
+      expect(result.isAdmitted).toBe(false);
+      expect(result.reason).toBe("ORGANIZATION_CLOSED");
+      expect(result.message).toContain("Diwali Holiday");
+    });
+
+    it("evaluates cutoff using non-Asia/Kolkata timezone (America/New_York)", () => {
+      const nyTimezone = "America/New_York";
+      // Monday 09:00 - 17:00 EDT (UTC-4)
+      // 16:30 EDT = 20:30 UTC
+      // 16:29 EDT = 20:29 UTC
+      const nyIntervals: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "09:00", endTime: "17:00", isActive: true },
+      ];
+
+      const beforeCutoff = new Date("2026-10-26T20:29:00.000Z"); // 16:29 NY time
+      const resultBefore = evaluateServiceAdmission({
+        timezone: nyTimezone,
+        intervals: nyIntervals,
+        admissionCutoffMinutes: 30,
+        instant: beforeCutoff,
+      });
+      expect(resultBefore.isAdmitted).toBe(true);
+
+      const atCutoff = new Date("2026-10-26T20:30:00.000Z"); // 16:30 NY time
+      const resultAt = evaluateServiceAdmission({
+        timezone: nyTimezone,
+        intervals: nyIntervals,
+        admissionCutoffMinutes: 30,
+        instant: atCutoff,
+      });
+      expect(resultAt.isAdmitted).toBe(false);
+      expect(resultAt.reason).toBe("ADMISSION_CUTOFF_REACHED");
+    });
+
+    it("rejects admission safely when timezone is invalid", () => {
+      const result = evaluateServiceAdmission({
+        timezone: "Invalid/Fake_Timezone",
+        intervals: mondayIntervals,
+        admissionCutoffMinutes: 30,
+      });
+
+      expect(result.isAdmitted).toBe(false);
+      expect(result.code).toBe("INVALID_SCHEDULE_CONFIGURATION");
+      expect(result.reason).toBe("INVALID_TIMEZONE");
+    });
+
+    it("rejects admission safely when schedule interval is corrupted", () => {
+      const corruptIntervals: ScheduleIntervalItem[] = [
+        { dayOfWeek: 1, startTime: "99:99", endTime: "17:00", isActive: true },
+      ];
+      const result = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: corruptIntervals,
+        admissionCutoffMinutes: 30,
+      });
+
+      expect(result.isAdmitted).toBe(false);
+      expect(result.code).toBe("INVALID_SCHEDULE_CONFIGURATION");
+      expect(result.reason).toBe("INVALID_SCHEDULE_DATA");
+    });
+
+    it("rejects admission safely when admissionCutoffMinutes is invalid (negative or > 480)", () => {
+      const resultNegative = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: mondayIntervals,
+        admissionCutoffMinutes: -10,
+      });
+      expect(resultNegative.isAdmitted).toBe(false);
+      expect(resultNegative.code).toBe("INVALID_SCHEDULE_CONFIGURATION");
+
+      const resultOver = evaluateServiceAdmission({
+        timezone: defaultTimezone,
+        intervals: mondayIntervals,
+        admissionCutoffMinutes: 500,
+      });
+      expect(resultOver.isAdmitted).toBe(false);
+      expect(resultOver.code).toBe("INVALID_SCHEDULE_CONFIGURATION");
     });
   });
 });

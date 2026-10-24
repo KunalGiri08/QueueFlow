@@ -311,4 +311,98 @@ describe("PATCH /api/organizations/[organizationId]/services/[serviceId]", () =>
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "Internal server error" });
   });
+
+  it("successfully updates admissionCutoffMinutes", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockServiceFindFirst.mockResolvedValue({
+      id: serviceId,
+      name: "General Consultation",
+      organizationId,
+      isActive: true,
+      admissionCutoffMinutes: 15,
+    });
+    mockServiceUpdate.mockResolvedValue({
+      id: serviceId,
+      name: "General Consultation",
+      organizationId,
+      isActive: true,
+      admissionCutoffMinutes: 45,
+    });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admissionCutoffMinutes: 45 }),
+      }),
+      createParams(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockServiceUpdate).toHaveBeenCalledWith({
+      where: { id: serviceId },
+      data: {
+        admissionCutoffMinutes: 45,
+      },
+    });
+    const body = await response.json();
+    expect(body.admissionCutoffMinutes).toBe(45);
+  });
+
+  it("successfully resets admissionCutoffMinutes to null", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockServiceFindFirst.mockResolvedValue({
+      id: serviceId,
+      name: "General Consultation",
+      organizationId,
+      isActive: true,
+      admissionCutoffMinutes: 45,
+    });
+    mockServiceUpdate.mockResolvedValue({
+      id: serviceId,
+      name: "General Consultation",
+      organizationId,
+      isActive: true,
+      admissionCutoffMinutes: null,
+    });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admissionCutoffMinutes: null }),
+      }),
+      createParams(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockServiceUpdate).toHaveBeenCalledWith({
+      where: { id: serviceId },
+      data: {
+        admissionCutoffMinutes: null,
+      },
+    });
+  });
+
+  it("rejects updating admissionCutoffMinutes with invalid value (< 0 or > 480)", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admissionCutoffMinutes: -5 }),
+      }),
+      createParams(),
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("Invalid request body");
+    expect(body.details.fieldErrors.admissionCutoffMinutes).toBeDefined();
+    expect(mockServiceUpdate).not.toHaveBeenCalled();
+  });
 });

@@ -86,6 +86,9 @@ export async function PATCH(
         ...(result.data.isActive !== undefined && {
           isActive: result.data.isActive,
         }),
+        ...(result.data.admissionCutoffMinutes !== undefined && {
+          admissionCutoffMinutes: result.data.admissionCutoffMinutes,
+        }),
       },
     });
 

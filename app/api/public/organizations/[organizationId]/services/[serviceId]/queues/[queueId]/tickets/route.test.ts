@@ -547,4 +547,130 @@ describe("POST /api/public/organizations/[organizationId]/services/[serviceId]/q
     expect(mockQueryRaw).not.toHaveBeenCalled();
     expect(mockTicketCreate).not.toHaveBeenCalled();
   });
+
+  describe("Service Admission Cutoff Enforcement", () => {
+    it("admits customer when arriving before the service admission cutoff", async () => {
+      vi.useFakeTimers();
+      try {
+        // Wednesday 16:29:00 UTC (1 min before 16:30 cutoff)
+        vi.setSystemTime(new Date("2026-10-21T16:29:00.000Z"));
+        mockGetCurrentUser.mockResolvedValue({ id: userId });
+        mockQueueFindUnique.mockResolvedValue({
+          id: queueId,
+          isActive: true,
+          serviceId,
+          service: {
+            id: serviceId,
+            isActive: true,
+            admissionCutoffMinutes: 30, // Cutoff at 16:30
+            organizationId,
+            organization: {
+              id: organizationId,
+              timezone: "UTC",
+              scheduleIntervals: [
+                { id: "int-wed", dayOfWeek: 3, startTime: "09:00", endTime: "17:00", isActive: true },
+              ],
+              closures: [],
+            },
+          },
+        });
+
+        const response = await POST(
+          new Request("http://localhost"),
+          createParams(),
+        );
+
+        expect(response.status).toBe(201);
+        expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+        expect(mockTicketCreate).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("rejects ticket creation at the exact cutoff boundary (e.g. 16:30:00 for 16:30 cutoff)", async () => {
+      vi.useFakeTimers();
+      try {
+        // Wednesday 16:30:00 UTC (exact cutoff boundary)
+        vi.setSystemTime(new Date("2026-10-21T16:30:00.000Z"));
+        mockGetCurrentUser.mockResolvedValue({ id: userId });
+        mockQueueFindUnique.mockResolvedValue({
+          id: queueId,
+          isActive: true,
+          serviceId,
+          service: {
+            id: serviceId,
+            isActive: true,
+            admissionCutoffMinutes: 30,
+            organizationId,
+            organization: {
+              id: organizationId,
+              timezone: "UTC",
+              scheduleIntervals: [
+                { id: "int-wed", dayOfWeek: 3, startTime: "09:00", endTime: "17:00", isActive: true },
+              ],
+              closures: [],
+            },
+          },
+        });
+
+        const response = await POST(
+          new Request("http://localhost"),
+          createParams(),
+        );
+
+        expect(response.status).toBe(400);
+        const data = await response.json();
+        expect(data.code).toBe("ADMISSION_CUTOFF_REACHED");
+        expect(data.reason).toBe("ADMISSION_CUTOFF_REACHED");
+        expect(data.error).toBe("Admission cutoff reached for this service");
+        expect(data.message).toContain("16:30");
+        expect(mockQueryRaw).not.toHaveBeenCalled();
+        expect(mockTicketCreate).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("rejects ticket creation after the admission cutoff", async () => {
+      vi.useFakeTimers();
+      try {
+        // Wednesday 16:45:00 UTC (15 min after cutoff)
+        vi.setSystemTime(new Date("2026-10-21T16:45:00.000Z"));
+        mockGetCurrentUser.mockResolvedValue({ id: userId });
+        mockQueueFindUnique.mockResolvedValue({
+          id: queueId,
+          isActive: true,
+          serviceId,
+          service: {
+            id: serviceId,
+            isActive: true,
+            admissionCutoffMinutes: 30,
+            organizationId,
+            organization: {
+              id: organizationId,
+              timezone: "UTC",
+              scheduleIntervals: [
+                { id: "int-wed", dayOfWeek: 3, startTime: "09:00", endTime: "17:00", isActive: true },
+              ],
+              closures: [],
+            },
+          },
+        });
+
+        const response = await POST(
+          new Request("http://localhost"),
+          createParams(),
+        );
+
+        expect(response.status).toBe(400);
+        const data = await response.json();
+        expect(data.code).toBe("ADMISSION_CUTOFF_REACHED");
+        expect(mockQueryRaw).not.toHaveBeenCalled();
+        expect(mockTicketCreate).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

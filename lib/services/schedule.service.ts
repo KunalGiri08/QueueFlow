@@ -1,6 +1,7 @@
 import {
   isValidIanaTimezone,
   timeToMinutes,
+  minutesToTime,
   isValidCalendarDateString,
   ScheduleIntervalItem,
 } from "@/lib/validations/schedule";
@@ -338,4 +339,241 @@ export function isOrganizationOpen(
   instant: Date = new Date(),
 ): boolean {
   return evaluateOperatingHours(timezone, intervals, closures, instant).isOpen;
+}
+
+export interface ContinuousOperatingBlock {
+  dayOfWeek: number;
+  startMinutes: number;
+  endMinutes: number;
+  startTime: string; // "HH:mm"
+  endTime: string; // "HH:mm"
+}
+
+export interface EvaluateServiceAdmissionInput {
+  timezone: string;
+  intervals?: ScheduleIntervalItem[];
+  closures?: ClosureItem[];
+  admissionCutoffMinutes?: number | null;
+  instant?: Date;
+}
+
+export type ServiceAdmissionReasonCode =
+  | "ADMITTED"
+  | "ADMISSION_CUTOFF_REACHED"
+  | "ORGANIZATION_CLOSED"
+  | "NO_ACTIVE_SCHEDULE"
+  | "OUTSIDE_WORKING_HOURS"
+  | "INVALID_TIMEZONE"
+  | "INVALID_SCHEDULE_DATA";
+
+export interface ServiceAdmissionEvaluationResult {
+  isAdmitted: boolean;
+  reason: ServiceAdmissionReasonCode;
+  code?: string;
+  message: string;
+  operatingHours: OperatingHoursEvaluationResult;
+  cutoffMinutes?: number;
+  effectiveCutoffTime?: string;
+  blockEndTime?: string;
+  activeBlock?: ContinuousOperatingBlock;
+}
+
+/**
+ * Computes continuous operating blocks for a local day of week by merging consecutive
+ * active intervals that touch or overlap.
+ */
+export function getContinuousOperatingBlocks(
+  intervals: ScheduleIntervalItem[],
+  dayOfWeek: number,
+): ContinuousOperatingBlock[] {
+  const validDayIntervals = intervals
+    .filter(isValidIntervalItem)
+    .filter((i) => i.isActive !== false && i.dayOfWeek === dayOfWeek)
+    .sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+
+  if (validDayIntervals.length === 0) {
+    return [];
+  }
+
+  const blocks: ContinuousOperatingBlock[] = [];
+  let currentStart = timeToMinutes(validDayIntervals[0].startTime);
+  let currentEnd = timeToMinutes(validDayIntervals[0].endTime);
+
+  for (let i = 1; i < validDayIntervals.length; i++) {
+    const nextStart = timeToMinutes(validDayIntervals[i].startTime);
+    const nextEnd = timeToMinutes(validDayIntervals[i].endTime);
+
+    // If next interval touches or overlaps the current block, merge them
+    if (nextStart <= currentEnd) {
+      if (nextEnd > currentEnd) {
+        currentEnd = nextEnd;
+      }
+    } else {
+      // Genuine gap
+      blocks.push({
+        dayOfWeek,
+        startMinutes: currentStart,
+        endMinutes: currentEnd,
+        startTime: minutesToTime(currentStart),
+        endTime: minutesToTime(currentEnd),
+      });
+      currentStart = nextStart;
+      currentEnd = nextEnd;
+    }
+  }
+
+  blocks.push({
+    dayOfWeek,
+    startMinutes: currentStart,
+    endMinutes: currentEnd,
+    startTime: minutesToTime(currentStart),
+    endTime: minutesToTime(currentEnd),
+  });
+
+  return blocks;
+}
+
+/**
+ * Evaluates whether a customer can be admitted to a service at an explicit instant,
+ * taking into account organization operating hours, exceptional closures, and the
+ * service's admissionCutoffMinutes.
+ */
+export function evaluateServiceAdmission(
+  input: EvaluateServiceAdmissionInput,
+): ServiceAdmissionEvaluationResult {
+  const {
+    timezone,
+    intervals = [],
+    closures = [],
+    admissionCutoffMinutes,
+    instant = new Date(),
+  } = input;
+
+  // 1. Defensive validation for malformed interval or closure items
+  const hasCorruptedInterval = intervals.some((i) => !isValidIntervalItem(i));
+  const hasCorruptedClosure = closures.some((c) => !isValidClosureItem(c));
+
+  if (hasCorruptedInterval || hasCorruptedClosure) {
+    return {
+      isAdmitted: false,
+      reason: "INVALID_SCHEDULE_DATA",
+      code: "INVALID_SCHEDULE_CONFIGURATION",
+      message: "Organization schedule is temporarily misconfigured",
+      operatingHours: {
+        isOpen: false,
+        reason: "ORGANIZATION_CLOSED",
+        message: "Organization schedule is temporarily misconfigured",
+      },
+    };
+  }
+
+  // 2. Validate admissionCutoffMinutes bounds defensively
+  if (
+    admissionCutoffMinutes !== null &&
+    admissionCutoffMinutes !== undefined &&
+    (typeof admissionCutoffMinutes !== "number" ||
+      !Number.isInteger(admissionCutoffMinutes) ||
+      admissionCutoffMinutes < 0 ||
+      admissionCutoffMinutes > 480)
+  ) {
+    return {
+      isAdmitted: false,
+      reason: "INVALID_SCHEDULE_DATA",
+      code: "INVALID_SCHEDULE_CONFIGURATION",
+      message: "Service admission cutoff configuration is invalid",
+      operatingHours: {
+        isOpen: false,
+        reason: "ORGANIZATION_CLOSED",
+        message: "Organization schedule is temporarily misconfigured",
+      },
+    };
+  }
+
+  // 3. Organization operating-hours evaluation remains the outer boundary
+  const operatingHours = evaluateOperatingHours({
+    timezone,
+    intervals,
+    closures,
+    instant,
+  });
+
+  if (!operatingHours.isOpen) {
+    return {
+      isAdmitted: false,
+      reason: operatingHours.reason as ServiceAdmissionReasonCode,
+      code:
+        operatingHours.reason === "INVALID_TIMEZONE"
+          ? "INVALID_SCHEDULE_CONFIGURATION"
+          : operatingHours.reason,
+      message: operatingHours.message,
+      operatingHours,
+    };
+  }
+
+  // At this point, organization is OPEN. operatingHours.localTime is guaranteed to exist.
+  const localTime = operatingHours.localTime!;
+
+  // 4. Normalize cutoff: null, undefined, or 0 means zero additional cutoff
+  const cutoff =
+    admissionCutoffMinutes !== null &&
+    admissionCutoffMinutes !== undefined &&
+    admissionCutoffMinutes > 0
+      ? admissionCutoffMinutes
+      : 0;
+
+  // 5. Compute continuous operating blocks for the local day of week
+  const blocks = getContinuousOperatingBlocks(intervals, localTime.dayOfWeek);
+
+  const currentMinutes = localTime.minutes;
+  const activeBlock = blocks.find(
+    (b) => currentMinutes >= b.startMinutes && currentMinutes < b.endMinutes,
+  );
+
+  const effectiveEndMinutes = activeBlock
+    ? activeBlock.endMinutes
+    : timeToMinutes(operatingHours.activeInterval!.endTime);
+  const blockEndTime = activeBlock
+    ? activeBlock.endTime
+    : operatingHours.activeInterval!.endTime;
+
+  if (cutoff === 0) {
+    return {
+      isAdmitted: true,
+      reason: "ADMITTED",
+      message: "Admission is open",
+      operatingHours,
+      cutoffMinutes: 0,
+      blockEndTime,
+      activeBlock,
+    };
+  }
+
+  const cutoffInstantMinutes = effectiveEndMinutes - cutoff;
+  const effectiveCutoffTime = minutesToTime(Math.max(0, cutoffInstantMinutes));
+
+  // 6. At the exact cutoff boundary or after, reject admission
+  if (currentMinutes >= cutoffInstantMinutes) {
+    return {
+      isAdmitted: false,
+      reason: "ADMISSION_CUTOFF_REACHED",
+      code: "ADMISSION_CUTOFF_REACHED",
+      message: `Admission cutoff reached for this service (closed at ${effectiveCutoffTime}, ${cutoff} minutes prior to closing time ${blockEndTime})`,
+      operatingHours,
+      cutoffMinutes: cutoff,
+      effectiveCutoffTime,
+      blockEndTime,
+      activeBlock,
+    };
+  }
+
+  return {
+    isAdmitted: true,
+    reason: "ADMITTED",
+    message: "Admission is open",
+    operatingHours,
+    cutoffMinutes: cutoff,
+    effectiveCutoffTime,
+    blockEndTime,
+    activeBlock,
+  };
 }

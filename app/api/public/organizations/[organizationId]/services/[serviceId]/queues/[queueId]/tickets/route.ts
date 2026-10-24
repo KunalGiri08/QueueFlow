@@ -4,6 +4,8 @@ import { reserveNextTicketNumber } from "@/lib/services/ticket.service";
 import { estimateTicketWaitTime } from "@/lib/services/prediction.service";
 import {
   evaluateOperatingHours,
+  evaluateServiceAdmission,
+  ServiceAdmissionEvaluationResult,
   isValidClosureItem,
   isValidIntervalItem,
 } from "@/lib/services/schedule.service";
@@ -42,6 +44,7 @@ export async function POST(
             select: {
               id: true,
               isActive: true,
+              admissionCutoffMinutes: true,
               organizationId: true,
               organization: {
                 select: {
@@ -88,32 +91,21 @@ export async function POST(
       }
 
       const org = queue.service.organization;
-      if (
-        org.scheduleIntervals.some((item) => !isValidIntervalItem(item)) ||
-        org.closures.some((item) => !isValidClosureItem(item))
-      ) {
-        const error = new Error("ORGANIZATION_NOT_OPEN");
-        (error as unknown as { evaluation: unknown }).evaluation = {
-          isOpen: false,
-          reason: "INVALID_SCHEDULE_DATA",
-          message: "Organization schedule is temporarily misconfigured",
-        };
-        throw error;
-      }
 
-      // Check operating hours using one explicit Date instance
+      // Check operating hours and service admission cutoff using one explicit Date instance
       const admissionInstant = new Date();
-      const evaluation = evaluateOperatingHours({
+      const admission = evaluateServiceAdmission({
         timezone: org.timezone,
         intervals: org.scheduleIntervals,
         closures: org.closures,
+        admissionCutoffMinutes: queue.service.admissionCutoffMinutes,
         instant: admissionInstant,
       });
 
-      if (!evaluation.isOpen) {
-        const error = new Error("ORGANIZATION_NOT_OPEN");
-        (error as unknown as { evaluation: typeof evaluation }).evaluation =
-          evaluation;
+      if (!admission.isAdmitted) {
+        const error = new Error("ADMISSION_REJECTED");
+        (error as unknown as { admission: typeof admission }).admission =
+          admission;
         throw error;
       }
 
@@ -202,7 +194,20 @@ export async function POST(
     return Response.json(ticket, { status: 201 });
   } catch (error) {
     if (error instanceof Error) {
-      if (error.message === "ORGANIZATION_NOT_OPEN") {
+      if (
+        error.message === "ADMISSION_REJECTED" ||
+        error.message === "ORGANIZATION_NOT_OPEN"
+      ) {
+        const admission = (
+          error as unknown as {
+            admission?: ServiceAdmissionEvaluationResult;
+            evaluation?: {
+              reason?: string;
+              message?: string;
+            };
+          }
+        ).admission;
+
         const evalResult = (
           error as unknown as {
             evaluation?: {
@@ -212,16 +217,31 @@ export async function POST(
           }
         ).evaluation;
 
+        const reason = admission?.reason ?? evalResult?.reason;
+        const message = admission?.message ?? evalResult?.message;
+
         if (
-          evalResult?.reason === "INVALID_TIMEZONE" ||
-          evalResult?.reason === "INVALID_SCHEDULE_DATA"
+          reason === "INVALID_TIMEZONE" ||
+          reason === "INVALID_SCHEDULE_DATA"
         ) {
           return Response.json(
             {
               error: "Organization schedule is temporarily misconfigured",
               code: "INVALID_SCHEDULE_CONFIGURATION",
-              reason: evalResult.reason,
+              reason,
               message: "Organization schedule is temporarily misconfigured",
+            },
+            { status: 400 },
+          );
+        }
+
+        if (reason === "ADMISSION_CUTOFF_REACHED") {
+          return Response.json(
+            {
+              error: "Admission cutoff reached for this service",
+              code: "ADMISSION_CUTOFF_REACHED",
+              reason: "ADMISSION_CUTOFF_REACHED",
+              message: message || "Admission cutoff reached for this service",
             },
             { status: 400 },
           );
@@ -229,10 +249,10 @@ export async function POST(
 
         return Response.json(
           {
-            error: evalResult?.message || "Organization is currently closed",
-            code: evalResult?.reason || "ORGANIZATION_CLOSED",
-            reason: evalResult?.reason || "ORGANIZATION_CLOSED",
-            message: evalResult?.message || "Organization is currently closed",
+            error: message || "Organization is currently closed",
+            code: reason || "ORGANIZATION_CLOSED",
+            reason: reason || "ORGANIZATION_CLOSED",
+            message: message || "Organization is currently closed",
           },
           { status: 400 },
         );

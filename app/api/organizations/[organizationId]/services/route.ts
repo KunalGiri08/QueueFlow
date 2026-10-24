@@ -118,6 +118,7 @@ export async function POST(
         description: result.data.description,
         organizationId,
         isActive: result.data.isActive ?? true,
+        admissionCutoffMinutes: result.data.admissionCutoffMinutes,
       },
     });
 
