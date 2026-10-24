@@ -691,9 +691,13 @@ describe("POST /api/public/organizations/[organizationId]/services/[serviceId]/q
           organization: {
             id: organizationId,
             timezone: "UTC",
-            scheduleIntervals: [
-              { id: "int-all", dayOfWeek: new Date().getDay(), startTime: "00:00", endTime: "23:59", isActive: true },
-            ],
+            scheduleIntervals: [0, 1, 2, 3, 4, 5, 6].map((d) => ({
+              id: `int-${d}`,
+              dayOfWeek: d,
+              startTime: "00:00",
+              endTime: "23:59",
+              isActive: true,
+            })),
             closures: [],
           },
         },
@@ -727,9 +731,13 @@ describe("POST /api/public/organizations/[organizationId]/services/[serviceId]/q
           organization: {
             id: organizationId,
             timezone: "UTC",
-            scheduleIntervals: [
-              { id: "int-all", dayOfWeek: new Date().getDay(), startTime: "00:00", endTime: "23:59", isActive: true },
-            ],
+            scheduleIntervals: [0, 1, 2, 3, 4, 5, 6].map((d) => ({
+              id: `int-${d}`,
+              dayOfWeek: d,
+              startTime: "00:00",
+              endTime: "23:59",
+              isActive: true,
+            })),
             closures: [],
           },
         },
@@ -769,9 +777,13 @@ describe("POST /api/public/organizations/[organizationId]/services/[serviceId]/q
           organization: {
             id: organizationId,
             timezone: "UTC",
-            scheduleIntervals: [
-              { id: "int-all", dayOfWeek: new Date().getDay(), startTime: "00:00", endTime: "23:59", isActive: true },
-            ],
+            scheduleIntervals: [0, 1, 2, 3, 4, 5, 6].map((d) => ({
+              id: `int-${d}`,
+              dayOfWeek: d,
+              startTime: "00:00",
+              endTime: "23:59",
+              isActive: true,
+            })),
             closures: [],
           },
         },
