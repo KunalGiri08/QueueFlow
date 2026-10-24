@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from "@testing-library/react";
 import { QueueManagement } from "./QueueManagement";
 
 const mockPush = vi.fn();
@@ -1486,6 +1486,291 @@ describe("components/admin/QueueManagement", () => {
 
       expect(
         await screen.findByText("Max waiting tickets cannot exceed 10,000"),
+      ).toBeDefined();
+    });
+  });
+
+  describe("Edit Queue feature", () => {
+    const initialQueues = [
+      {
+        id: "queue-1",
+        name: "Standard Line",
+        serviceId: "srv-1",
+        nextTicketNumber: 42,
+        isActive: true,
+        createdAt: "2026-03-01T10:00:00.000Z",
+        updatedAt: "2026-03-01T10:00:00.000Z",
+        maxWaitingTickets: 15,
+        maxDailyTickets: 100,
+      },
+    ];
+
+    it("opens the edit dialog and pre-populates existing queue values", async () => {
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse(initialQueues);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+      expect(await screen.findByText("Standard Line")).toBeDefined();
+
+      const editBtn = screen.getByRole("button", { name: /edit standard line/i });
+      fireEvent.click(editBtn);
+
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toBeDefined();
+      expect(screen.getByText("Edit Queue")).toBeDefined();
+
+      const nameInput = within(dialog).getByLabelText(/queue name/i) as HTMLInputElement;
+      const waitingInput = within(dialog).getByLabelText(/max waiting limit/i) as HTMLInputElement;
+      const dailyInput = within(dialog).getByLabelText(/max daily limit/i) as HTMLInputElement;
+
+      expect(nameInput.value).toBe("Standard Line");
+      expect(waitingInput.value).toBe("15");
+      expect(dailyInput.value).toBe("100");
+
+      // Can cancel dialog
+      const cancelBtn = within(dialog).getByRole("button", { name: /cancel/i });
+      fireEvent.click(cancelBtn);
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("updates the queue name and both capacity limits, refreshing the queue card", async () => {
+      let patchPayload: unknown;
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH" && url.includes("/queues/queue-1")) {
+          patchPayload = JSON.parse(init.body as string);
+          return jsonResponse({
+            ...initialQueues[0],
+            name: "Express Consultation",
+            maxWaitingTickets: 25,
+            maxDailyTickets: 250,
+            updatedAt: "2026-03-01T12:00:00.000Z",
+          });
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse(initialQueues);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+      expect(await screen.findByText("Standard Line")).toBeDefined();
+
+      fireEvent.click(screen.getByRole("button", { name: /edit standard line/i }));
+
+      const dialog = screen.getByRole("dialog");
+      const nameInput = within(dialog).getByLabelText(/queue name/i);
+      const waitingInput = within(dialog).getByLabelText(/max waiting limit/i);
+      const dailyInput = within(dialog).getByLabelText(/max daily limit/i);
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      fireEvent.change(nameInput, { target: { value: "Express Consultation" } });
+      fireEvent.change(waitingInput, { target: { value: "25" } });
+      fireEvent.change(dailyInput, { target: { value: "250" } });
+      fireEvent.click(saveBtn);
+
+      expect(
+        await screen.findByText('Queue "Express Consultation" updated successfully.'),
+      ).toBeDefined();
+      expect(patchPayload).toEqual({
+        name: "Express Consultation",
+        maxWaitingTickets: 25,
+        maxDailyTickets: 250,
+      });
+
+      // Dialog is closed
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      // Card is updated with new name and limits
+      expect(screen.getByText("Express Consultation")).toBeDefined();
+      expect(screen.getByText("25 tickets")).toBeDefined();
+      expect(screen.getByText("250 tickets")).toBeDefined();
+    });
+
+    it("clears capacity limits to make them unlimited (null payload)", async () => {
+      let patchPayload: unknown;
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH" && url.includes("/queues/queue-1")) {
+          patchPayload = JSON.parse(init.body as string);
+          return jsonResponse({
+            ...initialQueues[0],
+            maxWaitingTickets: null,
+            maxDailyTickets: null,
+            updatedAt: "2026-03-01T12:00:00.000Z",
+          });
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse(initialQueues);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+      expect(await screen.findByText("Standard Line")).toBeDefined();
+
+      fireEvent.click(screen.getByRole("button", { name: /edit standard line/i }));
+
+      const dialog = screen.getByRole("dialog");
+      const waitingInput = within(dialog).getByLabelText(/max waiting limit/i);
+      const dailyInput = within(dialog).getByLabelText(/max daily limit/i);
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      // Clear both limit fields
+      fireEvent.change(waitingInput, { target: { value: "" } });
+      fireEvent.change(dailyInput, { target: { value: "" } });
+      fireEvent.click(saveBtn);
+
+      expect(
+        await screen.findByText('Queue "Standard Line" updated successfully.'),
+      ).toBeDefined();
+      expect(patchPayload).toEqual({
+        name: "Standard Line",
+        maxWaitingTickets: null,
+        maxDailyTickets: null,
+      });
+
+      // Card now renders Unlimited fallbacks
+      const unlimitedBadges = screen.getAllByText("Unlimited");
+      expect(unlimitedBadges.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("validates client-side constraints when editing queue name and limits", async () => {
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse(initialQueues);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+      expect(await screen.findByText("Standard Line")).toBeDefined();
+
+      fireEvent.click(screen.getByRole("button", { name: /edit standard line/i }));
+
+      const dialog = screen.getByRole("dialog");
+      const waitingInput = within(dialog).getByLabelText(/max waiting limit/i);
+      const dailyInput = within(dialog).getByLabelText(/max daily limit/i);
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      // Test invalid waiting limit (> 10,000)
+      fireEvent.change(waitingInput, { target: { value: "15000" } });
+      fireEvent.click(saveBtn);
+
+      expect(
+        await screen.findByText("Max waiting tickets must be an integer between 1 and 10,000."),
+      ).toBeDefined();
+
+      // Test invalid daily limit (< 1)
+      fireEvent.change(waitingInput, { target: { value: "20" } });
+      fireEvent.change(dailyInput, { target: { value: "-5" } });
+      fireEvent.click(saveBtn);
+
+      expect(
+        await screen.findByText("Max daily tickets must be an integer between 1 and 100,000."),
+      ).toBeDefined();
+    });
+
+    it("handles API error responses (409 conflict, 400 validation, 401 redirect, network error)", async () => {
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH" && url.includes("/queues/queue-1")) {
+          return new Response(
+            JSON.stringify({
+              error: "A queue with this name already exists for this service",
+            }),
+            { status: 409, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse(initialQueues);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+      expect(await screen.findByText("Standard Line")).toBeDefined();
+
+      fireEvent.click(screen.getByRole("button", { name: /edit standard line/i }));
+
+      const dialog = screen.getByRole("dialog");
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+      fireEvent.click(saveBtn);
+
+      expect(
+        await screen.findByText("A queue with this name already exists for this service"),
+      ).toBeDefined();
+    });
+
+    it("prevents duplicate submissions while saving and displays loading state", async () => {
+      const deferredPatch = createDeferred<Response>();
+      let patchCount = 0;
+
+      fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH" && url.includes("/queues/queue-1")) {
+          patchCount++;
+          return deferredPatch.promise;
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return Promise.resolve(jsonResponse(initialQueues));
+        }
+        if (url.includes("/services")) {
+          return Promise.resolve(jsonResponse(mockServices));
+        }
+        return Promise.resolve(jsonResponse([]));
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+      expect(await screen.findByText("Standard Line")).toBeDefined();
+
+      fireEvent.click(screen.getByRole("button", { name: /edit standard line/i }));
+
+      const dialog = screen.getByRole("dialog");
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      // Click rapidly multiple times
+      fireEvent.click(saveBtn);
+      fireEvent.click(saveBtn);
+      fireEvent.click(saveBtn);
+
+      expect(patchCount).toBe(1);
+      expect(screen.getByText(/saving\.\.\./i)).toBeDefined();
+      expect((saveBtn as HTMLButtonElement).disabled).toBe(true);
+
+      deferredPatch.resolve(
+        jsonResponse({
+          ...initialQueues[0],
+          name: "Standard Line Renamed",
+        }),
+      );
+
+      expect(
+        await screen.findByText('Queue "Standard Line Renamed" updated successfully.'),
       ).toBeDefined();
     });
   });

@@ -99,6 +99,14 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
+  // Queue editing modal state
+  const [editingQueue, setEditingQueue] = useState<QueueItem | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editMaxWaitingTickets, setEditMaxWaitingTickets] = useState("");
+  const [editMaxDailyTickets, setEditMaxDailyTickets] = useState("");
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
   // Concurrency & lifecycle refs
   const activeServicesControllerRef = useRef<AbortController | null>(null);
   const activeQueuesControllerRef = useRef<AbortController | null>(null);
@@ -106,9 +114,11 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
   const queuesFetchGenRef = useRef<number>(0);
   const activeCreationRequestIdRef = useRef<number>(0);
   const activeActionRequestIdRef = useRef<number>(0);
+  const activeEditRequestIdRef = useRef<number>(0);
   const currentOrgIdRef = useRef<string>(organizationId);
   const currentServiceIdRef = useRef<string | null>(selectedServiceId);
   const isCreatingQueueRef = useRef<boolean>(false);
+  const isSavingEditRef = useRef<boolean>(false);
 
   // Reset form and selections when switching organizations
   const [prevOrgId, setPrevOrgId] = useState(organizationId);
@@ -130,6 +140,13 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     setUpdatingQueueId(null);
     setActionError(null);
     setActionSuccess(null);
+    setEditingQueue(null);
+    setEditName("");
+    setEditMaxWaitingTickets("");
+    setEditMaxDailyTickets("");
+    setEditError(null);
+    setIsSavingEdit(false);
+    isSavingEditRef.current = false;
   }
 
   // Synchronize currentOrgIdRef with prop
@@ -372,6 +389,13 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     setMaxDailyTickets("");
     setFormError(null);
     setFormSuccess(null);
+    setEditingQueue(null);
+    setEditName("");
+    setEditMaxWaitingTickets("");
+    setEditMaxDailyTickets("");
+    setEditError(null);
+    setIsSavingEdit(false);
+    isSavingEditRef.current = false;
   };
 
   const handleCreateQueue = async (e: React.FormEvent) => {
@@ -671,6 +695,219 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     } finally {
       if (activeActionRequestIdRef.current === actionRequestId) {
         setUpdatingQueueId(null);
+      }
+    }
+  };
+
+  const handleOpenEdit = (queue: QueueItem) => {
+    setEditingQueue(queue);
+    setEditName(queue.name);
+    setEditMaxWaitingTickets(
+      queue.maxWaitingTickets != null ? String(queue.maxWaitingTickets) : "",
+    );
+    setEditMaxDailyTickets(
+      queue.maxDailyTickets != null ? String(queue.maxDailyTickets) : "",
+    );
+    setEditError(null);
+  };
+
+  const handleCloseEdit = () => {
+    if (isSavingEditRef.current) return;
+    setEditingQueue(null);
+    setEditName("");
+    setEditMaxWaitingTickets("");
+    setEditMaxDailyTickets("");
+    setEditError(null);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && editingQueue && !isSavingEdit) {
+        handleCloseEdit();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [editingQueue, isSavingEdit]);
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingQueue || isSavingEditRef.current || !selectedServiceId) return;
+
+    const trimmed = editName.trim();
+    if (!trimmed) {
+      setEditError("Queue name is required.");
+      return;
+    }
+
+    let parsedMaxWaiting: number | null = null;
+    if (editMaxWaitingTickets.trim() !== "") {
+      const parsed = Number(editMaxWaitingTickets.trim());
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 10000) {
+        setEditError("Max waiting tickets must be an integer between 1 and 10,000.");
+        return;
+      }
+      parsedMaxWaiting = parsed;
+    }
+
+    let parsedMaxDaily: number | null = null;
+    if (editMaxDailyTickets.trim() !== "") {
+      const parsed = Number(editMaxDailyTickets.trim());
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100000) {
+        setEditError("Max daily tickets must be an integer between 1 and 100,000.");
+        return;
+      }
+      parsedMaxDaily = parsed;
+    }
+
+    isSavingEditRef.current = true;
+    const editRequestId = ++activeEditRequestIdRef.current;
+    setIsSavingEdit(true);
+    setEditError(null);
+
+    const targetOrgId = organizationId;
+    const targetServiceId = selectedServiceId;
+    const targetQueueId = editingQueue.id;
+
+    try {
+      const payload = {
+        name: trimmed,
+        maxWaitingTickets: parsedMaxWaiting,
+        maxDailyTickets: parsedMaxDaily,
+      };
+
+      const res = await fetch(
+        `/api/organizations/${encodeURIComponent(targetOrgId)}/services/${encodeURIComponent(targetServiceId)}/queues/${encodeURIComponent(targetQueueId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        },
+      );
+
+      if (
+        currentOrgIdRef.current !== targetOrgId ||
+        currentServiceIdRef.current !== targetServiceId ||
+        activeEditRequestIdRef.current !== editRequestId
+      ) {
+        return;
+      }
+
+      if (res.status === 401) {
+        router.push(`/sign-in?redirect_url=${encodeURIComponent("/admin")}`);
+        return;
+      }
+
+      if (res.status === 409) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setEditError(
+          data.error || "A queue with this name already exists for this service.",
+        );
+        return;
+      }
+
+      if (res.status === 400) {
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          details?: {
+            fieldErrors?: {
+              name?: string[];
+              maxWaitingTickets?: string[];
+              maxDailyTickets?: string[];
+            };
+          };
+        };
+        const message =
+          data.details?.fieldErrors?.name?.[0] ||
+          data.details?.fieldErrors?.maxWaitingTickets?.[0] ||
+          data.details?.fieldErrors?.maxDailyTickets?.[0] ||
+          data.error ||
+          "Invalid queue parameters.";
+        setEditError(message);
+        return;
+      }
+
+      if (res.status === 403) {
+        setEditError("Only organization admins can update queues.");
+        return;
+      }
+
+      if (res.status === 404) {
+        setEditError("Queue not found. Please refresh and try again.");
+        return;
+      }
+
+      if (!res.ok) {
+        throw new Error(`Server returned status ${res.status}`);
+      }
+
+      const updatedQueue: unknown = await res.json();
+
+      if (
+        currentOrgIdRef.current !== targetOrgId ||
+        currentServiceIdRef.current !== targetServiceId ||
+        activeEditRequestIdRef.current !== editRequestId
+      ) {
+        return;
+      }
+
+      if (
+        typeof updatedQueue === "object" &&
+        updatedQueue !== null &&
+        typeof (updatedQueue as { id?: unknown }).id === "string" &&
+        typeof (updatedQueue as { name?: unknown }).name === "string" &&
+        typeof (updatedQueue as { serviceId?: unknown }).serviceId === "string" &&
+        typeof (updatedQueue as { nextTicketNumber?: unknown }).nextTicketNumber === "number" &&
+        typeof (updatedQueue as { isActive?: unknown }).isActive === "boolean" &&
+        typeof (updatedQueue as { createdAt?: unknown }).createdAt === "string" &&
+        typeof (updatedQueue as { updatedAt?: unknown }).updatedAt === "string"
+      ) {
+        const rawUpdated = updatedQueue as QueueItem;
+        const validUpdated: QueueItem = {
+          ...rawUpdated,
+          maxWaitingTickets:
+            typeof rawUpdated.maxWaitingTickets === "number"
+              ? rawUpdated.maxWaitingTickets
+              : null,
+          maxDailyTickets:
+            typeof rawUpdated.maxDailyTickets === "number"
+              ? rawUpdated.maxDailyTickets
+              : null,
+        };
+
+        setQueues((prev) => {
+          const updated = prev.map((q) =>
+            q.id === targetQueueId ? validUpdated : q,
+          );
+          updated.sort((a, b) =>
+            a.name.localeCompare(b.name, undefined, { numeric: true }),
+          );
+          return updated;
+        });
+        setEditingQueue(null);
+        setActionSuccess(`Queue "${validUpdated.name}" updated successfully.`);
+      } else {
+        handleRetryQueues();
+        setEditingQueue(null);
+        setActionSuccess(`Queue "${trimmed}" updated successfully.`);
+      }
+    } catch {
+      if (
+        currentOrgIdRef.current === targetOrgId &&
+        currentServiceIdRef.current === targetServiceId &&
+        activeEditRequestIdRef.current === editRequestId
+      ) {
+        setEditError(
+          "Failed to update queue due to a network error. Please try again.",
+        );
+      }
+    } finally {
+      if (activeEditRequestIdRef.current === editRequestId) {
+        isSavingEditRef.current = false;
+        setIsSavingEdit(false);
       }
     }
   };
@@ -1187,61 +1424,277 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
 
                       <div className="flex items-center justify-between gap-2 border-t border-gray-100 pt-3 text-xs text-gray-400">
                         <span>{formatCreationDate(queue.createdAt)}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleToggleQueueStatus(queue)}
-                          disabled={
-                            isAnyQueueUpdating ||
-                            isQueuesLoading ||
-                            isServicesLoading ||
-                            isCreatingQueue
-                          }
-                          aria-label={`${
-                            queue.isActive ? "Deactivate" : "Activate"
-                          } ${queue.name}`}
-                          className={`inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none ${
-                            queue.isActive
-                              ? "border-gray-300 bg-white text-gray-700 hover:bg-gray-50 hover:text-red-700 hover:border-red-200"
-                              : "border-gray-300 bg-white text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300"
-                          }`}
-                        >
-                          {isQueueUpdating ? (
-                            <>
-                              <svg
-                                className="mr-1.5 h-3.5 w-3.5 animate-spin text-gray-500"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                              >
-                                <circle
-                                  className="opacity-25"
-                                  cx="12"
-                                  cy="12"
-                                  r="10"
-                                  stroke="currentColor"
-                                  strokeWidth="4"
-                                />
-                                <path
-                                  className="opacity-75"
-                                  fill="currentColor"
-                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                />
-                              </svg>
-                              {queue.isActive
-                                ? "Deactivating..."
-                                : "Activating..."}
-                            </>
-                          ) : queue.isActive ? (
-                            "Deactivate"
-                          ) : (
-                            "Activate"
-                          )}
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEdit(queue)}
+                            disabled={
+                              isAnyQueueUpdating ||
+                              isQueuesLoading ||
+                              isServicesLoading ||
+                              isCreatingQueue ||
+                              isSavingEdit
+                            }
+                            aria-label={`Edit ${queue.name}`}
+                            className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleQueueStatus(queue)}
+                            disabled={
+                              isAnyQueueUpdating ||
+                              isQueuesLoading ||
+                              isServicesLoading ||
+                              isCreatingQueue ||
+                              isSavingEdit
+                            }
+                            aria-label={`${
+                              queue.isActive ? "Deactivate" : "Activate"
+                            } ${queue.name}`}
+                            className={`inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none ${
+                              queue.isActive
+                                ? "border-gray-300 bg-white text-gray-700 hover:bg-gray-50 hover:text-red-700 hover:border-red-200"
+                                : "border-gray-300 bg-white text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300"
+                            }`}
+                          >
+                            {isQueueUpdating ? (
+                              <>
+                                <svg
+                                  className="mr-1.5 h-3.5 w-3.5 animate-spin text-gray-500"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <circle
+                                    className="opacity-25"
+                                    cx="12"
+                                    cy="12"
+                                    r="10"
+                                    stroke="currentColor"
+                                    strokeWidth="4"
+                                  />
+                                  <path
+                                    className="opacity-75"
+                                    fill="currentColor"
+                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                  />
+                                </svg>
+                                {queue.isActive
+                                  ? "Deactivating..."
+                                  : "Activating..."}
+                              </>
+                            ) : queue.isActive ? (
+                              "Deactivate"
+                            ) : (
+                              "Activate"
+                            )}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
                 })}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Edit Queue Modal Dialog */}
+      {editingQueue && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm transition-opacity"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isSavingEdit) {
+              handleCloseEdit();
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-queue-dialog-title"
+            className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-6 shadow-xl transition-all space-y-4"
+          >
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <div>
+                <h3
+                  id="edit-queue-dialog-title"
+                  className="text-base font-bold text-gray-900"
+                >
+                  Edit Queue
+                </h3>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  Update queue parameters and capacity limits for &ldquo;{editingQueue.name}&rdquo;.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseEdit}
+                disabled={isSavingEdit}
+                aria-label="Close edit queue dialog"
+                className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
+              >
+                <svg
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth="2"
+                  stroke="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} noValidate className="space-y-4">
+              <div>
+                <label
+                  htmlFor="edit-queue-name"
+                  className="block text-xs font-semibold text-gray-700 mb-1"
+                >
+                  Queue Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="edit-queue-name"
+                  type="text"
+                  value={editName}
+                  onChange={(e) => {
+                    setEditName(e.target.value);
+                    if (editError) setEditError(null);
+                  }}
+                  disabled={isSavingEdit}
+                  aria-invalid={Boolean(editError)}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor="edit-queue-max-waiting"
+                    className="block text-xs font-semibold text-gray-700 mb-1"
+                  >
+                    Max Waiting Limit{" "}
+                    <span className="font-normal text-gray-400">(Optional)</span>
+                  </label>
+                  <input
+                    id="edit-queue-max-waiting"
+                    type="number"
+                    min="1"
+                    max="10000"
+                    value={editMaxWaitingTickets}
+                    onChange={(e) => {
+                      setEditMaxWaitingTickets(e.target.value);
+                      if (editError) setEditError(null);
+                    }}
+                    placeholder="Unlimited"
+                    disabled={isSavingEdit}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="edit-queue-max-daily"
+                    className="block text-xs font-semibold text-gray-700 mb-1"
+                  >
+                    Max Daily Limit{" "}
+                    <span className="font-normal text-gray-400">(Optional)</span>
+                  </label>
+                  <input
+                    id="edit-queue-max-daily"
+                    type="number"
+                    min="1"
+                    max="100000"
+                    value={editMaxDailyTickets}
+                    onChange={(e) => {
+                      setEditMaxDailyTickets(e.target.value);
+                      if (editError) setEditError(null);
+                    }}
+                    placeholder="Unlimited"
+                    disabled={isSavingEdit}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
+                  />
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-500">
+                Leave limits empty for unlimited admittance. Configured limits are strictly enforced via transactional row locks.
+              </p>
+
+              {editError && (
+                <div
+                  role="alert"
+                  className="rounded-lg border border-red-200 bg-red-50/80 p-3 text-xs font-medium text-red-800 flex items-center gap-2"
+                >
+                  <svg
+                    className="h-4 w-4 text-red-600 shrink-0"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    strokeWidth="1.5"
+                    stroke="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
+                    />
+                  </svg>
+                  <span>{editError}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 border-t border-gray-100 pt-3">
+                <button
+                  type="button"
+                  onClick={handleCloseEdit}
+                  disabled={isSavingEdit}
+                  className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-xs sm:text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingEdit || !editName.trim()}
+                  className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-xs sm:text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  {isSavingEdit ? (
+                    <>
+                      <svg
+                        className="mr-2 h-4 w-4 animate-spin text-white"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="4"
+                        />
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                        />
+                      </svg>
+                      Saving...
+                    </>
+                  ) : (
+                    "Save Changes"
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
