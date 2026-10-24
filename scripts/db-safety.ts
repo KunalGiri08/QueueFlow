@@ -230,3 +230,89 @@ export function assertSafeDatabaseTarget(
     sanitizedUrl,
   };
 }
+
+export interface SafeTestDatabaseResult {
+  hostname: string;
+  port: number;
+  databaseName: string;
+  sanitizedUrl: string;
+}
+
+/**
+ * Validates that a database URL is strictly an isolated local test database.
+ * Enforces:
+ * 1. Must be defined and non-empty.
+ * 2. Must use postgresql: or postgres: protocol.
+ * 3. Must target a local loopback host (localhost, 127.0.0.1, ::1, db).
+ * 4. Must NOT target Neon or any cloud/remote host.
+ * 5. Must NOT contain production or prod markers in hostname or database name.
+ * 6. Database name MUST be strictly "queueflow_test".
+ *
+ * Throws an explicit, sanitized error if any safety condition fails.
+ */
+export function assertSafeTestDatabaseUrl(
+  rawUrl: string | undefined = process.env.TEST_DATABASE_URL,
+): SafeTestDatabaseResult {
+  if (!rawUrl || typeof rawUrl !== "string" || rawUrl.trim() === "") {
+    throw new Error(
+      "Safety guard: Execution aborted. TEST_DATABASE_URL is missing or empty. Integration tests require an isolated test database.",
+    );
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(
+      "Safety guard: Execution aborted. TEST_DATABASE_URL is not a valid URL.",
+    );
+  }
+
+  if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
+    throw new Error(
+      "Safety guard: Execution aborted. TEST_DATABASE_URL must use postgresql: or postgres: protocol.",
+    );
+  }
+
+  const hostname = parsed.hostname;
+  const hostLower = hostname.toLowerCase();
+  const databaseName = parsed.pathname.replace(/^\//, "");
+  const sanitizedUrl = sanitizeDatabaseUrl(rawUrl);
+
+  // 1. Must be a loopback host
+  if (!isLoopbackHost(hostname)) {
+    throw new Error(
+      `Safety guard: Execution aborted. TEST_DATABASE_URL must target a local loopback host (localhost / 127.0.0.1). Received host: '${hostname}'.`,
+    );
+  }
+
+  // 2. Reject Neon or cloud markers
+  if (hostLower.endsWith(".neon.tech") || hostLower.includes("neon")) {
+    throw new Error(
+      "Safety guard: Execution aborted. TEST_DATABASE_URL cannot target a remote Neon database.",
+    );
+  }
+
+  // 3. Reject production or prod markers
+  if (hostLower.includes("prod") || databaseName.toLowerCase().includes("prod")) {
+    throw new Error(
+      `Safety guard: Execution aborted. TEST_DATABASE_URL targets a production name or host (${hostname}/${databaseName}).`,
+    );
+  }
+
+  // 4. Must target queueflow_test strictly
+  if (databaseName !== "queueflow_test") {
+    throw new Error(
+      `Safety guard: Execution aborted. TEST_DATABASE_URL must target the dedicated database 'queueflow_test'. Received database name: '${databaseName}'.`,
+    );
+  }
+
+  const port = parsed.port ? parseInt(parsed.port, 10) : 5432;
+
+  return {
+    hostname,
+    port,
+    databaseName,
+    sanitizedUrl,
+  };
+}

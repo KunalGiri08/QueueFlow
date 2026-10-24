@@ -8,8 +8,10 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest",
+    "test:concurrency": "vitest run --config vitest.integration.config.ts",
     "setup:local-staff": "tsx scripts/setup-local-staff.ts",
-    "setup:local-admin": "tsx scripts/setup-local-admin.ts"
+    "setup:local-admin": "tsx scripts/setup-local-admin.ts",
+    "setup:test-db": "tsx scripts/setup-test-db.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.12",

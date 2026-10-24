@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertSafeDatabaseTarget,
+  assertSafeTestDatabaseUrl,
   isApplyMode,
   isLoopbackHost,
   sanitizeDatabaseUrl,
@@ -347,4 +348,94 @@ describe("db-safety module", () => {
       ).toBe("postgresql://[redacted]@localhost:5432/db failed to connect");
     });
   });
+
+  describe("assertSafeTestDatabaseUrl", () => {
+    it("accepts valid local loopback test database URL with database queueflow_test", () => {
+      const validUrl =
+        "postgresql://postgres:secretpassword@localhost:5433/queueflow_test";
+      const result = assertSafeTestDatabaseUrl(validUrl);
+
+      expect(result.hostname).toBe("localhost");
+      expect(result.port).toBe(5433);
+      expect(result.databaseName).toBe("queueflow_test");
+      expect(result.sanitizedUrl).toBe(
+        "postgresql://[redacted]@localhost:5433/queueflow_test",
+      );
+    });
+
+    it("accepts 127.0.0.1 with standard port 5432 and postgres protocol", () => {
+      const validUrl = "postgres://test_user:pass123@127.0.0.1:5432/queueflow_test";
+      const result = assertSafeTestDatabaseUrl(validUrl);
+
+      expect(result.hostname).toBe("127.0.0.1");
+      expect(result.port).toBe(5432);
+      expect(result.databaseName).toBe("queueflow_test");
+    });
+
+    it("throws when TEST_DATABASE_URL is missing or empty", () => {
+      expect(() => assertSafeTestDatabaseUrl("")).toThrow(
+        "TEST_DATABASE_URL is missing or empty",
+      );
+      expect(() => assertSafeTestDatabaseUrl(undefined)).toThrow(
+        "TEST_DATABASE_URL is missing or empty",
+      );
+    });
+
+    it("throws when URL is malformed or uses unsupported protocol", () => {
+      expect(() => assertSafeTestDatabaseUrl("not-a-valid-url")).toThrow(
+        "TEST_DATABASE_URL is not a valid URL",
+      );
+      expect(() =>
+        assertSafeTestDatabaseUrl("mysql://user:pass@localhost:3306/queueflow_test"),
+      ).toThrow("TEST_DATABASE_URL must use postgresql: or postgres: protocol");
+    });
+
+    it("strictly rejects remote or non-loopback hostnames", () => {
+      expect(() =>
+        assertSafeTestDatabaseUrl(
+          "postgresql://user:pass@192.168.1.100:5432/queueflow_test",
+        ),
+      ).toThrow("must target a local loopback host");
+      expect(() =>
+        assertSafeTestDatabaseUrl(
+          "postgresql://user:pass@aws-db.mycompany.com:5432/queueflow_test",
+        ),
+      ).toThrow("must target a local loopback host");
+    });
+
+    it("strictly rejects remote Neon hostnames even if named queueflow_test", () => {
+      expect(() =>
+        assertSafeTestDatabaseUrl(
+          "postgresql://user:pass@ep-cool-cloud.us-east-2.aws.neon.tech/queueflow_test",
+        ),
+      ).toThrow("must target a local loopback host");
+    });
+
+    it("strictly rejects production markers in host or database name", () => {
+      expect(() =>
+        assertSafeTestDatabaseUrl(
+          "postgresql://user:pass@localhost:5432/queueflow_test_prod",
+        ),
+      ).toThrow("targets a production name or host");
+    });
+
+    it("strictly rejects if database name is anything other than queueflow_test", () => {
+      expect(() =>
+        assertSafeTestDatabaseUrl(
+          "postgresql://user:pass@localhost:5433/queueflow",
+        ),
+      ).toThrow("must target the dedicated database 'queueflow_test'");
+      expect(() =>
+        assertSafeTestDatabaseUrl(
+          "postgresql://user:pass@localhost:5433/neondb",
+        ),
+      ).toThrow("must target the dedicated database 'queueflow_test'");
+      expect(() =>
+        assertSafeTestDatabaseUrl(
+          "postgresql://user:pass@localhost:5433/postgres",
+        ),
+      ).toThrow("must target the dedicated database 'queueflow_test'");
+    });
+  });
 });
+

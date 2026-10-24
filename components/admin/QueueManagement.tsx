@@ -12,6 +12,8 @@ export interface QueueItem {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  maxWaitingTickets?: number | null;
+  maxDailyTickets?: number | null;
 }
 
 export interface ServiceOption {
@@ -86,6 +88,8 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
 
   // Queue creation form state
   const [newQueueName, setNewQueueName] = useState("");
+  const [maxWaitingTickets, setMaxWaitingTickets] = useState("");
+  const [maxDailyTickets, setMaxDailyTickets] = useState("");
   const [isCreatingQueue, setIsCreatingQueue] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
@@ -118,6 +122,8 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     setQueuesServiceId(null);
     setQueuesError(null);
     setNewQueueName("");
+    setMaxWaitingTickets("");
+    setMaxDailyTickets("");
     setFormError(null);
     setFormSuccess(null);
     setIsCreatingQueue(false);
@@ -282,18 +288,26 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
           throw new Error("Malformed queues response");
         }
 
-        const validated: QueueItem[] = data.filter(
-          (q): q is QueueItem =>
-            typeof q === "object" &&
-            q !== null &&
-            typeof (q as { id?: unknown }).id === "string" &&
-            typeof (q as { name?: unknown }).name === "string" &&
-            typeof (q as { serviceId?: unknown }).serviceId === "string" &&
-            typeof (q as { nextTicketNumber?: unknown }).nextTicketNumber === "number" &&
-            typeof (q as { isActive?: unknown }).isActive === "boolean" &&
-            typeof (q as { createdAt?: unknown }).createdAt === "string" &&
-            typeof (q as { updatedAt?: unknown }).updatedAt === "string",
-        );
+        const validated: QueueItem[] = data
+          .filter(
+            (q): q is QueueItem =>
+              typeof q === "object" &&
+              q !== null &&
+              typeof (q as { id?: unknown }).id === "string" &&
+              typeof (q as { name?: unknown }).name === "string" &&
+              typeof (q as { serviceId?: unknown }).serviceId === "string" &&
+              typeof (q as { nextTicketNumber?: unknown }).nextTicketNumber === "number" &&
+              typeof (q as { isActive?: unknown }).isActive === "boolean" &&
+              typeof (q as { createdAt?: unknown }).createdAt === "string" &&
+              typeof (q as { updatedAt?: unknown }).updatedAt === "string",
+          )
+          .map((q) => ({
+            ...q,
+            maxWaitingTickets:
+              typeof q.maxWaitingTickets === "number" ? q.maxWaitingTickets : null,
+            maxDailyTickets:
+              typeof q.maxDailyTickets === "number" ? q.maxDailyTickets : null,
+          }));
 
         validated.sort((a, b) =>
           a.name.localeCompare(b.name, undefined, { numeric: true }),
@@ -354,6 +368,8 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     setActionError(null);
     setActionSuccess(null);
     setNewQueueName("");
+    setMaxWaitingTickets("");
+    setMaxDailyTickets("");
     setFormError(null);
     setFormSuccess(null);
   };
@@ -368,6 +384,26 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
       return;
     }
 
+    let parsedMaxWaiting: number | undefined = undefined;
+    if (maxWaitingTickets.trim() !== "") {
+      const parsed = Number(maxWaitingTickets.trim());
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 10000) {
+        setFormError("Max waiting tickets must be an integer between 1 and 10,000.");
+        return;
+      }
+      parsedMaxWaiting = parsed;
+    }
+
+    let parsedMaxDaily: number | undefined = undefined;
+    if (maxDailyTickets.trim() !== "") {
+      const parsed = Number(maxDailyTickets.trim());
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100000) {
+        setFormError("Max daily tickets must be an integer between 1 and 100,000.");
+        return;
+      }
+      parsedMaxDaily = parsed;
+    }
+
     isCreatingQueueRef.current = true;
     const creationRequestId = ++activeCreationRequestIdRef.current;
     setIsCreatingQueue(true);
@@ -378,6 +414,16 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     const targetServiceId = selectedServiceId;
 
     try {
+      const payload: {
+        name: string;
+        maxWaitingTickets?: number;
+        maxDailyTickets?: number;
+      } = {
+        name: trimmed,
+        ...(parsedMaxWaiting !== undefined ? { maxWaitingTickets: parsedMaxWaiting } : {}),
+        ...(parsedMaxDaily !== undefined ? { maxDailyTickets: parsedMaxDaily } : {}),
+      };
+
       const res = await fetch(
         `/api/organizations/${encodeURIComponent(targetOrgId)}/services/${encodeURIComponent(targetServiceId)}/queues`,
         {
@@ -385,7 +431,7 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ name: trimmed }),
+          body: JSON.stringify(payload),
         },
       );
 
@@ -414,10 +460,20 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
       if (res.status === 400) {
         const data = (await res.json().catch(() => ({}))) as {
           error?: string;
-          details?: { fieldErrors?: { name?: string[] } };
+          details?: {
+            fieldErrors?: {
+              name?: string[];
+              maxWaitingTickets?: string[];
+              maxDailyTickets?: string[];
+            };
+          };
         };
         const message =
-          data.details?.fieldErrors?.name?.[0] || data.error || "Invalid queue name.";
+          data.details?.fieldErrors?.name?.[0] ||
+          data.details?.fieldErrors?.maxWaitingTickets?.[0] ||
+          data.details?.fieldErrors?.maxDailyTickets?.[0] ||
+          data.error ||
+          "Invalid queue parameters.";
         setFormError(message);
         return;
       }
@@ -464,7 +520,18 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
         typeof (newQueue as { createdAt?: unknown }).createdAt === "string" &&
         typeof (newQueue as { updatedAt?: unknown }).updatedAt === "string"
       ) {
-        const validQueue = newQueue as QueueItem;
+        const rawQueue = newQueue as QueueItem;
+        const validQueue: QueueItem = {
+          ...rawQueue,
+          maxWaitingTickets:
+            typeof rawQueue.maxWaitingTickets === "number"
+              ? rawQueue.maxWaitingTickets
+              : null,
+          maxDailyTickets:
+            typeof rawQueue.maxDailyTickets === "number"
+              ? rawQueue.maxDailyTickets
+              : null,
+        };
         setQueues((prev) => {
           const updated = [...prev, validQueue];
           updated.sort((a, b) =>
@@ -473,10 +540,14 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
           return updated;
         });
         setNewQueueName("");
+        setMaxWaitingTickets("");
+        setMaxDailyTickets("");
         setFormSuccess(`Queue "${validQueue.name}" created successfully.`);
       } else {
         handleRetryQueues();
         setNewQueueName("");
+        setMaxWaitingTickets("");
+        setMaxDailyTickets("");
         setFormSuccess(`Queue "${trimmed}" created successfully.`);
       }
     } catch {
@@ -763,11 +834,14 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
                 </p>
               </div>
 
-              <form onSubmit={handleCreateQueue} className="space-y-3">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-                  <div className="flex-1">
-                    <label htmlFor="new-queue-name" className="sr-only">
-                      Queue Name
+              <form onSubmit={handleCreateQueue} noValidate className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="sm:col-span-1">
+                    <label
+                      htmlFor="new-queue-name"
+                      className="block text-xs font-semibold text-gray-700 mb-1"
+                    >
+                      Queue Name <span className="text-red-500">*</span>
                     </label>
                     <input
                       id="new-queue-name"
@@ -791,6 +865,62 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
                       className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
                     />
                   </div>
+
+                  <div>
+                    <label
+                      htmlFor="new-queue-max-waiting"
+                      className="block text-xs font-semibold text-gray-700 mb-1"
+                    >
+                      Max Waiting Limit{" "}
+                      <span className="font-normal text-gray-400">(Optional)</span>
+                    </label>
+                    <input
+                      id="new-queue-max-waiting"
+                      type="number"
+                      min="1"
+                      max="10000"
+                      value={maxWaitingTickets}
+                      onChange={(e) => {
+                        setMaxWaitingTickets(e.target.value);
+                        if (formError) setFormError(null);
+                        if (formSuccess) setFormSuccess(null);
+                      }}
+                      placeholder="Unlimited"
+                      disabled={isCreatingQueue}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="new-queue-max-daily"
+                      className="block text-xs font-semibold text-gray-700 mb-1"
+                    >
+                      Max Daily Limit{" "}
+                      <span className="font-normal text-gray-400">(Optional)</span>
+                    </label>
+                    <input
+                      id="new-queue-max-daily"
+                      type="number"
+                      min="1"
+                      max="100000"
+                      value={maxDailyTickets}
+                      onChange={(e) => {
+                        setMaxDailyTickets(e.target.value);
+                        if (formError) setFormError(null);
+                        if (formSuccess) setFormSuccess(null);
+                      }}
+                      placeholder="Unlimited"
+                      disabled={isCreatingQueue}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between pt-1">
+                  <p className="text-xs text-gray-500">
+                    Leave capacity limits empty for unlimited admittance. Configured limits are strictly enforced via transactional row locks.
+                  </p>
                   <button
                     type="submit"
                     disabled={isCreatingQueue || !newQueueName.trim()}
@@ -1020,13 +1150,38 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
                           )}
                         </div>
 
-                        <div className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
-                          <span className="font-medium text-gray-500">
-                            Next Ticket Number
-                          </span>
-                          <span className="font-mono font-bold text-gray-900">
-                            #{queue.nextTicketNumber}
-                          </span>
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                            <span className="font-medium text-gray-500">
+                              Next Ticket Number
+                            </span>
+                            <span className="font-mono font-bold text-gray-900">
+                              #{queue.nextTicketNumber}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div className="rounded-lg bg-gray-50/80 px-2.5 py-1.5 border border-gray-100">
+                              <span className="block text-[11px] font-medium text-gray-500">
+                                Waiting Limit
+                              </span>
+                              <span className="font-semibold text-gray-800">
+                                {queue.maxWaitingTickets != null
+                                  ? `${queue.maxWaitingTickets} tickets`
+                                  : "Unlimited"}
+                              </span>
+                            </div>
+                            <div className="rounded-lg bg-gray-50/80 px-2.5 py-1.5 border border-gray-100">
+                              <span className="block text-[11px] font-medium text-gray-500">
+                                Daily Limit
+                              </span>
+                              <span className="font-semibold text-gray-800">
+                                {queue.maxDailyTickets != null
+                                  ? `${queue.maxDailyTickets} tickets`
+                                  : "Unlimited"}
+                              </span>
+                            </div>
+                          </div>
                         </div>
                       </div>
 

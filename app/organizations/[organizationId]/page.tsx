@@ -94,6 +94,117 @@ function parseOrganizationServices(
   };
 }
 
+export interface AdmissionErrorPayload {
+  error?: string;
+  code?: string;
+  reason?: string;
+  message?: string;
+}
+
+export function formatAdmissionErrorMessage(
+  payload: unknown,
+  status: number,
+): {
+  message: string;
+  code?: string;
+} {
+  if (status === 409) {
+    let msg = "You already have an active ticket in this queue.";
+    if (
+      payload &&
+      typeof payload === "object" &&
+      "error" in payload &&
+      typeof (payload as { error: unknown }).error === "string" &&
+      (payload as { error: string }).error.trim() !== ""
+    ) {
+      msg = (payload as { error: string }).error.trim();
+    }
+    return {
+      message: msg,
+      code: "ACTIVE_TICKET_EXISTS",
+    };
+  }
+
+  if (status === 404) {
+    return {
+      message:
+        "This queue is no longer active or could not be found. Please refresh the page.",
+      code: "QUEUE_NOT_FOUND",
+    };
+  }
+
+  if (payload && typeof payload === "object") {
+    const p = payload as AdmissionErrorPayload;
+    const code = p.code || p.reason;
+    const rawError = typeof p.error === "string" ? p.error.trim() : "";
+    const rawMessage = typeof p.message === "string" ? p.message.trim() : "";
+
+    if (code === "QUEUE_CAPACITY_REACHED") {
+      return {
+        message:
+          "This queue has reached its maximum waiting capacity. Please try again later.",
+        code: "QUEUE_CAPACITY_REACHED",
+      };
+    }
+
+    if (code === "DAILY_TICKET_LIMIT_REACHED") {
+      return {
+        message:
+          "This queue has reached its daily ticket limit for today. Please try again tomorrow.",
+        code: "DAILY_TICKET_LIMIT_REACHED",
+      };
+    }
+
+    if (code === "ADMISSION_CUTOFF_REACHED") {
+      return {
+        message:
+          rawMessage ||
+          rawError ||
+          "Admission cutoff reached for this service. No more tickets are being admitted today.",
+        code: "ADMISSION_CUTOFF_REACHED",
+      };
+    }
+
+    if (
+      code === "ORGANIZATION_CLOSED" ||
+      code === "OUTSIDE_WORKING_HOURS" ||
+      code === "NO_ACTIVE_SCHEDULE"
+    ) {
+      return {
+        message:
+          rawMessage ||
+          rawError ||
+          "This organization is currently closed.",
+        code,
+      };
+    }
+
+    if (code === "INVALID_SCHEDULE_CONFIGURATION") {
+      return {
+        message:
+          rawMessage ||
+          (rawError &&
+          rawError !== "Organization schedule is temporarily misconfigured"
+            ? rawError
+            : "Organization schedule is temporarily misconfigured. Please try again later."),
+        code: "INVALID_SCHEDULE_CONFIGURATION",
+      };
+    }
+
+    if (rawMessage) {
+      return { message: rawMessage, code };
+    }
+
+    if (rawError) {
+      return { message: rawError, code };
+    }
+  }
+
+  return {
+    message: "Unable to join the queue at this time. Please try again.",
+  };
+}
+
 function ServicesLoadingSkeleton() {
   return (
     <div aria-label="Loading services" className="animate-pulse">
@@ -151,6 +262,7 @@ function OrganizationServicesContent({
   const [queueError, setQueueError] = useState<{
     queueId: string;
     message: string;
+    code?: string;
   } | null>(null);
 
   const [bookingService, setBookingService] = useState<PublicService | null>(
@@ -346,19 +458,9 @@ function OrganizationServicesContent({
       }
 
       if (response.status === 400) {
-        let errorMessage =
-          "Unable to join the queue at this time. Please try again.";
+        let errJson: unknown = null;
         try {
-          const errJson: unknown = await response.json();
-          if (
-            errJson &&
-            typeof errJson === "object" &&
-            "error" in errJson &&
-            typeof (errJson as { error: unknown }).error === "string" &&
-            (errJson as { error: string }).error.trim() !== ""
-          ) {
-            errorMessage = (errJson as { error: string }).error;
-          }
+          errJson = await response.json();
         } catch {
           // Fall back to default safe message
         }
@@ -367,9 +469,11 @@ function OrganizationServicesContent({
           return;
         }
 
+        const formatted = formatAdmissionErrorMessage(errJson, 400);
         setQueueError({
           queueId,
-          message: errorMessage,
+          message: formatted.message,
+          code: formatted.code,
         });
         return;
       }
@@ -379,23 +483,15 @@ function OrganizationServicesContent({
           queueId,
           message:
             "This queue is no longer active or could not be found. Please refresh the page.",
+          code: "QUEUE_NOT_FOUND",
         });
         return;
       }
 
       if (response.status === 409) {
-        let errorMessage = "You already have an active ticket in this queue.";
+        let errJson: unknown = null;
         try {
-          const errJson: unknown = await response.json();
-          if (
-            errJson &&
-            typeof errJson === "object" &&
-            "error" in errJson &&
-            typeof (errJson as { error: unknown }).error === "string" &&
-            (errJson as { error: string }).error.trim() !== ""
-          ) {
-            errorMessage = (errJson as { error: string }).error;
-          }
+          errJson = await response.json();
         } catch {
           // Fall back to default safe message
         }
@@ -404,9 +500,11 @@ function OrganizationServicesContent({
           return;
         }
 
+        const formatted = formatAdmissionErrorMessage(errJson, 409);
         setQueueError({
           queueId,
-          message: errorMessage,
+          message: formatted.message,
+          code: formatted.code,
         });
         return;
       }
@@ -781,7 +879,9 @@ function OrganizationServicesContent({
                             <div className="flex items-center justify-between gap-3">
                               <div className="flex min-w-0 items-center gap-2">
                                 <span
-                                  className="h-2 w-2 shrink-0 rounded-full bg-green-500"
+                                  className={`h-2 w-2 shrink-0 rounded-full ${
+                                    hasError ? "bg-amber-500" : "bg-green-500"
+                                  }`}
                                   aria-hidden="true"
                                 />
                                 <span className="truncate text-sm font-medium text-gray-900">
@@ -831,11 +931,38 @@ function OrganizationServicesContent({
                               <div
                                 id={errorId}
                                 role="alert"
-                                className="mt-2.5 rounded-md border border-red-200 bg-red-50/80 p-2 text-xs text-red-700"
+                                className="mt-2.5 rounded-lg border border-red-200 bg-red-50/90 p-2.5 text-xs text-red-800"
                               >
-                                <p className="font-medium">
-                                  {queueError.message}
-                                </p>
+                                <div className="flex items-start gap-2">
+                                  <svg
+                                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500"
+                                    fill="currentColor"
+                                    viewBox="0 0 20 20"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      fillRule="evenodd"
+                                      d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+                                      clipRule="evenodd"
+                                    />
+                                  </svg>
+                                  <div className="flex-1">
+                                    <p className="font-medium leading-relaxed">
+                                      {queueError.message}
+                                    </p>
+                                    {(queueError.code === "ACTIVE_TICKET_EXISTS" ||
+                                      queueError.message.includes(
+                                        "already have an active ticket",
+                                      )) && (
+                                      <Link
+                                        href="/tickets"
+                                        className="mt-1.5 inline-flex items-center gap-1 font-semibold text-red-800 underline hover:text-red-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-700"
+                                      >
+                                        Track your ticket in My Tickets &rarr;
+                                      </Link>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
                             )}
                           </div>

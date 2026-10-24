@@ -1312,4 +1312,181 @@ describe("components/admin/QueueManagement", () => {
       });
     });
   });
+
+  describe("Queue capacity limits configuration and presentation", () => {
+    it("creates a queue with explicit waiting and daily capacity limits", async () => {
+      let postPayload: unknown;
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "POST") {
+          postPayload = JSON.parse(init.body as string);
+          return jsonResponse(
+            {
+              id: "capped-q-1",
+              name: "Capped Line",
+              serviceId: "srv-1",
+              nextTicketNumber: 1,
+              isActive: true,
+              createdAt: "2026-03-05T10:00:00.000Z",
+              updatedAt: "2026-03-05T10:00:00.000Z",
+              maxWaitingTickets: 15,
+              maxDailyTickets: 100,
+            },
+            201,
+          );
+        }
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse([]);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+      await screen.findByText("No Active Queues for General Consultation");
+
+      const nameInput = screen.getByPlaceholderText(/e\.g\., General Walk-in or Priority Desk/i);
+      const waitingInput = screen.getByLabelText(/max waiting limit/i);
+      const dailyInput = screen.getByLabelText(/max daily limit/i);
+      const submitBtn = screen.getByRole("button", { name: /create queue/i });
+
+      fireEvent.change(nameInput, { target: { value: "Capped Line" } });
+      fireEvent.change(waitingInput, { target: { value: "15" } });
+      fireEvent.change(dailyInput, { target: { value: "100" } });
+      fireEvent.click(submitBtn);
+
+      expect(
+        await screen.findByText('Queue "Capped Line" created successfully.'),
+      ).toBeDefined();
+      expect(postPayload).toEqual({
+        name: "Capped Line",
+        maxWaitingTickets: 15,
+        maxDailyTickets: 100,
+      });
+
+      expect(screen.getByText("Capped Line")).toBeDefined();
+      expect(screen.getByText("15 tickets")).toBeDefined();
+      expect(screen.getByText("100 tickets")).toBeDefined();
+      expect((nameInput as HTMLInputElement).value).toBe("");
+      expect((waitingInput as HTMLInputElement).value).toBe("");
+      expect((dailyInput as HTMLInputElement).value).toBe("");
+    });
+
+    it("displays both configured limits and Unlimited fallbacks on queue cards", async () => {
+      const queuesWithLimits = [
+        {
+          id: "q-configured",
+          name: "Limited Service",
+          serviceId: "srv-1",
+          nextTicketNumber: 5,
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-01T10:00:00.000Z",
+          maxWaitingTickets: 20,
+          maxDailyTickets: 150,
+        },
+        {
+          id: "q-unlimited",
+          name: "Open Walk-in",
+          serviceId: "srv-1",
+          nextTicketNumber: 12,
+          isActive: true,
+          createdAt: "2026-03-02T10:00:00.000Z",
+          updatedAt: "2026-03-02T10:00:00.000Z",
+          maxWaitingTickets: null,
+          maxDailyTickets: null,
+        },
+      ];
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.includes("/services/srv-1/queues")) {
+          return jsonResponse(queuesWithLimits);
+        }
+        if (url.includes("/services")) {
+          return jsonResponse(mockServices);
+        }
+        return jsonResponse([]);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Limited Service")).toBeDefined();
+      expect(screen.getByText("20 tickets")).toBeDefined();
+      expect(screen.getByText("150 tickets")).toBeDefined();
+
+      expect(screen.getByText("Open Walk-in")).toBeDefined();
+      const unlimitedBadges = screen.getAllByText("Unlimited");
+      expect(unlimitedBadges.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("validates client-side constraints on max waiting and daily limits", async () => {
+      render(<QueueManagement organizationId="org-1" />);
+      await screen.findByText("Add Queue to General Consultation");
+
+      const nameInput = screen.getByPlaceholderText(/e\.g\., General Walk-in or Priority Desk/i);
+      const waitingInput = screen.getByLabelText(/max waiting limit/i);
+      const dailyInput = screen.getByLabelText(/max daily limit/i);
+      const submitBtn = screen.getByRole("button", { name: /create queue/i });
+
+      // Invalid waiting limit (> 10000)
+      fireEvent.change(nameInput, { target: { value: "Test Queue" } });
+      fireEvent.change(waitingInput, { target: { value: "99999" } });
+      fireEvent.click(submitBtn);
+
+      expect(
+        await screen.findByText("Max waiting tickets must be an integer between 1 and 10,000."),
+      ).toBeDefined();
+
+      // Fix waiting limit, introduce invalid daily limit (< 1)
+      fireEvent.change(waitingInput, { target: { value: "50" } });
+      fireEvent.change(dailyInput, { target: { value: "0" } });
+      fireEvent.click(submitBtn);
+
+      expect(
+        await screen.findByText("Max daily tickets must be an integer between 1 and 100,000."),
+      ).toBeDefined();
+    });
+
+    it("displays backend field errors when API returns 400 validation error for capacity limits", async () => {
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return new Response(
+            JSON.stringify({
+              error: "Invalid request body",
+              details: {
+                fieldErrors: {
+                  maxWaitingTickets: ["Max waiting tickets cannot exceed 10,000"],
+                },
+              },
+            }),
+            {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        if (input.toString().includes("/services/srv-1/queues")) {
+          return jsonResponse([]);
+        }
+        return jsonResponse(mockServices);
+      });
+
+      render(<QueueManagement organizationId="org-1" />);
+      await screen.findByText("No Active Queues for General Consultation");
+
+      const nameInput = screen.getByPlaceholderText(/e\.g\., General Walk-in or Priority Desk/i);
+      const submitBtn = screen.getByRole("button", { name: /create queue/i });
+
+      fireEvent.change(nameInput, { target: { value: "Test Limit" } });
+      fireEvent.click(submitBtn);
+
+      expect(
+        await screen.findByText("Max waiting tickets cannot exceed 10,000"),
+      ).toBeDefined();
+    });
+  });
 });

@@ -26,6 +26,10 @@ export const serverEnvSchema = z.object({
     .string()
     .trim()
     .min(1, "CLERK_SECRET_KEY is required and cannot be empty"),
+  TEST_DATABASE_URL: z
+    .string()
+    .trim()
+    .optional(),
 });
 
 /**

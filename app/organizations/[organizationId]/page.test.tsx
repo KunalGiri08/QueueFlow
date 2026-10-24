@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup, act, within } from "@testing-library/react";
-import OrganizationServicesPage from "./page";
+import OrganizationServicesPage, {
+  formatAdmissionErrorMessage,
+} from "./page";
 
 // 1. Mock Next.js navigation with dynamic params
 const mockPush = vi.fn();
@@ -1225,6 +1227,263 @@ describe("app/organizations/[organizationId]/page", () => {
       // No stale dialog or error alert appears on org-2
       expect(screen.queryByRole("dialog")).toBeNull();
       expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+
+  describe("G. User-friendly queue availability and admission error messages", () => {
+    describe("formatAdmissionErrorMessage unit tests", () => {
+      it("formats QUEUE_CAPACITY_REACHED into friendly maximum waiting capacity message", () => {
+        const result = formatAdmissionErrorMessage(
+          {
+            error: "Queue waiting capacity reached",
+            code: "QUEUE_CAPACITY_REACHED",
+          },
+          400,
+        );
+        expect(result.message).toBe(
+          "This queue has reached its maximum waiting capacity. Please try again later.",
+        );
+        expect(result.code).toBe("QUEUE_CAPACITY_REACHED");
+      });
+
+      it("formats DAILY_TICKET_LIMIT_REACHED into friendly daily limit message", () => {
+        const result = formatAdmissionErrorMessage(
+          {
+            error: "Daily ticket limit reached",
+            code: "DAILY_TICKET_LIMIT_REACHED",
+          },
+          400,
+        );
+        expect(result.message).toBe(
+          "This queue has reached its daily ticket limit for today. Please try again tomorrow.",
+        );
+        expect(result.code).toBe("DAILY_TICKET_LIMIT_REACHED");
+      });
+
+      it("prioritizes detailed message for ADMISSION_CUTOFF_REACHED", () => {
+        const result = formatAdmissionErrorMessage(
+          {
+            error: "Admission cutoff reached for this service",
+            code: "ADMISSION_CUTOFF_REACHED",
+            message:
+              "Admission cutoff reached for this service (closed at 16:30, 30 minutes prior to closing time 17:00)",
+          },
+          400,
+        );
+        expect(result.message).toBe(
+          "Admission cutoff reached for this service (closed at 16:30, 30 minutes prior to closing time 17:00)",
+        );
+        expect(result.code).toBe("ADMISSION_CUTOFF_REACHED");
+      });
+
+      it("formats ORGANIZATION_CLOSED with specific closure message", () => {
+        const result = formatAdmissionErrorMessage(
+          {
+            error: "Organization is closed: National Holiday",
+            code: "ORGANIZATION_CLOSED",
+            message: "Organization is closed: National Holiday",
+          },
+          400,
+        );
+        expect(result.message).toBe("Organization is closed: National Holiday");
+        expect(result.code).toBe("ORGANIZATION_CLOSED");
+      });
+
+      it("formats OUTSIDE_WORKING_HOURS message", () => {
+        const result = formatAdmissionErrorMessage(
+          {
+            error: "Current time is outside organization working hours",
+            code: "OUTSIDE_WORKING_HOURS",
+            message: "Current time is outside organization working hours",
+          },
+          400,
+        );
+        expect(result.message).toBe(
+          "Current time is outside organization working hours",
+        );
+        expect(result.code).toBe("OUTSIDE_WORKING_HOURS");
+      });
+
+      it("formats INVALID_SCHEDULE_CONFIGURATION into user-friendly message", () => {
+        const result = formatAdmissionErrorMessage(
+          {
+            error: "Organization schedule is temporarily misconfigured",
+            code: "INVALID_SCHEDULE_CONFIGURATION",
+          },
+          400,
+        );
+        expect(result.message).toBe(
+          "Organization schedule is temporarily misconfigured. Please try again later.",
+        );
+        expect(result.code).toBe("INVALID_SCHEDULE_CONFIGURATION");
+      });
+
+      it("formats 409 conflict into ACTIVE_TICKET_EXISTS with custom or fallback message", () => {
+        const fallbackResult = formatAdmissionErrorMessage(null, 409);
+        expect(fallbackResult.message).toBe(
+          "You already have an active ticket in this queue.",
+        );
+        expect(fallbackResult.code).toBe("ACTIVE_TICKET_EXISTS");
+
+        const customResult = formatAdmissionErrorMessage(
+          { error: "You already have an active ticket in this queue" },
+          409,
+        );
+        expect(customResult.message).toBe(
+          "You already have an active ticket in this queue",
+        );
+        expect(customResult.code).toBe("ACTIVE_TICKET_EXISTS");
+      });
+    });
+
+    describe("UI integration tests for admission errors and queue availability", () => {
+      it("displays friendly waiting capacity message when queue is full", async () => {
+        fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+          if (url.includes("/services")) return jsonResponse(mockCatalogData);
+          if (url === "/api/tickets" && init?.method === "POST") {
+            return jsonResponse(
+              {
+                error: "Queue waiting capacity reached",
+                code: "QUEUE_CAPACITY_REACHED",
+              },
+              400,
+            );
+          }
+          return new Response("Not found", { status: 404 });
+        });
+
+        await renderPage();
+
+        const joinBtn = screen.getByRole("button", {
+          name: "Join Standard Line",
+        });
+        fireEvent.click(joinBtn);
+
+        expect(
+          await screen.findByText(
+            "This queue has reached its maximum waiting capacity. Please try again later.",
+          ),
+        ).toBeDefined();
+      });
+
+      it("displays friendly daily limit message when daily quota is reached", async () => {
+        fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+          if (url.includes("/services")) return jsonResponse(mockCatalogData);
+          if (url === "/api/tickets" && init?.method === "POST") {
+            return jsonResponse(
+              {
+                error: "Daily ticket limit reached",
+                code: "DAILY_TICKET_LIMIT_REACHED",
+              },
+              400,
+            );
+          }
+          return new Response("Not found", { status: 404 });
+        });
+
+        await renderPage();
+
+        const joinBtn = screen.getByRole("button", {
+          name: "Join Standard Line",
+        });
+        fireEvent.click(joinBtn);
+
+        expect(
+          await screen.findByText(
+            "This queue has reached its daily ticket limit for today. Please try again tomorrow.",
+          ),
+        ).toBeDefined();
+      });
+
+      it("displays detailed cutoff message when admission cutoff is reached", async () => {
+        const detailedCutoff =
+          "Admission cutoff reached for this service (closed at 16:30, 30 minutes prior to closing time 17:00)";
+        fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+          if (url.includes("/services")) return jsonResponse(mockCatalogData);
+          if (url === "/api/tickets" && init?.method === "POST") {
+            return jsonResponse(
+              {
+                error: "Admission cutoff reached for this service",
+                code: "ADMISSION_CUTOFF_REACHED",
+                reason: "ADMISSION_CUTOFF_REACHED",
+                message: detailedCutoff,
+              },
+              400,
+            );
+          }
+          return new Response("Not found", { status: 404 });
+        });
+
+        await renderPage();
+
+        const joinBtn = screen.getByRole("button", {
+          name: "Join Standard Line",
+        });
+        fireEvent.click(joinBtn);
+
+        expect(await screen.findByText(detailedCutoff)).toBeDefined();
+      });
+
+      it("displays scheduled closure message when organization is closed", async () => {
+        const closureMessage =
+          "Organization is closed for scheduled closure (2026-10-24 to 2026-10-25)";
+        fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+          if (url.includes("/services")) return jsonResponse(mockCatalogData);
+          if (url === "/api/tickets" && init?.method === "POST") {
+            return jsonResponse(
+              {
+                error: closureMessage,
+                code: "ORGANIZATION_CLOSED",
+                reason: "ORGANIZATION_CLOSED",
+                message: closureMessage,
+              },
+              400,
+            );
+          }
+          return new Response("Not found", { status: 404 });
+        });
+
+        await renderPage();
+
+        const joinBtn = screen.getByRole("button", {
+          name: "Join Standard Line",
+        });
+        fireEvent.click(joinBtn);
+
+        expect(await screen.findByText(closureMessage)).toBeDefined();
+      });
+
+      it("displays active ticket message and link to /tickets on 409 conflict", async () => {
+        fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+          if (url.includes("/services")) return jsonResponse(mockCatalogData);
+          if (url === "/api/tickets" && init?.method === "POST") {
+            return jsonResponse(
+              { error: "You already have an active ticket in this queue" },
+              409,
+            );
+          }
+          return new Response("Not found", { status: 404 });
+        });
+
+        await renderPage();
+
+        const joinBtn = screen.getByRole("button", {
+          name: "Join Standard Line",
+        });
+        fireEvent.click(joinBtn);
+
+        expect(
+          await screen.findByText(
+            "You already have an active ticket in this queue",
+          ),
+        ).toBeDefined();
+
+        const trackLink = screen.getByRole("link", {
+          name: /track your ticket in my tickets/i,
+        });
+        expect(trackLink).toBeDefined();
+        expect(trackLink.getAttribute("href")).toBe("/tickets");
+      });
     });
   });
 });
