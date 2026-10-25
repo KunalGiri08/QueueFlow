@@ -14,6 +14,14 @@ vi.mock("@/components/Navbar", () => ({
   Navbar: () => <nav data-testid="navbar" />,
 }));
 
+// 3. Mock notification audio chime
+const { mockPlayTurnChime } = vi.hoisted(() => ({
+  mockPlayTurnChime: vi.fn().mockResolvedValue(true),
+}));
+vi.mock("@/lib/audio/notification-sound", () => ({
+  playTurnChime: mockPlayTurnChime,
+}));
+
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -118,6 +126,9 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       writable: true,
       value: "visible",
     });
+
+    mockPlayTurnChime.mockClear();
+    mockPlayTurnChime.mockResolvedValue(true);
 
     activeFetchHandler = async (url: string) => {
       if (url.includes(`/api/tickets/track/${encodeURIComponent(mockTrackingToken)}`)) {
@@ -723,6 +734,283 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       const liveRegion = screen.getByRole("status");
       expect(liveRegion.textContent).toBe("Ticket #42 status: Completed.");
+    });
+  });
+
+  describe("In-app turn notification and duplicate-alert prevention", () => {
+    it("displays banner and attempts chime once when transitioning from WAITING to CALLED", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) {
+          return jsonResponse(mockWaitingTicket);
+        }
+        return jsonResponse(mockCalledTicket);
+      };
+
+      await renderPage();
+
+      // Initially WAITING: banner and chime not present
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
+
+      // Background poll triggers at 10 seconds -> CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // Banner appears
+      const banner = screen.getByRole("alert");
+      expect(banner).toBeDefined();
+      expect(
+        screen.getByText("Your turn! Please proceed to Window 2."),
+      ).toBeDefined();
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+    });
+
+    it("displays banner without automatic sound when initial response is already CALLED", async () => {
+      activeFetchHandler = async () => jsonResponse(mockCalledTicket);
+
+      await renderPage();
+
+      // Banner is visible on initial load
+      const banner = screen.getByRole("alert");
+      expect(banner).toBeDefined();
+      expect(
+        screen.getByText("Your turn! Please proceed to Window 2."),
+      ).toBeDefined();
+
+      // Autoplay chime must not fire on initial load
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
+    });
+
+    it("suppresses repeated chime across multiple consecutive CALLED polling responses", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) return jsonResponse(mockWaitingTicket);
+        return jsonResponse(mockCalledTicket);
+      };
+
+      await renderPage();
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
+
+      // Poll 1 (10s) transitions to CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+
+      // Poll 2 (20s) still CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // Poll 3 (30s) still CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // Chime was triggered exactly once, not on subsequent polls
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+    });
+
+    it("discovers transition to CALLED via manual refresh and triggers notification", async () => {
+      let callCount = 0;
+      activeFetchHandler = async () => {
+        callCount++;
+        if (callCount === 1) return jsonResponse(mockWaitingTicket);
+        return jsonResponse(mockCalledTicket);
+      };
+
+      await renderPage();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
+
+      // User clicks Refresh Status
+      const refreshBtn = screen.getByRole("button", { name: /refresh status/i });
+      await act(async () => {
+        fireEvent.click(refreshBtn);
+      });
+
+      expect(screen.getByRole("alert")).toBeDefined();
+      expect(
+        screen.getByText("Your turn! Please proceed to Window 2."),
+      ).toBeDefined();
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+    });
+
+    it("discovers transition to CALLED upon visibility restoration and triggers notification", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) return jsonResponse(mockWaitingTicket);
+        return jsonResponse(mockCalledTicket);
+      };
+
+      await renderPage();
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      // Tab hidden
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          writable: true,
+          value: "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      // Tab restored to visible
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          writable: true,
+          value: "visible",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      expect(screen.getByRole("alert")).toBeDefined();
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+    });
+
+    it("prevents banner from reopening during the same CALLED cycle after dismissal", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) return jsonResponse(mockWaitingTicket);
+        return jsonResponse(mockCalledTicket);
+      };
+
+      await renderPage();
+
+      // Transition to CALLED at 10s
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(screen.getByRole("alert")).toBeDefined();
+
+      // Dismiss banner
+      const dismissButton = screen.getByRole("button", { name: /^dismiss$/i });
+      await act(async () => {
+        fireEvent.click(dismissButton);
+      });
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      // Next poll at 20s still returns CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      // Banner remains dismissed
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      // Another poll at 30s still returns CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("hides banner and resets cycle state when transitioning to SERVING", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) return jsonResponse(mockCalledTicket);
+        return jsonResponse({
+          ...mockWaitingTicket,
+          status: "SERVING",
+        });
+      };
+
+      await renderPage();
+      expect(screen.getByRole("alert")).toBeDefined();
+
+      // Advance to trigger poll returning SERVING
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // Banner must not remain visible for SERVING
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("hides banner and halts polling when ticket transitions to terminal state (COMPLETED)", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) return jsonResponse(mockCalledTicket);
+        return jsonResponse(mockCompletedTicket);
+      };
+
+      await renderPage();
+      expect(screen.getByRole("alert")).toBeDefined();
+
+      // Advance to trigger poll returning COMPLETED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(screen.queryByRole("alert")).toBeNull();
+      // Polling halted
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("displays fallback message when counter is null", async () => {
+      activeFetchHandler = async () =>
+        jsonResponse({
+          ...mockCalledTicket,
+          counter: null,
+        });
+
+      await renderPage();
+
+      const banner = screen.getByRole("alert");
+      expect(banner).toBeDefined();
+      expect(
+        screen.getByText("Your turn! Please proceed to the service counter."),
+      ).toBeDefined();
+      expect(
+        screen.getByText("Please proceed to the service counter."),
+      ).toBeDefined();
+    });
+
+    it("renders visual banner even when audio playback fails or is rejected", async () => {
+      mockPlayTurnChime.mockRejectedValue(new Error("AudioContext rejected"));
+
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) return jsonResponse(mockWaitingTicket);
+        return jsonResponse(mockCalledTicket);
+      };
+
+      await renderPage();
+
+      // Transition to CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // Visual banner is still fully displayed despite audio rejection
+      expect(screen.getByRole("alert")).toBeDefined();
+      expect(
+        screen.getByText("Your turn! Please proceed to Window 2."),
+      ).toBeDefined();
     });
   });
 });

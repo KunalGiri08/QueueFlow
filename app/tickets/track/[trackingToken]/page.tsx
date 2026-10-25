@@ -7,6 +7,8 @@ import { Navbar } from "@/components/Navbar";
 import { TrackingHeroCard } from "@/components/tickets/track/TrackingHeroCard";
 import { TrackingPositionMetrics } from "@/components/tickets/track/TrackingPositionMetrics";
 import { TrackingDetailsCard } from "@/components/tickets/track/TrackingDetailsCard";
+import { TurnNotificationBanner } from "@/components/tickets/track/TurnNotificationBanner";
+import { playTurnChime } from "@/lib/audio/notification-sound";
 import {
   getTicketStatusBadgeConfig,
   isTicketActive,
@@ -89,10 +91,56 @@ function TicketTrackingContent({
   const [error, setError] = useState<string | null>(null);
   const [isNotFound, setIsNotFound] = useState(false);
   const [pollKey, setPollKey] = useState(0);
+  const [isTurnAlertDismissed, setIsTurnAlertDismissed] = useState(false);
+
+  const prevStatusRef = useRef<string | null>(null);
+  const hasAlertedChimeRef = useRef(false);
 
   const activeAbortRef = useRef<AbortController | null>(null);
   const requestGenRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear transition/notification refs if trackingToken changes
+  const [prevToken, setPrevToken] = useState(trackingToken);
+  if (trackingToken !== prevToken) {
+    setPrevToken(trackingToken);
+    prevStatusRef.current = null;
+    hasAlertedChimeRef.current = false;
+    setIsTurnAlertDismissed(false);
+  }
+
+  const processTicketData = useCallback(
+    (newData: PublicTicketTrackingData) => {
+      const prevStatus = prevStatusRef.current;
+      const isInitialLoad = prevStatus === null;
+
+      if (isInitialLoad) {
+        prevStatusRef.current = newData.status;
+        if (newData.status === "CALLED") {
+          // Already called on initial load: display banner, suppress auto-chime
+          hasAlertedChimeRef.current = true;
+          setIsTurnAlertDismissed(false);
+        }
+      } else {
+        if (newData.status === "CALLED") {
+          if (prevStatus !== "CALLED" && !hasAlertedChimeRef.current) {
+            // Live transition to CALLED: play chime and display banner
+            hasAlertedChimeRef.current = true;
+            setIsTurnAlertDismissed(false);
+            void playTurnChime();
+          }
+        } else {
+          // Status moved away from CALLED: reset cycle state
+          hasAlertedChimeRef.current = false;
+          setIsTurnAlertDismissed(false);
+        }
+        prevStatusRef.current = newData.status;
+      }
+
+      setData(newData);
+    },
+    [],
+  );
 
   const clearPollTimer = useCallback(() => {
     if (pollTimerRef.current !== null) {
@@ -166,7 +214,7 @@ function TicketTrackingContent({
         }
 
         const trackingData = json as PublicTicketTrackingData;
-        setData(trackingData);
+        processTicketData(trackingData);
         if (isTicketActive(trackingData.status)) {
           setPollKey((k) => k + 1);
         }
@@ -258,7 +306,7 @@ function TicketTrackingContent({
             "organization" in json
           ) {
             const updated = json as PublicTicketTrackingData;
-            setData(updated);
+            processTicketData(updated);
 
             // If updated status is terminal (COMPLETED, SKIPPED, CANCELLED), halt polling
             if (!isTicketActive(updated.status)) {
@@ -411,6 +459,15 @@ function TicketTrackingContent({
       >
         {liveAnnouncement}
       </div>
+
+      {/* Prominent in-app turn alert banner */}
+      {data.status === "CALLED" && !isTurnAlertDismissed && (
+        <TurnNotificationBanner
+          ticketNumber={data.ticketNumber}
+          counter={data.counter}
+          onDismiss={() => setIsTurnAlertDismissed(true)}
+        />
+      )}
 
       <TrackingHeroCard
         ticketNumber={data.ticketNumber}
