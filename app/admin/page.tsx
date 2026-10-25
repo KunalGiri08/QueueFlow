@@ -10,6 +10,7 @@ import { OrganizationAnalytics } from "@/components/admin/OrganizationAnalytics"
 import { CounterManagement } from "@/components/admin/CounterManagement";
 import { ServiceManagement } from "@/components/admin/ServiceManagement";
 import { QueueManagement } from "@/components/admin/QueueManagement";
+import { OperatingHoursManagement } from "@/components/admin/OperatingHoursManagement";
 import { StaffManagement } from "@/components/admin/StaffManagement";
 
 type AdminAuthResult = "authorized" | "forbidden" | "error";
@@ -491,6 +492,9 @@ export default function OrganizationAdminPage() {
 
                   {/* Section: Queue Management (Step 3B) */}
                   <QueueManagement organizationId={selectedOrg.id} />
+
+                  {/* Section: Operating Hours & Exceptional Closures */}
+                  <OperatingHoursManagement organizationId={selectedOrg.id} />
 
                   {/* Section: Staff & Counter Assignments (Step 4) */}
                   <StaffManagement organizationId={selectedOrg.id} />
