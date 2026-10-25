@@ -1013,4 +1013,239 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       ).toBeDefined();
     });
   });
+
+  describe("Ticket Cancellation Workflow", () => {
+    it("renders Cancel this ticket button when status is WAITING", async () => {
+      activeFetchHandler = async () => jsonResponse(mockWaitingTicket);
+      await renderPage();
+
+      const cancelButton = screen.getByRole("button", {
+        name: "Cancel this ticket",
+      });
+      expect(cancelButton).toBeDefined();
+    });
+
+    it("does not render Cancel this ticket button when status is not WAITING", async () => {
+      activeFetchHandler = async () => jsonResponse(mockCalledTicket);
+      await renderPage();
+
+      expect(
+        screen.queryByRole("button", { name: "Cancel this ticket" }),
+      ).toBeNull();
+    });
+
+    it("opens confirmation dialog and allows dismissing via Keep My Place without sending request", async () => {
+      activeFetchHandler = async () => jsonResponse(mockWaitingTicket);
+      await renderPage();
+
+      const openButton = screen.getByRole("button", {
+        name: "Cancel this ticket",
+      });
+      await act(async () => {
+        fireEvent.click(openButton);
+      });
+
+      expect(screen.getByRole("dialog")).toBeDefined();
+      expect(screen.getByText("Cancel Ticket #42")).toBeDefined();
+
+      const keepButton = screen.getByRole("button", {
+        name: "Keep My Place",
+      });
+      await act(async () => {
+        fireEvent.click(keepButton);
+      });
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      // Verify no PATCH call was made
+      const patchCalls = fetchMock.mock.calls.filter(
+        ([, init]) => init?.method === "PATCH",
+      );
+      expect(patchCalls.length).toBe(0);
+    });
+
+    it("successfully cancels ticket, transitions UI to CANCELLED, hides cancel action, and halts polling", async () => {
+      vi.useFakeTimers();
+
+      activeFetchHandler = async (url: string, init?: RequestInit) => {
+        if (init?.method === "PATCH" && url.includes("/cancel")) {
+          return jsonResponse({
+            ticketNumber: 42,
+            status: "CANCELLED",
+            cancelledAt: new Date().toISOString(),
+          });
+        }
+        return jsonResponse(mockWaitingTicket);
+      };
+
+      await renderPage();
+
+      // Open dialog
+      const openButton = screen.getByRole("button", {
+        name: "Cancel this ticket",
+      });
+      await act(async () => {
+        fireEvent.click(openButton);
+      });
+
+      // Confirm cancellation
+      const confirmButton = screen.getByRole("button", {
+        name: "Yes, Cancel Ticket",
+      });
+      await act(async () => {
+        fireEvent.click(confirmButton);
+      });
+
+      // Dialog is dismissed
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      // Status badge and heading update to Cancelled
+      expect(screen.getByText("Cancelled")).toBeDefined();
+
+      // Cancel button is removed
+      expect(
+        screen.queryByRole("button", { name: "Cancel this ticket" }),
+      ).toBeNull();
+
+      // Position metrics are unmounted
+      expect(screen.queryByText("People ahead")).toBeNull();
+
+      // Polling is halted
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("prevents duplicate submissions while cancellation is in progress", async () => {
+      const cancelDeferred = createDeferred<Response>();
+      let patchCount = 0;
+
+      activeFetchHandler = async (url: string, init?: RequestInit) => {
+        if (init?.method === "PATCH" && url.includes("/cancel")) {
+          patchCount++;
+          return cancelDeferred.promise;
+        }
+        return jsonResponse(mockWaitingTicket);
+      };
+
+      await renderPage();
+
+      // Open dialog
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Cancel this ticket" }),
+        );
+      });
+
+      const confirmButton = screen.getByRole("button", {
+        name: "Yes, Cancel Ticket",
+      });
+
+      // First click
+      await act(async () => {
+        fireEvent.click(confirmButton);
+      });
+
+      expect(patchCount).toBe(1);
+
+      // Subsequent click while in progress
+      await act(async () => {
+        fireEvent.click(confirmButton);
+      });
+
+      // Should still be 1 (no duplicate request)
+      expect(patchCount).toBe(1);
+
+      // Resolve cancel request
+      await act(async () => {
+        cancelDeferred.resolve(
+          jsonResponse({
+            ticketNumber: 42,
+            status: "CANCELLED",
+            cancelledAt: new Date().toISOString(),
+          }),
+        );
+      });
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("displays error message in the dialog when cancellation fails", async () => {
+      activeFetchHandler = async (url: string, init?: RequestInit) => {
+        if (init?.method === "PATCH" && url.includes("/cancel")) {
+          return jsonResponse({ error: "Service unavailable" }, 503);
+        }
+        return jsonResponse(mockWaitingTicket);
+      };
+
+      await renderPage();
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Cancel this ticket" }),
+        );
+      });
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Yes, Cancel Ticket" }),
+        );
+      });
+
+      // Dialog stays open and shows error alert
+      expect(screen.getByRole("dialog")).toBeDefined();
+      expect(screen.getByRole("alert")).toBeDefined();
+      expect(screen.getByText("Service unavailable")).toBeDefined();
+    });
+
+    it("handles 409 Conflict by closing dialog, showing notice banner, and refreshing ticket state to CALLED", async () => {
+      let isCalled = false;
+      activeFetchHandler = async (url: string, init?: RequestInit) => {
+        if (init?.method === "PATCH" && url.includes("/cancel")) {
+          isCalled = true;
+          return jsonResponse(
+            { error: "Ticket cannot be cancelled in its current state" },
+            409,
+          );
+        }
+        if (isCalled) {
+          return jsonResponse(mockCalledTicket);
+        }
+        return jsonResponse(mockWaitingTicket);
+      };
+
+      await renderPage();
+
+      // Open and confirm cancel
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Cancel this ticket" }),
+        );
+      });
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Yes, Cancel Ticket" }),
+        );
+      });
+
+      // Dialog is closed
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      // Cancellation notice banner is displayed
+      expect(
+        screen.getByText(
+          "This ticket can no longer be cancelled because its status has changed.",
+        ),
+      ).toBeDefined();
+
+      // Refreshed status to CALLED triggers turn alert banner and chime
+      expect(screen.getByRole("alert")).toBeDefined();
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+
+      // Cancel button is removed
+      expect(
+        screen.queryByRole("button", { name: "Cancel this ticket" }),
+      ).toBeNull();
+    });
+  });
 });
+

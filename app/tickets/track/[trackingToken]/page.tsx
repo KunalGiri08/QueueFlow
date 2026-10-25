@@ -8,6 +8,7 @@ import { TrackingHeroCard } from "@/components/tickets/track/TrackingHeroCard";
 import { TrackingPositionMetrics } from "@/components/tickets/track/TrackingPositionMetrics";
 import { TrackingDetailsCard } from "@/components/tickets/track/TrackingDetailsCard";
 import { TurnNotificationBanner } from "@/components/tickets/track/TurnNotificationBanner";
+import { CancelTicketDialog } from "@/components/tickets/track/CancelTicketDialog";
 import { playTurnChime } from "@/lib/audio/notification-sound";
 import {
   getTicketStatusBadgeConfig,
@@ -92,9 +93,16 @@ function TicketTrackingContent({
   const [isNotFound, setIsNotFound] = useState(false);
   const [pollKey, setPollKey] = useState(0);
   const [isTurnAlertDismissed, setIsTurnAlertDismissed] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [cancellationNotice, setCancellationNotice] = useState<string | null>(
+    null,
+  );
 
   const prevStatusRef = useRef<string | null>(null);
   const hasAlertedChimeRef = useRef(false);
+  const isCancellingRef = useRef(false);
 
   const activeAbortRef = useRef<AbortController | null>(null);
   const requestGenRef = useRef(0);
@@ -107,6 +115,10 @@ function TicketTrackingContent({
     prevStatusRef.current = null;
     hasAlertedChimeRef.current = false;
     setIsTurnAlertDismissed(false);
+    setIsCancelDialogOpen(false);
+    setCancelError(null);
+    setCancellationNotice(null);
+    isCancellingRef.current = false;
   }
 
   const processTicketData = useCallback(
@@ -240,6 +252,69 @@ function TicketTrackingContent({
   useEffect(() => {
     void Promise.resolve().then(() => fetchTicket());
   }, [fetchTicket]);
+
+  const handleConfirmCancel = useCallback(async () => {
+    if (!trackingToken || !data || isCancellingRef.current) {
+      return;
+    }
+
+    isCancellingRef.current = true;
+    setIsCancelling(true);
+    setCancelError(null);
+
+    try {
+      const response = await fetch(
+        `/api/tickets/track/${encodeURIComponent(trackingToken)}/cancel`,
+        {
+          method: "PATCH",
+        },
+      );
+
+      if (response.status === 409) {
+        setIsCancelDialogOpen(false);
+        setCancelError(null);
+        setCancellationNotice(
+          "This ticket can no longer be cancelled because its status has changed.",
+        );
+        await fetchTicket(true);
+        return;
+      }
+
+      if (!response.ok) {
+        let msg = "Unable to cancel ticket at this time. Please try again.";
+        try {
+          const json: unknown = await response.json();
+          if (
+            json &&
+            typeof json === "object" &&
+            "error" in json &&
+            typeof (json as { error: unknown }).error === "string"
+          ) {
+            msg = (json as { error: string }).error;
+          }
+        } catch {
+          // ignore json parse error
+        }
+        setCancelError(msg);
+        return;
+      }
+
+      // Successful cancellation
+      setIsCancelDialogOpen(false);
+      setCancelError(null);
+      setCancellationNotice(null);
+      const updatedData: PublicTicketTrackingData = {
+        ...data,
+        status: "CANCELLED",
+      };
+      processTicketData(updatedData);
+    } catch {
+      setCancelError("Unable to cancel ticket at this time. Please try again.");
+    } finally {
+      isCancellingRef.current = false;
+      setIsCancelling(false);
+    }
+  }, [trackingToken, data, fetchTicket, processTicketData]);
 
   const isDataActive = Boolean(data && isTicketActive(data.status));
 
@@ -460,6 +535,52 @@ function TicketTrackingContent({
         {liveAnnouncement}
       </div>
 
+      {/* Cancellation Notice Banner (e.g. 409 Conflict) */}
+      {cancellationNotice && (
+        <div
+          role="status"
+          className="mb-6 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 shadow-sm animate-in fade-in duration-200"
+        >
+          <svg
+            className="mt-0.5 h-5 w-5 shrink-0 text-amber-600"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth="2"
+            stroke="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"
+            />
+          </svg>
+          <div className="flex-1">
+            <p className="font-medium text-amber-900">{cancellationNotice}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCancellationNotice(null)}
+            className="shrink-0 rounded p-1 text-amber-600 hover:bg-amber-100 hover:text-amber-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+            aria-label="Dismiss notice"
+          >
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="2"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* Prominent in-app turn alert banner */}
       {data.status === "CALLED" && !isTurnAlertDismissed && (
         <TurnNotificationBanner
@@ -491,6 +612,39 @@ function TicketTrackingContent({
         serviceName={data.service.name}
         queueName={data.queue.name}
         counter={data.counter}
+      />
+
+      {/* Cancel Ticket Action (only while WAITING) */}
+      {data.status === "WAITING" && (
+        <div className="mt-6 flex flex-col items-center">
+          <button
+            type="button"
+            onClick={() => {
+              setCancelError(null);
+              setIsCancelDialogOpen(true);
+            }}
+            disabled={isCancelling}
+            className="text-sm font-medium text-red-600 transition-colors hover:text-red-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel this ticket
+          </button>
+        </div>
+      )}
+
+      {/* Cancel Ticket Confirmation Dialog */}
+      <CancelTicketDialog
+        isOpen={isCancelDialogOpen}
+        ticketNumber={data.ticketNumber}
+        serviceName={data.service.name}
+        isCancelling={isCancelling}
+        error={cancelError}
+        onConfirm={handleConfirmCancel}
+        onClose={() => {
+          if (!isCancelling) {
+            setIsCancelDialogOpen(false);
+            setCancelError(null);
+          }
+        }}
       />
 
       {/* Manual Refresh Action */}
