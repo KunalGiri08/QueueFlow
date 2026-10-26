@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { createAppointmentSchema } from "@/lib/validations/appointment";
+import {
+  evaluateOperatingHours,
+  type OperatingHoursEvaluationResult,
+} from "@/lib/services/schedule.service";
 
 export async function POST(request: Request) {
   const currentUser = await getCurrentUser();
@@ -49,6 +53,64 @@ export async function POST(request: Request) {
         throw new Error("SERVICE_NOT_ACTIVE");
       }
 
+      const service = await tx.service.findUnique({
+        where: { id: serviceId },
+        select: {
+          id: true,
+          isActive: true,
+          organization: {
+            select: {
+              id: true,
+              timezone: true,
+              scheduleIntervals: {
+                select: {
+                  id: true,
+                  dayOfWeek: true,
+                  startTime: true,
+                  endTime: true,
+                  isActive: true,
+                },
+              },
+              closures: {
+                select: {
+                  id: true,
+                  startDate: true,
+                  endDate: true,
+                  reason: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!service) {
+        throw new Error("SERVICE_NOT_FOUND");
+      }
+
+      if (service.isActive === false) {
+        throw new Error("SERVICE_NOT_ACTIVE");
+      }
+
+      if (service.organization) {
+        const operatingHours = evaluateOperatingHours({
+          timezone: service.organization.timezone,
+          intervals: service.organization.scheduleIntervals,
+          closures: service.organization.closures,
+          instant: scheduledAt,
+        });
+
+        if (!operatingHours.isOpen) {
+          const error = new Error("ORGANIZATION_NOT_OPEN");
+          (
+            error as unknown as {
+              evaluation: OperatingHoursEvaluationResult;
+            }
+          ).evaluation = operatingHours;
+          throw error;
+        }
+      }
+
       const existingAppointment = await tx.appointment.findFirst({
         where: {
           serviceId,
@@ -95,6 +157,39 @@ export async function POST(request: Request) {
             error: "This appointment time slot is already booked",
           },
           { status: 409 },
+        );
+      }
+
+      if (error.message === "ORGANIZATION_NOT_OPEN") {
+        const evalResult = (
+          error as unknown as {
+            evaluation?: OperatingHoursEvaluationResult;
+          }
+        ).evaluation;
+
+        const reason = evalResult?.reason;
+        const message = evalResult?.message;
+
+        if (reason === "INVALID_TIMEZONE") {
+          return Response.json(
+            {
+              error: "Organization schedule is temporarily misconfigured",
+              code: "INVALID_SCHEDULE_CONFIGURATION",
+              reason,
+              message: "Organization schedule is temporarily misconfigured",
+            },
+            { status: 400 },
+          );
+        }
+
+        return Response.json(
+          {
+            error: message || "Organization is currently closed",
+            code: reason || "ORGANIZATION_CLOSED",
+            reason: reason || "ORGANIZATION_CLOSED",
+            message: message || "Organization is currently closed",
+          },
+          { status: 400 },
         );
       }
     }
