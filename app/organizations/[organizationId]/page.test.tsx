@@ -443,8 +443,11 @@ describe("app/organizations/[organizationId]/page", () => {
       expect(mockPush).toHaveBeenCalledWith(
         `/sign-in?redirect_url=${encodeURIComponent("/organizations/org-123")}`,
       );
-      // Fetch only called once for initial GET catalog
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // Ensure POST /api/tickets is not called for unauthenticated user
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        "/api/tickets",
+        expect.anything(),
+      );
     });
 
     it("successfully creates ticket (201) and navigates to tracking page", async () => {
@@ -1484,6 +1487,382 @@ describe("app/organizations/[organizationId]/page", () => {
         expect(trackLink).toBeDefined();
         expect(trackLink.getAttribute("href")).toBe("/tickets");
       });
+    });
+  });
+
+  describe("F. Customer-facing queue availability UI", () => {
+    const singleQueueCatalog = {
+      organization: mockOrg,
+      services: [
+        {
+          id: "srv-1",
+          name: "General Consultation",
+          description: "Walk-in consultations",
+          queues: [{ id: "q-1", name: "Standard Line", isActive: true }],
+        },
+      ],
+    };
+
+    function baseAvailability(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "q-1",
+        name: "Standard Line",
+        isActive: true,
+        currentlyServing: 8,
+        waitingCount: 3,
+        estimatedWaitMinutes: 12,
+        maxWaitingTickets: 10,
+        maxDailyTickets: 100,
+        dailyCount: 15,
+        isWaitingCapacityFull: false,
+        isDailyQuotaReached: false,
+        isJoinable: true,
+        unavailabilityReason: null,
+        unavailabilityCode: null,
+        organizationStatus: {
+          isOpen: true,
+          reason: "OPEN",
+          message: null,
+        },
+        admissionStatus: {
+          isAdmitted: true,
+          reason: "ADMITTED",
+          message: "Admission is open",
+          cutoffMinutes: 15,
+          effectiveCutoffTime: "16:45",
+        },
+        ...overrides,
+      };
+    }
+
+    it("displays Open status badge in header when organization is open", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          return jsonResponse(baseAvailability());
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      const badge = await screen.findByTestId("org-status-badge");
+      expect(badge).toBeDefined();
+      expect(badge.textContent).toContain("Open");
+    });
+
+    it("displays Closed badge in header, banner, and disables joining when organization is closed", async () => {
+      const closedReason = "This organization is currently closed for the holiday.";
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          return jsonResponse(
+            baseAvailability({
+              isJoinable: false,
+              organizationStatus: {
+                isOpen: false,
+                reason: "ORGANIZATION_CLOSED",
+                message: closedReason,
+              },
+              unavailabilityReason: closedReason,
+              unavailabilityCode: "ORGANIZATION_CLOSED",
+            }),
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      const badge = await screen.findByTestId("org-status-badge");
+      expect(badge.textContent).toContain("Closed");
+
+      // Closure message in banner
+      expect(await screen.findAllByText(closedReason)).toHaveLength(2); // One in header, one on queue card
+
+      // Join button disabled
+      const joinBtn = screen.getByRole("button", {
+        name: /join standard line \(currently unavailable/i,
+      });
+      expect(joinBtn).toBeDefined();
+      expect(joinBtn.hasAttribute("disabled")).toBe(true);
+      expect(joinBtn.getAttribute("aria-disabled")).toBe("true");
+      expect(joinBtn.textContent).toBe("Queue Unavailable");
+    });
+
+    it("displays Available badge, live stats, and enabled Join Queue button when queue is available", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          return jsonResponse(
+            baseAvailability({
+              waitingCount: 4,
+              maxWaitingTickets: 12,
+              estimatedWaitMinutes: 18,
+              currentlyServing: 15,
+            }),
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      expect(await screen.findByText("Available")).toBeDefined();
+      expect(await screen.findByText(/Waiting: 4 \/ 12/)).toBeDefined();
+      expect(await screen.findByText(/Est\. wait: ~18 min/)).toBeDefined();
+      expect(await screen.findByText("#15")).toBeDefined();
+
+      const joinBtn = screen.getByRole("button", { name: "Join Standard Line" });
+      expect(joinBtn.hasAttribute("disabled")).toBe(false);
+    });
+
+    it("displays Queue Full badge, friendly alert, and disables Join Queue when waiting capacity is reached", async () => {
+      const fullReason =
+        "This queue has reached its maximum waiting capacity. Please try again later.";
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          return jsonResponse(
+            baseAvailability({
+              isJoinable: false,
+              isWaitingCapacityFull: true,
+              waitingCount: 10,
+              maxWaitingTickets: 10,
+              unavailabilityReason: fullReason,
+              unavailabilityCode: "QUEUE_CAPACITY_REACHED",
+            }),
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      expect(await screen.findByText("Queue Full")).toBeDefined();
+      expect(await screen.findByText(/Waiting: 10 \/ 10/)).toBeDefined();
+
+      const banner = await screen.findByTestId("queue-unavailable-banner-q-1");
+      expect(banner.textContent).toContain(fullReason);
+
+      const joinBtn = screen.getByRole("button", {
+        name: /join standard line \(currently unavailable: this queue has reached its maximum waiting capacity/i,
+      });
+      expect(joinBtn).toBeDefined();
+      expect(joinBtn.hasAttribute("disabled")).toBe(true);
+      expect(joinBtn.textContent).toBe("Queue Unavailable");
+    });
+
+    it("displays waiting count without max capacity when maxWaitingTickets is null", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          return jsonResponse(
+            baseAvailability({
+              waitingCount: 7,
+              maxWaitingTickets: null,
+              estimatedWaitMinutes: 20,
+            }),
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      expect(await screen.findByText(/Waiting:\s*7/)).toBeDefined();
+    });
+
+    it("displays 'No wait' when queue is empty and estimatedWaitMinutes is null", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          return jsonResponse(
+            baseAvailability({
+              waitingCount: 0,
+              estimatedWaitMinutes: null,
+            }),
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      expect(await screen.findByText(/Waiting:\s*0/)).toBeDefined();
+      expect(await screen.findByText("No wait")).toBeDefined();
+    });
+
+    it("omits wait estimate without fabricating numbers when queue has waiting tickets but no estimate", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          return jsonResponse(
+            baseAvailability({
+              waitingCount: 5,
+              estimatedWaitMinutes: null,
+            }),
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      expect(await screen.findByText(/Waiting: 5/)).toBeDefined();
+      expect(screen.queryByText(/Est\. wait:/)).toBeNull();
+      expect(screen.queryByText("No wait")).toBeNull();
+    });
+
+    it("displays Daily Quota Reached badge, notice, and disables join button when daily limit is reached", async () => {
+      const quotaReason =
+        "This queue has reached its daily ticket limit for today. Please try again tomorrow.";
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          return jsonResponse(
+            baseAvailability({
+              isJoinable: false,
+              isDailyQuotaReached: true,
+              dailyCount: 50,
+              maxDailyTickets: 50,
+              unavailabilityReason: quotaReason,
+              unavailabilityCode: "DAILY_TICKET_LIMIT_REACHED",
+            }),
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      expect(await screen.findByText("Daily Quota Reached")).toBeDefined();
+      expect(await screen.findByText("Daily: 50 / 50")).toBeDefined();
+
+      const banner = await screen.findByTestId("queue-unavailable-banner-q-1");
+      expect(banner.textContent).toContain(quotaReason);
+
+      const joinBtn = screen.getByRole("button", {
+        name: /join standard line \(currently unavailable: this queue has reached its daily ticket limit/i,
+      });
+      expect(joinBtn.hasAttribute("disabled")).toBe(true);
+      expect(joinBtn.textContent).toBe("Queue Unavailable");
+    });
+
+    it("displays Admission Closed badge and cutoff notice when cutoff time has passed", async () => {
+      const cutoffReason =
+        "Admission cutoff reached for this service. No more tickets are being admitted today.";
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          return jsonResponse(
+            baseAvailability({
+              isJoinable: false,
+              admissionStatus: {
+                isAdmitted: false,
+                reason: "ADMISSION_CUTOFF_REACHED",
+                message: cutoffReason,
+                cutoffMinutes: 30,
+                effectiveCutoffTime: "16:30",
+              },
+              unavailabilityReason: cutoffReason,
+              unavailabilityCode: "ADMISSION_CUTOFF_REACHED",
+            }),
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      expect(await screen.findByText("Admission Closed")).toBeDefined();
+      expect(
+        await screen.findByText(/Admission closed for today at 16:30/),
+      ).toBeDefined();
+
+      const banner = await screen.findByTestId("queue-unavailable-banner-q-1");
+      expect(banner.textContent).toContain(cutoffReason);
+
+      const joinBtn = screen.getByRole("button", {
+        name: /join standard line \(currently unavailable: admission cutoff reached/i,
+      });
+      expect(joinBtn.hasAttribute("disabled")).toBe(true);
+      expect(joinBtn.textContent).toBe("Queue Unavailable");
+    });
+
+    it("shows loading state while queue availability is being fetched and updates once resolved", async () => {
+      const deferred = createDeferred<Response>();
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          return deferred.promise;
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      expect(screen.getByText("Checking...")).toBeDefined();
+
+      // Resolve availability
+      await act(async () => {
+        deferred.resolve(jsonResponse(baseAvailability()));
+      });
+
+      expect(await screen.findByText("Available")).toBeDefined();
+      expect(await screen.findByText(/Waiting: 3 \/ 10/)).toBeDefined();
+    });
+
+    it("shows error fallback with retry button when availability API fails", async () => {
+      let attempt = 0;
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/services")) {
+          return jsonResponse(singleQueueCatalog);
+        }
+        if (url.includes("/api/queues/q-1")) {
+          attempt++;
+          if (attempt === 1) {
+            return new Response("Internal Server Error", { status: 500 });
+          }
+          return jsonResponse(baseAvailability());
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      await renderPage();
+
+      expect(
+        await screen.findByText("Availability information unavailable"),
+      ).toBeDefined();
+
+      const retryBtn = screen.getByRole("button", { name: "Retry" });
+      expect(retryBtn).toBeDefined();
+
+      // Click retry
+      fireEvent.click(retryBtn);
+
+      expect(await screen.findByText("Available")).toBeDefined();
+      expect(await screen.findByText(/Waiting: 3 \/ 10/)).toBeDefined();
     });
   });
 });

@@ -94,6 +94,35 @@ function parseOrganizationServices(
   };
 }
 
+export interface QueueAvailabilityData {
+  id: string;
+  name: string;
+  isActive: boolean;
+  currentlyServing: number | null;
+  waitingCount: number;
+  estimatedWaitMinutes: number | null;
+  maxWaitingTickets: number | null;
+  maxDailyTickets: number | null;
+  dailyCount: number;
+  isWaitingCapacityFull: boolean;
+  isDailyQuotaReached: boolean;
+  isJoinable: boolean;
+  unavailabilityReason: string | null;
+  unavailabilityCode: string | null;
+  organizationStatus: {
+    isOpen: boolean;
+    reason: string;
+    message: string | null;
+  } | null;
+  admissionStatus: {
+    isAdmitted: boolean;
+    reason: string;
+    message: string | null;
+    cutoffMinutes: number | null;
+    effectiveCutoffTime: string | null;
+  } | null;
+}
+
 export interface AdmissionErrorPayload {
   error?: string;
   code?: string;
@@ -273,6 +302,17 @@ function OrganizationServicesContent({
   const [bookingSuccessData, setBookingSuccessData] =
     useState<BookedAppointmentSuccessData | null>(null);
 
+  const [queueAvailability, setQueueAvailability] = useState<
+    Record<
+      string,
+      {
+        data: QueueAvailabilityData | null;
+        isLoading: boolean;
+        error: string | null;
+      }
+    >
+  >({});
+
   const activeCatalogControllerRef = useRef<AbortController | null>(null);
   const catalogGenRef = useRef<number>(0);
   const isMountedRef = useRef<boolean>(true);
@@ -368,7 +408,62 @@ function OrganizationServicesContent({
     setBookingService(null);
     setBookingError(null);
     setBookingSuccessData(null);
+    setQueueAvailability({});
   }
+
+  const fetchQueueAvailability = useCallback(async (queueId: string) => {
+    setQueueAvailability((prev) => ({
+      ...prev,
+      [queueId]: {
+        data: prev[queueId]?.data ?? null,
+        isLoading: prev[queueId]?.data ? false : true,
+        error: null,
+      },
+    }));
+
+    try {
+      const response = await fetch(
+        `/api/queues/${encodeURIComponent(queueId)}`,
+      );
+      if (!response || typeof response.ok !== "boolean") {
+        throw new Error("Invalid response");
+      }
+      if (!response.ok) {
+        throw new Error(`Server returned status ${response.status}`);
+      }
+      const avail = (await response.json()) as QueueAvailabilityData;
+      if (!isMountedRef.current) return;
+      setQueueAvailability((prev) => ({
+        ...prev,
+        [queueId]: {
+          data: avail,
+          isLoading: false,
+          error: null,
+        },
+      }));
+    } catch {
+      if (!isMountedRef.current) return;
+      setQueueAvailability((prev) => ({
+        ...prev,
+        [queueId]: {
+          data: prev[queueId]?.data ?? null,
+          isLoading: false,
+          error: "Unable to load availability",
+        },
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!data) return;
+    const activeQueues = data.services
+      .flatMap((s) => s.queues)
+      .filter((q) => q.isActive !== false);
+
+    for (const q of activeQueues) {
+      void fetchQueueAvailability(q.id);
+    }
+  }, [data, fetchQueueAvailability]);
 
   useEffect(() => {
     // Invalidate pending join and booking when organization identity changes
@@ -470,6 +565,7 @@ function OrganizationServicesContent({
         }
 
         const formatted = formatAdmissionErrorMessage(errJson, 400);
+        void fetchQueueAvailability(queueId);
         setQueueError({
           queueId,
           message: formatted.message,
@@ -501,6 +597,7 @@ function OrganizationServicesContent({
         }
 
         const formatted = formatAdmissionErrorMessage(errJson, 409);
+        void fetchQueueAvailability(queueId);
         setQueueError({
           queueId,
           message: formatted.message,
@@ -770,6 +867,15 @@ function OrganizationServicesContent({
     return null;
   }
 
+  const loadedAvailability = Object.values(queueAvailability)
+    .map((q) => q.data)
+    .filter((d): d is QueueAvailabilityData => d !== null);
+
+  const orgStatus =
+    loadedAvailability.length > 0 && loadedAvailability[0].organizationStatus
+      ? loadedAvailability[0].organizationStatus
+      : null;
+
   return (
     <div>
       <div className="mb-6">
@@ -789,10 +895,50 @@ function OrganizationServicesContent({
           <span className="inline-flex items-center rounded-md bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
             @{data.organization.slug}
           </span>
+          {orgStatus !== null && (
+            <span
+              data-testid="org-status-badge"
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+                orgStatus.isOpen
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                  : "border-amber-200 bg-amber-50 text-amber-800"
+              }`}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  orgStatus.isOpen ? "bg-emerald-500" : "bg-amber-500"
+                }`}
+                aria-hidden="true"
+              />
+              <span>{orgStatus.isOpen ? "Open" : "Closed"}</span>
+            </span>
+          )}
         </div>
         <p className="mt-2 text-base text-gray-600 sm:text-lg">
           Browse available services and queues for this organization.
         </p>
+        {orgStatus && !orgStatus.isOpen && orgStatus.message && (
+          <div
+            role="status"
+            className="mt-3 inline-flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-1.5 text-xs font-medium text-amber-800"
+          >
+            <svg
+              className="h-3.5 w-3.5 shrink-0 text-amber-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="2"
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
+              />
+            </svg>
+            <span>{orgStatus.message}</span>
+          </div>
+        )}
       </div>
 
       {data.services.length === 0 ? (
@@ -871,39 +1017,105 @@ function OrganizationServicesContent({
                         const hasError = queueError?.queueId === queue.id;
                         const errorId = `queue-error-${queue.id}`;
 
+                        const availability = queueAvailability[queue.id];
+                        const availData = availability?.data;
+                        const isAvailLoading = availability?.isLoading ?? true;
+                        const availError = availability?.error;
+                        const isKnownUnavailable = availData ? !availData.isJoinable : false;
+
                         return (
                           <div
                             key={queue.id}
-                            className="flex flex-col rounded-lg border border-gray-200/80 bg-gray-50/60 p-3 transition-colors hover:border-gray-300"
+                            className={`flex flex-col rounded-lg border p-3.5 transition-colors ${
+                              isKnownUnavailable
+                                ? "border-amber-200/70 bg-amber-50/20"
+                                : "border-gray-200/80 bg-gray-50/60 hover:border-gray-300"
+                            }`}
                           >
                             <div className="flex items-center justify-between gap-3">
-                              <div className="flex min-w-0 items-center gap-2">
+                              <div className="flex min-w-0 flex-wrap items-center gap-2">
                                 <span
                                   className={`h-2 w-2 shrink-0 rounded-full ${
-                                    hasError ? "bg-amber-500" : "bg-green-500"
+                                    isKnownUnavailable
+                                      ? "bg-amber-500"
+                                      : hasError
+                                        ? "bg-amber-500"
+                                        : "bg-emerald-500"
                                   }`}
                                   aria-hidden="true"
                                 />
-                                <span className="truncate text-sm font-medium text-gray-900">
+                                <span className="truncate text-sm font-semibold text-gray-900">
                                   {queue.name}
                                 </span>
+
+                                {/* Status badge */}
+                                {availData ? (
+                                  availData.isJoinable ? (
+                                    <span className="inline-flex items-center rounded-md border border-emerald-200/80 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                                      Available
+                                    </span>
+                                  ) : availData.isWaitingCapacityFull ? (
+                                    <span className="inline-flex items-center rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                                      Queue Full
+                                    </span>
+                                  ) : availData.isDailyQuotaReached ? (
+                                    <span className="inline-flex items-center rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                                      Daily Quota Reached
+                                    </span>
+                                  ) : availData.admissionStatus &&
+                                    !availData.admissionStatus.isAdmitted ? (
+                                    <span className="inline-flex items-center rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                                      Admission Closed
+                                    </span>
+                                  ) : availData.organizationStatus &&
+                                    !availData.organizationStatus.isOpen ? (
+                                    <span className="inline-flex items-center rounded-md border border-gray-200 bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">
+                                      Closed
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center rounded-md border border-gray-200 bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">
+                                      Unavailable
+                                    </span>
+                                  )
+                                ) : isAvailLoading ? (
+                                  <span className="inline-flex items-center text-[11px] font-medium text-gray-400 animate-pulse">
+                                    Checking...
+                                  </span>
+                                ) : null}
                               </div>
 
                               <button
                                 type="button"
                                 onClick={() => handleJoinQueue(queue.id)}
                                 disabled={
-                                  isSubmitting || joiningQueueId !== null
+                                  isKnownUnavailable ||
+                                  isSubmitting ||
+                                  joiningQueueId !== null
                                 }
-                                aria-describedby={hasError ? errorId : undefined}
+                                aria-describedby={
+                                  hasError ? errorId : undefined
+                                }
                                 aria-label={
-                                  isSubmitting
-                                    ? `Joining ${queue.name}...`
-                                    : `Join ${queue.name}`
+                                  isKnownUnavailable
+                                    ? `Join ${queue.name} (Currently unavailable: ${availData?.unavailabilityReason || "Unavailable"})`
+                                    : isSubmitting
+                                      ? `Joining ${queue.name}...`
+                                      : `Join ${queue.name}`
                                 }
-                                className="inline-flex shrink-0 items-center justify-center rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                                aria-disabled={
+                                  isKnownUnavailable ||
+                                  isSubmitting ||
+                                  joiningQueueId !== null
+                                }
+                                className={`inline-flex shrink-0 items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+                                  isKnownUnavailable
+                                    ? "cursor-not-allowed bg-gray-200 text-gray-500 shadow-none"
+                                    : "bg-gray-900 text-white shadow-sm hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                                }`}
                               >
-                                {isSubmitting ? (
+                                {isKnownUnavailable ? (
+                                  "Queue Unavailable"
+                                ) : isSubmitting ? (
                                   <span className="inline-flex items-center gap-1.5">
                                     <svg
                                       className="h-3.5 w-3.5 animate-spin"
@@ -927,6 +1139,170 @@ function OrganizationServicesContent({
                               </button>
                             </div>
 
+                            {/* Live Availability Metrics Row */}
+                            {availData && (
+                              <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-600">
+                                <div
+                                  className="inline-flex items-center gap-1.5"
+                                  title="Currently waiting tickets"
+                                >
+                                  <svg
+                                    className="h-3.5 w-3.5 text-gray-400 shrink-0"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth="2"
+                                    stroke="currentColor"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z"
+                                    />
+                                  </svg>
+                                  <span className="font-medium text-gray-800">
+                                    {availData.maxWaitingTickets !== null ? (
+                                      <>
+                                        Waiting: {availData.waitingCount} /{" "}
+                                        {availData.maxWaitingTickets}
+                                      </>
+                                    ) : (
+                                      <>Waiting: {availData.waitingCount}</>
+                                    )}
+                                  </span>
+                                </div>
+
+                                {availData.estimatedWaitMinutes !== null ? (
+                                  <div
+                                    className="inline-flex items-center gap-1.5"
+                                    title="Estimated wait time"
+                                  >
+                                    <svg
+                                      className="h-3.5 w-3.5 text-gray-400 shrink-0"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      strokeWidth="2"
+                                      stroke="currentColor"
+                                      aria-hidden="true"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+                                      />
+                                    </svg>
+                                    <span className="font-medium text-gray-800">
+                                      Est. wait: ~{availData.estimatedWaitMinutes} min
+                                    </span>
+                                  </div>
+                                ) : availData.waitingCount === 0 ? (
+                                  <div className="inline-flex items-center gap-1.5 text-gray-500">
+                                    <svg
+                                      className="h-3.5 w-3.5 text-gray-400 shrink-0"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      strokeWidth="2"
+                                      stroke="currentColor"
+                                      aria-hidden="true"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+                                      />
+                                    </svg>
+                                    <span>No wait</span>
+                                  </div>
+                                ) : null}
+
+                                {availData.currentlyServing !== null && (
+                                  <div className="inline-flex items-center gap-1 text-gray-600">
+                                    <span className="text-gray-400">Serving:</span>
+                                    <span className="font-semibold text-gray-900">
+                                      #{availData.currentlyServing}
+                                    </span>
+                                  </div>
+                                )}
+
+                                {availData.maxDailyTickets !== null && (
+                                  <div className="inline-flex items-center gap-1 text-[11px] text-gray-500">
+                                    <span>
+                                      Daily: {availData.dailyCount} /{" "}
+                                      {availData.maxDailyTickets}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Service Admission Cutoff Note */}
+                            {availData?.admissionStatus &&
+                              availData.admissionStatus.cutoffMinutes !== null &&
+                              availData.admissionStatus.cutoffMinutes > 0 && (
+                                <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-gray-500">
+                                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-400" />
+                                  <span>
+                                    {availData.admissionStatus.isAdmitted
+                                      ? `Admission closes ${availData.admissionStatus.cutoffMinutes}m before closing (${availData.admissionStatus.effectiveCutoffTime})`
+                                      : `Admission closed for today at ${availData.admissionStatus.effectiveCutoffTime}`}
+                                  </span>
+                                </div>
+                              )}
+
+                            {/* Loading State Placeholder */}
+                            {isAvailLoading && !availData && (
+                              <div className="mt-2 text-xs text-gray-400 animate-pulse">
+                                Checking queue availability...
+                              </div>
+                            )}
+
+                            {/* Error Loading Availability */}
+                            {availError && !availData && (
+                              <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
+                                <span>Availability information unavailable</span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    fetchQueueAvailability(queue.id)
+                                  }
+                                  className="text-xs font-medium text-gray-700 underline hover:text-gray-900"
+                                >
+                                  Retry
+                                </button>
+                              </div>
+                            )}
+
+                            {/* Known Unavailability Reason Alert */}
+                            {isKnownUnavailable && availData?.unavailabilityReason && (
+                              <div
+                                role="status"
+                                aria-live="polite"
+                                data-testid={`queue-unavailable-banner-${queue.id}`}
+                                className="mt-2.5 rounded-lg border border-amber-200 bg-amber-50/90 p-2.5 text-xs text-amber-900"
+                              >
+                                <div className="flex items-start gap-2">
+                                  <svg
+                                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600"
+                                    fill="currentColor"
+                                    viewBox="0 0 20 20"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      fillRule="evenodd"
+                                      d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+                                      clipRule="evenodd"
+                                    />
+                                  </svg>
+                                  <div className="flex-1">
+                                    <p className="font-medium leading-relaxed">
+                                      {availData.unavailabilityReason}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Ticket Submission Error Banner */}
                             {hasError && (
                               <div
                                 id={errorId}
@@ -950,7 +1326,8 @@ function OrganizationServicesContent({
                                     <p className="font-medium leading-relaxed">
                                       {queueError.message}
                                     </p>
-                                    {(queueError.code === "ACTIVE_TICKET_EXISTS" ||
+                                    {(queueError.code ===
+                                      "ACTIVE_TICKET_EXISTS" ||
                                       queueError.message.includes(
                                         "already have an active ticket",
                                       )) && (
