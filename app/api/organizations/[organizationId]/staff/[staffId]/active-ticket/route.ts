@@ -1,5 +1,6 @@
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { prisma } from "@/lib/prisma";
+import { getLocalCalendarDayBounds } from "@/lib/services/ticket.service";
 
 export async function GET(
   request: Request,
@@ -51,6 +52,13 @@ export async function GET(
           organizationId,
         },
       },
+      include: {
+        organization: {
+          select: {
+            timezone: true,
+          },
+        },
+      },
     });
 
     if (
@@ -63,6 +71,11 @@ export async function GET(
       );
     }
 
+    const timezone =
+      (targetMembership as { organization?: { timezone?: string } })
+        .organization?.timezone || "Asia/Kolkata";
+    const bounds = getLocalCalendarDayBounds(new Date(), timezone);
+
     const activeTicket = await prisma.ticket.findFirst({
       where: {
         servedById: staffId,
@@ -72,6 +85,14 @@ export async function GET(
             organizationId,
           },
         },
+        ...(bounds
+          ? {
+              createdAt: {
+                gte: bounds.start,
+                lt: bounds.end,
+              },
+            }
+          : {}),
       },
       include: {
         queue: {

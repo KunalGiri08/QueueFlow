@@ -180,6 +180,10 @@ describe("GET /api/organizations/[organizationId]/staff/[staffId]/active-ticket"
             organizationId,
           },
         },
+        createdAt: {
+          gte: expect.any(Date),
+          lt: expect.any(Date),
+        },
       },
       include: {
         queue: {
@@ -371,6 +375,10 @@ describe("GET /api/organizations/[organizationId]/staff/[staffId]/active-ticket"
               organizationId: "org-isolated",
             },
           },
+          createdAt: {
+            gte: expect.any(Date),
+            lt: expect.any(Date),
+          },
         },
       }),
     );
@@ -435,5 +443,35 @@ describe("GET /api/organizations/[organizationId]/staff/[staffId]/active-ticket"
     expect(data).toEqual({ error: "Internal server error" });
     expect(JSON.stringify(data)).not.toContain("connection pool exhausted");
     expect(JSON.stringify(data)).not.toContain("secret");
+  });
+
+  it("does not return a stale active ticket from a previous calendar day on a dormant queue", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: staffId });
+    mockMembershipFindUnique
+      .mockResolvedValueOnce({
+        role: "STAFF",
+        organization: { timezone: "Asia/Kolkata" },
+      })
+      .mockResolvedValueOnce({
+        role: "STAFF",
+        organization: { timezone: "Asia/Kolkata" },
+      });
+
+    mockTicketFindFirst.mockResolvedValue(null);
+
+    const response = await GET(new Request("http://localhost"), createParams());
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ticket: null });
+    expect(mockTicketFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          createdAt: {
+            gte: expect.any(Date),
+            lt: expect.any(Date),
+          },
+        }),
+      }),
+    );
   });
 });

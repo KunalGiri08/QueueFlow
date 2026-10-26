@@ -125,18 +125,26 @@ export async function GET(
           },
         },
       }),
-      // Currently waiting (status: WAITING)
+      // Currently waiting (status: WAITING created within current local day)
       prisma.ticket.count({
         where: {
           ...orgFilter,
           status: "WAITING",
+          createdAt: {
+            gte: bounds.start,
+            lt: bounds.end,
+          },
         },
       }),
-      // Currently serving (status: SERVING)
+      // Currently serving (status: SERVING created within current local day)
       prisma.ticket.count({
         where: {
           ...orgFilter,
           status: "SERVING",
+          createdAt: {
+            gte: bounds.start,
+            lt: bounds.end,
+          },
         },
       }),
       // Tickets called today for calculating average actual wait (calledAt within today's bounds)

@@ -245,19 +245,27 @@ describe("GET /api/organizations/[organizationId]/analytics", () => {
       },
     });
 
-    // Verify 5: Currently waiting uses status: WAITING
+    // Verify 5: Currently waiting uses status: WAITING and createdAt bounds
     expect(mockTicketCount).toHaveBeenNthCalledWith(5, {
       where: {
         ...expectedOrgFilter,
         status: "WAITING",
+        createdAt: {
+          gte: mockBounds.start,
+          lt: mockBounds.end,
+        },
       },
     });
 
-    // Verify 6: Currently serving uses status: SERVING
+    // Verify 6: Currently serving uses status: SERVING and createdAt bounds
     expect(mockTicketCount).toHaveBeenNthCalledWith(6, {
       where: {
         ...expectedOrgFilter,
         status: "SERVING",
+        createdAt: {
+          gte: mockBounds.start,
+          lt: mockBounds.end,
+        },
       },
     });
 
@@ -341,5 +349,60 @@ describe("GET /api/organizations/[organizationId]/analytics", () => {
     const data = await response.json();
     expect(data.error).toBe("Failed to load analytics data");
     expect(JSON.stringify(data)).not.toContain("FATAL: connection terminated");
+  });
+
+  it("excludes stale waiting and serving tickets from prior calendar days in dormant queues from live counts", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+
+    // Mock count calls:
+    // 1: created=0, 2: completed=0, 3: skipped=0, 4: cancelled=0,
+    // 5: currentlyWaiting=0, 6: currentlyServing=0
+    mockTicketCount
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0);
+
+    mockTicketFindMany.mockResolvedValueOnce([]);
+
+    const response = await GET(
+      new Request("http://localhost/api/organizations/org-123/analytics"),
+      createParams("org-123"),
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+
+    expect(data.currentlyWaiting).toBe(0);
+    expect(data.currentlyServing).toBe(0);
+
+    // Verify currentlyWaiting and currentlyServing queried today's createdAt bounds
+    expect(mockTicketCount).toHaveBeenNthCalledWith(
+      5,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: "WAITING",
+          createdAt: {
+            gte: mockBounds.start,
+            lt: mockBounds.end,
+          },
+        }),
+      }),
+    );
+    expect(mockTicketCount).toHaveBeenNthCalledWith(
+      6,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: "SERVING",
+          createdAt: {
+            gte: mockBounds.start,
+            lt: mockBounds.end,
+          },
+        }),
+      }),
+    );
   });
 });

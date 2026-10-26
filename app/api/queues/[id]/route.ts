@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getLocalCalendarDayBounds } from "@/lib/services/ticket.service";
 
 export async function GET(
   request: Request,
@@ -12,6 +13,15 @@ export async function GET(
       id: true,
       name: true,
       isActive: true,
+      service: {
+        select: {
+          organization: {
+            select: {
+              timezone: true,
+            },
+          },
+        },
+      },
     },
   });
 
@@ -19,11 +29,22 @@ export async function GET(
     return Response.json({ error: "Queue not found" }, { status: 404 });
   }
 
+  const timezone = queue.service?.organization?.timezone || "Asia/Kolkata";
+  const bounds = getLocalCalendarDayBounds(new Date(), timezone);
+
   const [currentlyServing, waitingCount] = await Promise.all([
     prisma.ticket.findFirst({
       where: {
         queueId: queue.id,
         status: "SERVING",
+        ...(bounds
+          ? {
+              createdAt: {
+                gte: bounds.start,
+                lt: bounds.end,
+              },
+            }
+          : {}),
       },
       orderBy: {
         number: "asc",
@@ -37,6 +58,14 @@ export async function GET(
       where: {
         queueId: queue.id,
         status: "WAITING",
+        ...(bounds
+          ? {
+              createdAt: {
+                gte: bounds.start,
+                lt: bounds.end,
+              },
+            }
+          : {}),
       },
     }),
   ]);
@@ -49,3 +78,4 @@ export async function GET(
     waitingCount,
   });
 }
+
