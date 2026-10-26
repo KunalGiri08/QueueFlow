@@ -9,6 +9,7 @@ const {
   mockTicketCreate,
   mockTicketCount,
   mockTicketFindMany,
+  mockTicketUpdateMany,
   mockQueryRaw,
 } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
@@ -19,6 +20,7 @@ const {
   mockTicketCreate: vi.fn(),
   mockTicketCount: vi.fn(),
   mockTicketFindMany: vi.fn(),
+  mockTicketUpdateMany: vi.fn(),
   mockQueryRaw: vi.fn(),
 }));
 
@@ -170,6 +172,7 @@ describe("POST /api/tickets", () => {
     vi.clearAllMocks();
     mockTicketCount.mockResolvedValue(0);
     mockTicketFindMany.mockResolvedValue([]);
+    mockTicketUpdateMany.mockResolvedValue({ count: 0 });
     mockQueueFindUnique.mockResolvedValue({
       id: queueId,
       isActive: true,
@@ -190,6 +193,7 @@ describe("POST /api/tickets", () => {
           findMany: mockTicketFindMany,
           count: mockTicketCount,
           create: mockTicketCreate,
+          updateMany: mockTicketUpdateMany,
         },
       };
       return callback(mockTx);
@@ -1962,6 +1966,94 @@ describe("POST /api/tickets", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("resolves yesterday's WAITING tickets so they do not block today's queue capacity", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        maxWaitingTickets: 5,
+        maxDailyTickets: null,
+        service: {
+          id: "svc-1",
+          isActive: true,
+          admissionCutoffMinutes: null,
+          organization: defaultOpenOrg,
+        },
+      });
+
+      // Yesterday's 5 waiting tickets resolved to CANCELLED by updateMany
+      mockTicketUpdateMany.mockResolvedValue({ count: 5 });
+
+      // After resolving stale tickets, waiting count is 0 (below maxWaitingTickets of 5)
+      mockTicketCount.mockResolvedValue(0);
+      mockTicketFindFirst.mockResolvedValue(null);
+      mockQueryRaw.mockResolvedValue([{ id: queueId, maxWaitingTickets: 5, maxDailyTickets: null }, { number: 1 }]);
+      mockTicketCreate.mockResolvedValue({ id: "ticket-new", number: 1, status: "WAITING" });
+
+      const request = new Request("http://localhost/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queueId }),
+      });
+
+      const response = await POST(request);
+      expect(response.status).toBe(201);
+
+      // Verify resolveStaleQueueTickets executed updateMany on stale waiting tickets
+      expect(mockTicketUpdateMany).toHaveBeenCalledWith({
+        where: {
+          queueId,
+          status: "WAITING",
+          createdAt: {
+            lt: expect.any(Date),
+          },
+        },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: expect.any(Date),
+        },
+      });
+    });
+
+    it("allows a returning customer with an active ticket from yesterday to join today's queue", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userId });
+      mockQueueFindUnique.mockResolvedValue({
+        id: queueId,
+        isActive: true,
+        maxWaitingTickets: 10,
+        maxDailyTickets: null,
+        service: {
+          id: "svc-1",
+          isActive: true,
+          admissionCutoffMinutes: null,
+          organization: defaultOpenOrg,
+        },
+      });
+
+      // resolveStaleQueueTickets cleans up yesterday's active ticket
+      mockTicketUpdateMany.mockResolvedValue({ count: 1 });
+
+      // Returning customer has no active ticket for today
+      mockTicketFindFirst.mockResolvedValue(null);
+      mockTicketCount.mockResolvedValue(0);
+      mockQueryRaw.mockResolvedValue([{ id: queueId, maxWaitingTickets: 10, maxDailyTickets: null }, { number: 1 }]);
+      mockTicketCreate.mockResolvedValue({ id: "ticket-today", number: 1, status: "WAITING" });
+
+      const request = new Request("http://localhost/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queueId }),
+      });
+
+      const response = await POST(request);
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({
+        id: "ticket-today",
+        number: 1,
+        status: "WAITING",
+      });
     });
   });
 });

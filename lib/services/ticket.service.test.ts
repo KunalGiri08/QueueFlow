@@ -7,6 +7,8 @@ import {
   getLocalCalendarDayBounds,
   acquireQueueLock,
   evaluateQueueCapacity,
+  resolveStaleQueueTickets,
+  resolveStaleStaffActiveTickets,
 } from "./ticket.service";
 import type { Prisma } from "@/app/generated/prisma/client";
 
@@ -586,5 +588,153 @@ describe("ticket.service - Daily Ticket Number Reset", () => {
       expect(result.code).toBe("INVALID_SCHEDULE_CONFIGURATION");
     });
   });
+
+  describe("resolveStaleQueueTickets", () => {
+    it("resolves stale WAITING tickets to CANCELLED and CALLED/SERVING to SKIPPED", async () => {
+      const instant = new Date("2026-10-24T10:00:00.000Z"); // 15:30 IST on 2026-10-24
+      // Day bounds for Asia/Kolkata: start = 2026-10-23T18:30:00.000Z
+      const mockUpdateMany = vi
+        .fn()
+        .mockResolvedValueOnce({ count: 3 }) // 3 waiting tickets cancelled
+        .mockResolvedValueOnce({ count: 2 }); // 2 called/serving tickets skipped
+
+      const mockTx = {
+        ticket: {
+          updateMany: mockUpdateMany,
+        },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await resolveStaleQueueTickets({
+        tx: mockTx,
+        queueId: "queue-1",
+        timezone: "Asia/Kolkata",
+        instant,
+      });
+
+      expect(result).toEqual({
+        cancelledCount: 3,
+        skippedCount: 2,
+      });
+
+      expect(mockUpdateMany).toHaveBeenCalledTimes(2);
+
+      // Verify call 1: WAITING -> CANCELLED
+      expect(mockUpdateMany).toHaveBeenNthCalledWith(1, {
+        where: {
+          queueId: "queue-1",
+          status: "WAITING",
+          createdAt: {
+            lt: new Date("2026-10-23T18:30:00.000Z"),
+          },
+        },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: instant,
+        },
+      });
+
+      // Verify call 2: CALLED/SERVING -> SKIPPED
+      expect(mockUpdateMany).toHaveBeenNthCalledWith(2, {
+        where: {
+          queueId: "queue-1",
+          status: { in: ["CALLED", "SERVING"] },
+          createdAt: {
+            lt: new Date("2026-10-23T18:30:00.000Z"),
+          },
+        },
+        data: {
+          status: "SKIPPED",
+          skippedAt: instant,
+        },
+      });
+    });
+
+    it("safely handles invalid timezone without failing", async () => {
+      const mockUpdateMany = vi.fn();
+      const mockTx = {
+        ticket: { updateMany: mockUpdateMany },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await resolveStaleQueueTickets({
+        tx: mockTx,
+        queueId: "queue-1",
+        timezone: "Invalid/Fake_Timezone",
+      });
+
+      expect(result).toEqual({ cancelledCount: 0, skippedCount: 0 });
+      expect(mockUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("safely handles mock transaction client missing updateMany", async () => {
+      const mockTx = {
+        ticket: {},
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await resolveStaleQueueTickets({
+        tx: mockTx,
+        queueId: "queue-1",
+        timezone: "Asia/Kolkata",
+      });
+
+      expect(result).toEqual({ cancelledCount: 0, skippedCount: 0 });
+    });
+  });
+
+  describe("resolveStaleStaffActiveTickets", () => {
+    it("resolves stale active tickets for a staff member in the organization to SKIPPED", async () => {
+      const instant = new Date("2026-10-24T10:00:00.000Z");
+      const mockUpdateMany = vi.fn().mockResolvedValueOnce({ count: 1 });
+
+      const mockTx = {
+        ticket: {
+          updateMany: mockUpdateMany,
+        },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await resolveStaleStaffActiveTickets({
+        tx: mockTx,
+        staffId: "staff-1",
+        organizationId: "org-1",
+        timezone: "Asia/Kolkata",
+        instant,
+      });
+
+      expect(result).toEqual({ skippedCount: 1 });
+      expect(mockUpdateMany).toHaveBeenCalledWith({
+        where: {
+          servedById: "staff-1",
+          status: { in: ["CALLED", "SERVING"] },
+          createdAt: {
+            lt: new Date("2026-10-23T18:30:00.000Z"),
+          },
+          queue: {
+            service: {
+              organizationId: "org-1",
+            },
+          },
+        },
+        data: {
+          status: "SKIPPED",
+          skippedAt: instant,
+        },
+      });
+    });
+
+    it("safely handles invalid timezone or missing updateMany", async () => {
+      const mockTx = {
+        ticket: {},
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await resolveStaleStaffActiveTickets({
+        tx: mockTx,
+        staffId: "staff-1",
+        organizationId: "org-1",
+        timezone: "Invalid/Zone",
+      });
+
+      expect(result).toEqual({ skippedCount: 0 });
+    });
+  });
 });
+
 

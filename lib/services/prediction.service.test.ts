@@ -64,6 +64,27 @@ describe("lib/services/prediction.service", () => {
 
       expect(durations).toEqual([]);
     });
+
+    it("filters out cross-day service durations spanning across midnight", () => {
+      // Started Oct 21 at 12:00 UTC (17:30 IST), completed Oct 22 at 04:00 UTC (09:30 IST)
+      // Duration would be 16 hours (960 min) if not filtered
+      const crossDayTicket = {
+        startedAt: new Date("2026-10-21T12:00:00Z"),
+        completedAt: new Date("2026-10-22T04:00:00Z"),
+      };
+      // Same-day ticket: 10 minutes on Oct 22
+      const validSameDayTicket = {
+        startedAt: new Date("2026-10-22T04:10:00Z"),
+        completedAt: new Date("2026-10-22T04:20:00Z"),
+      };
+
+      const durations = extractValidDurationsMinutes([
+        crossDayTicket,
+        validSameDayTicket,
+      ]);
+
+      expect(durations).toEqual([10]);
+    });
   });
 
   describe("calculateAverageServiceDuration", () => {
@@ -381,6 +402,34 @@ describe("lib/services/prediction.service", () => {
 
       // Fallback is 5 min * 2 = 10 min
       expect(result).toBe(10);
+    });
+
+    it("excludes cross-day service durations from distorting wait time predictions", async () => {
+      const now = new Date("2026-10-22T05:00:00Z"); // Morning of Oct 22
+      const mockFindMany = vi.fn().mockResolvedValueOnce([
+        {
+          // Cross-day ticket: started yesterday at 17:00 IST, completed today at 09:00 IST (16 hours)
+          startedAt: new Date("2026-10-21T11:30:00Z"),
+          completedAt: new Date("2026-10-22T03:30:00Z"),
+        },
+        {
+          // Valid same-day ticket: 6 minutes
+          startedAt: new Date("2026-10-22T04:00:00Z"),
+          completedAt: new Date("2026-10-22T04:06:00Z"),
+        },
+      ]);
+      const mockPrisma = { ticket: { findMany: mockFindMany } };
+
+      const result = await estimateTicketWaitTime(mockPrisma, {
+        queueId: "queue-1",
+        ticketStatus: "WAITING",
+        peopleAhead: 2,
+        now,
+      });
+
+      // Valid average duration is 6 min (the 16-hour cross-day ticket is excluded!)
+      // 2 people ahead * 6 min = 12 min (NOT hundreds of minutes!)
+      expect(result).toBe(12);
     });
   });
 });

@@ -4,6 +4,7 @@ import {
   acquireQueueLock,
   evaluateQueueCapacity,
   reserveNextTicketNumber,
+  resolveStaleQueueTickets,
 } from "@/lib/services/ticket.service";
 import { estimateTicketWaitTime } from "@/lib/services/prediction.service";
 import {
@@ -121,6 +122,14 @@ export async function POST(
 
       // 6. Capture one authoritative timestamp immediately after acquiring the lock
       const now = new Date();
+
+      // Resolve stale active tickets from previous operating days for this queue
+      await resolveStaleQueueTickets({
+        tx,
+        queueId,
+        timezone: org.timezone,
+        instant: now,
+      });
 
       // 7. Check whether this user already has an active ticket in this queue before capacity evaluation
       const existingActiveTicket = await tx.ticket.findFirst({

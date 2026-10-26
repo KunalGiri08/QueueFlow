@@ -226,4 +226,103 @@ describe("PATCH /api/tickets/[id]/call", () => {
       calledAt: now.toISOString(),
     });
   });
+
+  it("returns 409 when the ticket was created on a previous calendar day", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    mockTicketFindUnique.mockResolvedValue({
+      id: ticketId,
+      status: "WAITING",
+      createdAt: yesterday,
+      queue: {
+        isActive: true,
+        service: {
+          organizationId,
+          isActive: true,
+          organization: { timezone: "UTC" },
+        },
+      },
+    });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockCounterFindFirst.mockResolvedValue({ id: counterId, organizationId, isActive: true });
+    mockAssignmentFindUnique.mockResolvedValue({ id: "assign-1" });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counterId }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Ticket is from a previous operating day and cannot be called",
+    });
+  });
+
+  it("unblocks a staff member who had an unresolved ticket from yesterday when calling a ticket", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    const today = new Date();
+    mockTicketFindUnique.mockResolvedValue({
+      id: ticketId,
+      status: "WAITING",
+      createdAt: today,
+      queue: {
+        isActive: true,
+        service: {
+          organizationId,
+          isActive: true,
+          organization: { timezone: "UTC" },
+        },
+      },
+    });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockCounterFindFirst.mockResolvedValue({ id: counterId, organizationId, isActive: true });
+    mockAssignmentFindUnique.mockResolvedValue({ id: "assign-1" });
+
+    // resolveStaleStaffActiveTickets runs inside transaction
+    mockTicketUpdateMany
+      .mockResolvedValueOnce({ count: 1 }) // staff stale ticket resolved to SKIPPED
+      .mockResolvedValueOnce({ count: 1 }); // current ticket updated to CALLED
+
+    mockTicketFindFirst.mockResolvedValue(null);
+    mockTicketFindUniqueOrThrow.mockResolvedValue({
+      id: ticketId,
+      status: "CALLED",
+      servedById: "user-admin",
+      counterId,
+      calledAt: today,
+    });
+
+    const response = await PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counterId }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockTicketUpdateMany).toHaveBeenCalledWith({
+      where: {
+        servedById: "user-admin",
+        status: { in: ["CALLED", "SERVING"] },
+        createdAt: {
+          lt: expect.any(Date),
+        },
+        queue: {
+          service: {
+            organizationId,
+          },
+        },
+      },
+      data: {
+        status: "SKIPPED",
+        skippedAt: expect.any(Date),
+      },
+    });
+  });
 });

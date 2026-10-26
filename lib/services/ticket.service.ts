@@ -302,3 +302,125 @@ export async function reserveNextTicketNumber(
 
   return result[0].number;
 }
+
+export interface ResolveStaleTicketsInput {
+  tx: Prisma.TransactionClient;
+  queueId: string;
+  timezone: string;
+  instant?: Date;
+}
+
+export interface ResolveStaleTicketsResult {
+  cancelledCount: number;
+  skippedCount: number;
+}
+
+/**
+ * Atomically resolves active tickets from previous organization-local calendar days
+ * for a specific queue within an active transaction.
+ *
+ * Tickets with createdAt strictly before the start of the current local calendar day:
+ * - WAITING tickets are transitioned to CANCELLED with cancelledAt recorded.
+ * - CALLED and SERVING tickets are transitioned to SKIPPED with skippedAt recorded.
+ *
+ * This frees queue capacity, releases the PostgreSQL partial unique index
+ * for returning customers, and prevents stale tickets from being called.
+ */
+export async function resolveStaleQueueTickets(
+  input: ResolveStaleTicketsInput,
+): Promise<ResolveStaleTicketsResult> {
+  const { tx, queueId, timezone, instant = new Date() } = input;
+  const bounds = getLocalCalendarDayBounds(instant, timezone);
+  if (!bounds) {
+    return { cancelledCount: 0, skippedCount: 0 };
+  }
+
+  if (typeof tx.ticket?.updateMany !== "function") {
+    return { cancelledCount: 0, skippedCount: 0 };
+  }
+
+  const waitingResult = await tx.ticket.updateMany({
+    where: {
+      queueId,
+      status: "WAITING",
+      createdAt: {
+        lt: bounds.start,
+      },
+    },
+    data: {
+      status: "CANCELLED",
+      cancelledAt: instant,
+    },
+  });
+
+  const activeResult = await tx.ticket.updateMany({
+    where: {
+      queueId,
+      status: { in: ["CALLED", "SERVING"] },
+      createdAt: {
+        lt: bounds.start,
+      },
+    },
+    data: {
+      status: "SKIPPED",
+      skippedAt: instant,
+    },
+  });
+
+  return {
+    cancelledCount: waitingResult.count,
+    skippedCount: activeResult.count,
+  };
+}
+
+export interface ResolveStaleStaffActiveTicketsInput {
+  tx: Prisma.TransactionClient;
+  staffId: string;
+  organizationId: string;
+  timezone: string;
+  instant?: Date;
+}
+
+/**
+ * Atomically resolves active tickets (CALLED or SERVING) from previous organization-local
+ * calendar days for a specific staff member in an organization.
+ *
+ * Tickets with createdAt strictly before the start of the current local calendar day
+ * are transitioned to SKIPPED with skippedAt recorded, unblocking the staff member.
+ */
+export async function resolveStaleStaffActiveTickets(
+  input: ResolveStaleStaffActiveTicketsInput,
+): Promise<{ skippedCount: number }> {
+  const { tx, staffId, organizationId, timezone, instant = new Date() } = input;
+  const bounds = getLocalCalendarDayBounds(instant, timezone);
+  if (!bounds) {
+    return { skippedCount: 0 };
+  }
+
+  if (typeof tx.ticket?.updateMany !== "function") {
+    return { skippedCount: 0 };
+  }
+
+  const activeResult = await tx.ticket.updateMany({
+    where: {
+      servedById: staffId,
+      status: { in: ["CALLED", "SERVING"] },
+      createdAt: {
+        lt: bounds.start,
+      },
+      queue: {
+        service: {
+          organizationId,
+        },
+      },
+    },
+    data: {
+      status: "SKIPPED",
+      skippedAt: instant,
+    },
+  });
+
+  return {
+    skippedCount: activeResult.count,
+  };
+}

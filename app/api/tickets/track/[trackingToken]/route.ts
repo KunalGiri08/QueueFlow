@@ -79,6 +79,7 @@ export async function GET(
     peopleAhead,
     queueIsActive: ticket.queue.isActive,
     activeTicket,
+    timezone: ticket.queue.service.organization.timezone,
   });
 
   return Response.json({

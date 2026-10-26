@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/current-user";
+import {
+  resolveStaleStaffActiveTickets,
+  getLocalCalendarDayBounds,
+} from "@/lib/services/ticket.service";
 
 export async function PATCH(
   request: Request,
@@ -41,7 +45,16 @@ export async function PATCH(
     include: {
       queue: {
         include: {
-          service: true,
+          service: {
+            include: {
+              organization: {
+                select: {
+                  id: true,
+                  timezone: true,
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -63,6 +76,15 @@ export async function PATCH(
   }
 
   const organizationId = ticket.queue.service.organizationId;
+  const timezone = ticket.queue.service.organization?.timezone || "Asia/Kolkata";
+  const bounds = getLocalCalendarDayBounds(new Date(), timezone);
+
+  if (bounds && ticket.createdAt && ticket.createdAt < bounds.start) {
+    return Response.json(
+      { error: "Ticket is from a previous operating day and cannot be called" },
+      { status: 409 },
+    );
+  }
 
   const membership = await prisma.organizationMembership.findUnique({
     where: {
@@ -118,6 +140,15 @@ export async function PATCH(
         WHERE "id" = ${staffId}
         FOR UPDATE
       `;
+
+      // Resolve any stale active ticket from previous operating days for this staff member
+      await resolveStaleStaffActiveTickets({
+        tx,
+        staffId,
+        organizationId,
+        timezone,
+        instant: new Date(),
+      });
 
       const activeTicket = await tx.ticket.findFirst({
         where: {

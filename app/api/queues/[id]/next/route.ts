@@ -1,6 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { callNextTicketSchema } from "@/lib/validations/queue";
+import {
+  resolveStaleQueueTickets,
+  resolveStaleStaffActiveTickets,
+  getLocalCalendarDayBounds,
+} from "@/lib/services/ticket.service";
 
 export async function PATCH(
   request: Request,
@@ -41,7 +46,18 @@ export async function PATCH(
   // 3. Verify that the queue exists and identify its organization.
   const queue = await prisma.queue.findUnique({
     where: { id: queueId },
-    include: { service: true },
+    include: {
+      service: {
+        include: {
+          organization: {
+            select: {
+              id: true,
+              timezone: true,
+            },
+          },
+        },
+      },
+    },
   });
 
   if (!queue) {
@@ -57,6 +73,7 @@ export async function PATCH(
   }
 
   const organizationId = queue.service.organizationId;
+  const timezone = queue.service.organization?.timezone || "Asia/Kolkata";
 
   // 4. Verify organization membership and staff role.
   const membership = await prisma.organizationMembership.findUnique({
@@ -123,6 +140,25 @@ export async function PATCH(
   FOR UPDATE
 `;
 
+      const now = new Date();
+
+      // Resolve stale active tickets from previous operating days for this queue
+      await resolveStaleQueueTickets({
+        tx,
+        queueId,
+        timezone,
+        instant: now,
+      });
+
+      // Resolve any stale active ticket from previous operating days for this staff member
+      await resolveStaleStaffActiveTickets({
+        tx,
+        staffId,
+        organizationId,
+        timezone,
+        instant: now,
+      });
+
       const activeTicket = await tx.ticket.findFirst({
         where: {
           servedById: staffId,
@@ -135,12 +171,25 @@ export async function PATCH(
         throw new Error("STAFF_HAS_ACTIVE_TICKET");
       }
 
-      const nextTicket = await tx.$queryRaw<{ id: string }[]>`
+      const bounds = getLocalCalendarDayBounds(now, timezone);
+
+      const nextTicket = bounds
+        ? await tx.$queryRaw<{ id: string }[]>`
         SELECT "id"
         FROM "Ticket"
         WHERE "queueId" = ${queueId}
           AND "status" = 'WAITING'
-        ORDER BY "number" ASC
+          AND "createdAt" >= ${bounds.start}
+        ORDER BY "number" ASC, "createdAt" ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      `
+        : await tx.$queryRaw<{ id: string }[]>`
+        SELECT "id"
+        FROM "Ticket"
+        WHERE "queueId" = ${queueId}
+          AND "status" = 'WAITING'
+        ORDER BY "number" ASC, "createdAt" ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
       `;

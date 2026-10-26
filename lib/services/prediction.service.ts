@@ -1,4 +1,8 @@
-import { getIndiaCalendarDate } from "@/lib/services/ticket.service";
+import {
+  getCalendarDate,
+  getIndiaCalendarDate,
+  INDIA_TIMEZONE,
+} from "@/lib/services/ticket.service";
 
 /**
  * Default fallback service duration in minutes when insufficient historical data exists for a queue.
@@ -53,19 +57,38 @@ export function getIndiaDayStart(date: Date = new Date()): Date {
  * Rules:
  * - Both startedAt and completedAt must be non-null valid Date objects.
  * - completedAt must be >= startedAt.
+ * - Cross-day service durations (where service started on a prior calendar day and finished
+ *   on a subsequent day, such as overnight tickets left open when staff departed) are excluded
+ *   to prevent distorted wait time estimates.
  * - Legacy tickets with null lifecycle timestamps and invalid ranges are safely filtered out.
  */
 export function extractValidDurationsMinutes(
   tickets: CompletedTicketRecord[],
+  timezone?: string,
 ): number[] {
   return tickets
     .filter(
-      (t): t is { startedAt: Date; completedAt: Date } =>
-        t.startedAt instanceof Date &&
-        t.completedAt instanceof Date &&
-        !isNaN(t.startedAt.getTime()) &&
-        !isNaN(t.completedAt.getTime()) &&
-        t.completedAt.getTime() >= t.startedAt.getTime(),
+      (t): t is { startedAt: Date; completedAt: Date } => {
+        if (
+          !(t.startedAt instanceof Date) ||
+          !(t.completedAt instanceof Date) ||
+          isNaN(t.startedAt.getTime()) ||
+          isNaN(t.completedAt.getTime()) ||
+          t.completedAt.getTime() < t.startedAt.getTime()
+        ) {
+          return false;
+        }
+
+        // Exclude cross-day service durations
+        const startDateStr = timezone
+          ? getCalendarDate(t.startedAt, timezone)
+          : getIndiaCalendarDate(t.startedAt);
+        const endDateStr = timezone
+          ? getCalendarDate(t.completedAt, timezone)
+          : getIndiaCalendarDate(t.completedAt);
+
+        return startDateStr === endDateStr;
+      },
     )
     .map(
       (t) => (t.completedAt.getTime() - t.startedAt.getTime()) / (1000 * 60),
@@ -199,6 +222,7 @@ export interface EstimateTicketWaitTimeOptions {
   activeTicket?: ActiveTicketInfo | null;
   now?: Date;
   windowSize?: number;
+  timezone?: string;
 }
 
 /**
@@ -228,6 +252,7 @@ export async function estimateTicketWaitTime(
     activeTicket,
     now = new Date(),
     windowSize = DEFAULT_HISTORY_WINDOW_SIZE,
+    timezone = INDIA_TIMEZONE,
   } = options;
 
   if (!queueIsActive) {
@@ -276,7 +301,7 @@ export async function estimateTicketWaitTime(
     },
   });
 
-  let validDurations = extractValidDurationsMinutes(completedTickets);
+  let validDurations = extractValidDurationsMinutes(completedTickets, timezone);
 
   // 2. If insufficient data for today, query most recent completed tickets from the queue regardless of day
   if (validDurations.length === 0) {
@@ -297,7 +322,7 @@ export async function estimateTicketWaitTime(
       },
     });
 
-    validDurations = extractValidDurationsMinutes(completedTickets);
+    validDurations = extractValidDurationsMinutes(completedTickets, timezone);
   }
 
   // 3. Calculate average duration with fallback

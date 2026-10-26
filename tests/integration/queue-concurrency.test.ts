@@ -486,4 +486,128 @@ describe("QueueFlow Concurrency Integration Tests (Real PostgreSQL)", () => {
     expect(err1C.code).toBe("QUEUE_CAPACITY_REACHED");
     expect(err2C.code).toBe("QUEUE_CAPACITY_REACHED");
   });
+
+  // =========================================================================
+  // Scenario F: Multi-day rollover & capacity unblocking under concurrent requests
+  // =========================================================================
+  it("Scenario F: Multi-day rollover - resolves yesterday's WAITING tickets and admits today's concurrent requests up to capacity", async () => {
+    const { service } = await createTestOrgAndService({ timezone: "UTC" });
+    const queue = await createTestQueue(service.id, {
+      maxWaitingTickets: 3,
+      maxDailyTickets: 10,
+      nextTicketNumber: 4,
+      lastResetDate: "2026-10-20", // Past date
+    });
+
+    // Seed 3 tickets from yesterday (24 hours ago) in WAITING status (fills capacity)
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    for (let i = 1; i <= 3; i++) {
+      const pastUser = await createTestUser(`past_user_${i}`);
+      await prisma.ticket.create({
+        data: {
+          number: i,
+          queueId: queue.id,
+          userId: pastUser.id,
+          status: "WAITING",
+          createdAt: yesterday,
+        },
+      });
+    }
+
+    // 5 concurrent users attempt to join the queue today
+    const users = await Promise.all(
+      Array.from({ length: 5 }, (_, i) => createTestUser(`today_user_${i}`)),
+    );
+    const clients = users.map(() => getIndependentClient());
+
+    const responses = await Promise.all(
+      users.map((u, i) =>
+        executeAsUser(u, clients[i], makeCreateTicketRequest(queue.id)),
+      ),
+    );
+
+    const successResponses = responses.filter((r) => r.status === 201);
+    const rejectedResponses = responses.filter((r) => r.status === 400);
+
+    // Exactly 3 succeeded (up to maxWaitingTickets) and 2 rejected with QUEUE_CAPACITY_REACHED
+    expect(successResponses).toHaveLength(3);
+    expect(rejectedResponses).toHaveLength(2);
+
+    for (const res of rejectedResponses) {
+      const err = await res.json();
+      expect(err.code).toBe("QUEUE_CAPACITY_REACHED");
+    }
+
+    // Yesterday's 3 tickets are now CANCELLED with cancelledAt recorded
+    const staleTickets = await prisma.ticket.findMany({
+      where: {
+        queueId: queue.id,
+        createdAt: { lt: new Date(Date.now() - 12 * 60 * 60 * 1000) },
+      },
+    });
+    expect(staleTickets).toHaveLength(3);
+    for (const t of staleTickets) {
+      expect(t.status).toBe("CANCELLED");
+      expect(t.cancelledAt).not.toBeNull();
+    }
+
+    // Today's waiting tickets are exactly 3
+    const todayWaiting = await prisma.ticket.count({
+      where: {
+        queueId: queue.id,
+        status: "WAITING",
+      },
+    });
+    expect(todayWaiting).toBe(3);
+  });
+
+  // =========================================================================
+  // Scenario G: Returning customer after rollover under concurrent requests
+  // =========================================================================
+  it("Scenario G: Returning customer - can join today after yesterday's active ticket is resolved", async () => {
+    const { service } = await createTestOrgAndService({ timezone: "UTC" });
+    const queue = await createTestQueue(service.id, {
+      maxWaitingTickets: 5,
+      nextTicketNumber: 2,
+      lastResetDate: "2026-10-20",
+    });
+
+    const returningUser = await createTestUser("returning_user");
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    // Seed an active ticket from yesterday for the returning user
+    const yesterdayTicket = await prisma.ticket.create({
+      data: {
+        number: 1,
+        queueId: queue.id,
+        userId: returningUser.id,
+        status: "WAITING",
+        createdAt: yesterday,
+      },
+    });
+
+    // Returning user plus another new user concurrently join today
+    const otherUser = await createTestUser("other_user");
+    const client1 = getIndependentClient();
+    const client2 = getIndependentClient();
+
+    const [resReturning, resOther] = await Promise.all([
+      executeAsUser(returningUser, client1, makeCreateTicketRequest(queue.id)),
+      executeAsUser(otherUser, client2, makeCreateTicketRequest(queue.id)),
+    ]);
+
+    expect(resReturning.status).toBe(201);
+    expect(resOther.status).toBe(201);
+
+    const returningTicketToday = await resReturning.json();
+    expect(returningTicketToday.userId).toBe(returningUser.id);
+    expect(returningTicketToday.status).toBe("WAITING");
+
+    // Yesterday's ticket for this user was resolved to CANCELLED
+    const updatedYesterdayTicket = await prisma.ticket.findUniqueOrThrow({
+      where: { id: yesterdayTicket.id },
+    });
+    expect(updatedYesterdayTicket.status).toBe("CANCELLED");
+    expect(updatedYesterdayTicket.cancelledAt).not.toBeNull();
+  });
 });
