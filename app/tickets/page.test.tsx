@@ -22,7 +22,15 @@ vi.mock("@clerk/nextjs", () => ({
   useAuth: () => mockAuthState,
 }));
 
-// 3. Mock Navbar to isolate the tickets page from global header links and Clerk user components
+// 3. Mock notification audio chime
+const { mockPlayTurnChime } = vi.hoisted(() => ({
+  mockPlayTurnChime: vi.fn().mockResolvedValue(true),
+}));
+vi.mock("@/lib/audio/notification-sound", () => ({
+  playTurnChime: mockPlayTurnChime,
+}));
+
+// 4. Mock Navbar to isolate the tickets page from global header links and Clerk user components
 vi.mock("@/components/Navbar", () => ({
   Navbar: () => <nav data-testid="navbar" />,
 }));
@@ -108,6 +116,30 @@ const mockCompletedTicketWithoutToken = {
   },
 };
 
+const mockCalledTicket = {
+  id: "ticket-called-1",
+  number: 55,
+  status: "CALLED",
+  trackingToken: "token-call-55",
+  createdAt: "2026-10-18T18:45:00.000Z",
+  updatedAt: "2026-10-18T19:00:00.000Z",
+  counter: {
+    name: "Counter 2",
+  },
+  queue: {
+    id: "queue-1",
+    name: "Walk-in Queue",
+    service: {
+      id: "service-1",
+      name: "General Medicine",
+      organization: {
+        id: "org-1",
+        name: "City Health Clinic",
+      },
+    },
+  },
+};
+
 describe("app/tickets/page (My Tickets Customer Frontend)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let activeFetchHandler: (url: string, init?: RequestInit) => Promise<Response> | Response;
@@ -115,6 +147,7 @@ describe("app/tickets/page (My Tickets Customer Frontend)", () => {
   let mockConfirm: ReturnType<typeof vi.fn<() => boolean>>;
 
   beforeEach(() => {
+    mockPlayTurnChime.mockClear();
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
       writable: true,
@@ -416,10 +449,10 @@ describe("app/tickets/page (My Tickets Customer Frontend)", () => {
       fireEvent.click(cancelBtn);
 
       // Verify the 409 conflict message appears in an alert
-      const actionAlert = await screen.findByRole("alert");
-      expect(actionAlert.textContent).toContain(
+      const actionAlert = await screen.findByText(
         "This ticket can no longer be cancelled because its status has changed."
       );
+      expect(actionAlert.getAttribute("role")).toBe("alert");
 
       // Verify background re-fetch happened and status updated to CALLED
       await waitFor(() => {
@@ -919,6 +952,281 @@ describe("app/tickets/page (My Tickets Customer Frontend)", () => {
       expect(screen.queryByText("#42")).toBeNull();
     });
   });
+
+  describe("Turn Notifications on Authenticated Dashboard", () => {
+    it("displays banner and plays chime once when a ticket transitions from WAITING to CALLED during polling", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) return jsonResponse([mockWaitingTicket]);
+        return jsonResponse([
+          {
+            ...mockWaitingTicket,
+            status: "CALLED",
+            counter: { name: "Room 101" },
+          },
+        ]);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(screen.getByText("#42")).toBeDefined();
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
+      expect(screen.queryByText(/Your turn/i)).toBeNull();
+
+      // Advance timer for background poll (10s)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(
+        screen.getByText("Your turn! Please proceed to Room 101."),
+      ).toBeDefined();
+      expect(screen.getByText("Room 101")).toBeDefined();
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not replay chime on repeated background polling when ticket remains CALLED", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) return jsonResponse([mockWaitingTicket]);
+        return jsonResponse([
+          {
+            ...mockWaitingTicket,
+            status: "CALLED",
+            counter: { name: "Room 101" },
+          },
+        ]);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+      expect(screen.getByText("#42")).toBeDefined();
+
+      // Poll 1 (10s): transitions to CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+
+      // Poll 2 (20s): still CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      // Poll 3 (30s): still CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+    });
+
+    it("initial load with ticket already CALLED displays the banner without autoplaying chime", async () => {
+      activeFetchHandler = async () => jsonResponse([mockCalledTicket]);
+
+      render(<MyTicketsPage />);
+
+      expect(
+        await screen.findByText("Your turn! Please proceed to Counter 2."),
+      ).toBeDefined();
+      expect(screen.getByText("Counter 2")).toBeDefined();
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
+    });
+
+    it("dismissing banner removes it from UI and keeps it dismissed across subsequent polls", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) return jsonResponse([mockWaitingTicket]);
+        return jsonResponse([
+          {
+            ...mockWaitingTicket,
+            status: "CALLED",
+            counter: { name: "Counter 1" },
+          },
+        ]);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+      expect(screen.getByText("#42")).toBeDefined();
+
+      // Advance to 10s: transitions to CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(
+        screen.getByText("Your turn! Please proceed to Counter 1."),
+      ).toBeDefined();
+
+      // Dismiss banner
+      const dismissBtn = screen.getByRole("button", { name: /^dismiss$/i });
+      await act(async () => {
+        fireEvent.click(dismissBtn);
+      });
+      expect(screen.queryByText(/Your turn/i)).toBeNull();
+
+      // Advance to 20s and 30s: ticket is still CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(screen.queryByText(/Your turn/i)).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(screen.queryByText(/Your turn/i)).toBeNull();
+    });
+
+    it("transitioning away from CALLED and then called again triggers a new notification and plays chime", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1) return jsonResponse([mockWaitingTicket]);
+        if (pollCount === 2)
+          return jsonResponse([{ ...mockWaitingTicket, status: "CALLED" }]);
+        if (pollCount === 3)
+          return jsonResponse([{ ...mockWaitingTicket, status: "SERVING" }]);
+        return jsonResponse([{ ...mockWaitingTicket, status: "CALLED" }]);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+      expect(screen.getByText("#42")).toBeDefined();
+
+      // Poll 1 (10s) -> CALLED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/Your turn/i)).toBeDefined();
+
+      // Dismiss banner
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^dismiss$/i }));
+      });
+      expect(screen.queryByText(/Your turn/i)).toBeNull();
+
+      // Poll 2 (20s) -> SERVING
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(screen.queryByText(/Your turn/i)).toBeNull();
+
+      // Poll 3 (30s) -> CALLED again
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(screen.getByText(/Your turn/i)).toBeDefined();
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(2);
+    });
+
+    it("handles multiple tickets independently with distinct counter information and individual dismissals", async () => {
+      const ticket1 = {
+        ...mockWaitingTicket,
+        id: "t-1",
+        number: 10,
+        status: "CALLED",
+        counter: { name: "Counter Alpha" },
+      };
+      const ticket2 = {
+        ...mockWaitingTicket,
+        id: "t-2",
+        number: 20,
+        status: "CALLED",
+        counter: { name: "Counter Beta" },
+      };
+
+      activeFetchHandler = async () => jsonResponse([ticket1, ticket2]);
+
+      render(<MyTicketsPage />);
+
+      expect(await screen.findByText("Ticket #10")).toBeDefined();
+      expect(
+        screen.getByText("Your turn! Please proceed to Counter Alpha."),
+      ).toBeDefined();
+
+      expect(screen.getByText("Ticket #20")).toBeDefined();
+      expect(
+        screen.getByText("Your turn! Please proceed to Counter Beta."),
+      ).toBeDefined();
+
+      // Dismiss only the first banner
+      const dismissButtons = screen.getAllByRole("button", { name: /^dismiss$/i });
+      await act(async () => {
+        fireEvent.click(dismissButtons[0]);
+      });
+
+      // Ticket 10 banner is dismissed, Ticket 20 banner remains visible
+      expect(
+        screen.queryByText("Your turn! Please proceed to Counter Alpha."),
+      ).toBeNull();
+      expect(
+        screen.getByText("Your turn! Please proceed to Counter Beta."),
+      ).toBeDefined();
+    });
+
+    it("displays fallback message when counter is null or undefined", async () => {
+      const ticketWithoutCounter = {
+        ...mockWaitingTicket,
+        status: "CALLED",
+        counter: null,
+      };
+
+      activeFetchHandler = async () => jsonResponse([ticketWithoutCounter]);
+
+      render(<MyTicketsPage />);
+
+      expect(
+        await screen.findByText("Your turn! Please proceed to the service counter."),
+      ).toBeDefined();
+      expect(
+        screen.getByText("Please proceed to the service counter."),
+      ).toBeDefined();
+    });
+
+    it("cleans up banners and halts polling when ticket transitions to terminal state (COMPLETED)", async () => {
+      vi.useFakeTimers();
+
+      let pollCount = 0;
+      activeFetchHandler = async () => {
+        pollCount++;
+        if (pollCount === 1)
+          return jsonResponse([{ ...mockWaitingTicket, status: "CALLED" }]);
+        return jsonResponse([mockCompletedTicketWithoutToken]);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+      expect(screen.getByText(/Your turn/i)).toBeDefined();
+
+      // Advance to poll (10s) returning COMPLETED
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // Banner is removed
+      expect(screen.queryByText(/Your turn/i)).toBeNull();
+      // Polling halts because no active tickets remain
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
 });
+
 
 

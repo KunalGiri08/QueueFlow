@@ -6,6 +6,8 @@ import { useAuth } from "@clerk/nextjs";
 import { Navbar } from "@/components/Navbar";
 import { CustomerTicketCard } from "@/components/tickets/CustomerTicketCard";
 import { CustomerTicketsEmptyState } from "@/components/tickets/CustomerTicketsEmptyState";
+import { TurnNotificationBanner } from "@/components/tickets/track/TurnNotificationBanner";
+import { useTicketTurnNotifications } from "@/hooks/useTicketTurnNotifications";
 import { isTicketActive, type TicketStatus } from "@/lib/formatters/ticket";
 
 export type { TicketStatus };
@@ -17,6 +19,9 @@ export interface CustomerTicket {
   status: TicketStatus | string;
   createdAt: string;
   updatedAt: string;
+  counter?: {
+    name: string;
+  } | null;
   queue: {
     id: string;
     name: string;
@@ -45,6 +50,11 @@ export function parseCustomerTickets(json: unknown): CustomerTicket[] {
       typeof item.number === "number" &&
       typeof item.status === "string" &&
       typeof item.createdAt === "string" &&
+      (item.counter === undefined ||
+        item.counter === null ||
+        (typeof item.counter === "object" &&
+          item.counter !== null &&
+          typeof (item.counter as { name?: unknown }).name === "string")) &&
       typeof item.queue === "object" &&
       item.queue !== null &&
       typeof item.queue.name === "string" &&
@@ -90,6 +100,9 @@ export default function MyTicketsPage() {
   const [tickets, setTickets] = useState<CustomerTicket[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const { activeTurnNotifications, dismissNotification } =
+    useTicketTurnNotifications(tickets);
   const [cancellingTicketId, setCancellingTicketId] = useState<string | null>(
     null,
   );
@@ -448,6 +461,16 @@ export default function MyTicketsPage() {
               View your active queue positions and past ticket history.
             </p>
           </div>
+
+          {/* Prominent in-app turn alert banners */}
+          {activeTurnNotifications.map((notification) => (
+            <TurnNotificationBanner
+              key={notification.ticketId}
+              ticketNumber={notification.ticketNumber}
+              counter={notification.counter}
+              onDismiss={() => dismissNotification(notification.ticketId)}
+            />
+          ))}
 
           {!isLoaded || (!isSignedIn && isLoaded) || isLoading ? (
             <TicketsLoadingSkeleton />

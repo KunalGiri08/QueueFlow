@@ -35,6 +35,11 @@ export async function GET() {
       status: true,
       createdAt: true,
       updatedAt: true,
+      counter: {
+        select: {
+          name: true,
+        },
+      },
       queue: {
         select: {
           id: true,
