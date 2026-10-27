@@ -16,8 +16,9 @@ vi.mock("next/navigation", () => ({
 
 // 2. Mock Clerk authentication
 let mockIsSignedIn = true;
+let mockIsLoaded = true;
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ isSignedIn: mockIsSignedIn }),
+  useAuth: () => ({ isLoaded: mockIsLoaded, isSignedIn: mockIsSignedIn }),
 }));
 
 // 3. Mock Navbar to isolate page testing
@@ -94,6 +95,7 @@ describe("app/organizations/[organizationId]/page", () => {
     vi.clearAllMocks();
     mockPush.mockReset();
     mockIsSignedIn = true;
+    mockIsLoaded = true;
     mockParams = { organizationId: "org-123" };
 
     fetchMock = vi.fn();
@@ -431,6 +433,27 @@ describe("app/organizations/[organizationId]/page", () => {
   });
 
   describe("C. Queue joining concurrency, authentication, and responses", () => {
+    it("does not redirect to sign-in and keeps join button disabled while Clerk auth is loading (isLoaded: false)", async () => {
+      mockIsLoaded = false;
+      mockIsSignedIn = false;
+      fetchMock.mockResolvedValueOnce(jsonResponse(mockCatalogData));
+
+      await renderPage();
+
+      const joinBtn = screen.getByRole("button", { name: "Join Standard Line" });
+      expect(joinBtn.hasAttribute("disabled")).toBe(true);
+      expect(joinBtn.getAttribute("aria-disabled")).toBe("true");
+
+      fireEvent.click(joinBtn);
+
+      // Must NOT redirect to sign-in while auth is resolving
+      expect(mockPush).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        "/api/tickets",
+        expect.anything(),
+      );
+    });
+
     it("redirects unauthenticated user to sign-in without calling POST /api/tickets", async () => {
       mockIsSignedIn = false;
       fetchMock.mockResolvedValueOnce(jsonResponse(mockCatalogData));
@@ -845,6 +868,25 @@ describe("app/organizations/[organizationId]/page", () => {
           name: "Book appointment for Pharmacy",
         }),
       ).toBeDefined();
+    });
+
+    it("does not redirect to sign-in and keeps book button disabled while Clerk auth is loading (isLoaded: false)", async () => {
+      mockIsLoaded = false;
+      mockIsSignedIn = false;
+      fetchMock.mockResolvedValueOnce(jsonResponse(mockCatalogData));
+      await renderPage();
+
+      const bookBtn = screen.getByRole("button", {
+        name: "Book appointment for General Consultation",
+      });
+      expect(bookBtn.hasAttribute("disabled")).toBe(true);
+      expect(bookBtn.getAttribute("aria-disabled")).toBe("true");
+
+      fireEvent.click(bookBtn);
+
+      // Must NOT redirect to sign-in while auth is resolving
+      expect(mockPush).not.toHaveBeenCalled();
+      expect(screen.queryByRole("dialog")).toBeNull();
     });
 
     it("redirects to sign-in when unauthenticated user clicks Book Appointment", async () => {

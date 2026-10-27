@@ -134,7 +134,7 @@ function OrganizationServicesContent({
   paramsPromise: Promise<{ organizationId: string }>;
 }) {
   const router = useRouter();
-  const { isSignedIn } = useAuth();
+  const { isLoaded = true, isSignedIn } = useAuth();
   const resolvedParams = use(paramsPromise);
   const navParams = useParams<{ organizationId: string }>();
   const organizationId =
@@ -335,6 +335,8 @@ function OrganizationServicesContent({
   const handleJoinQueue = async (queueId: string) => {
     if (!organizationId) return;
 
+    if (!isLoaded) return;
+
     if (!isSignedIn) {
       router.push(
         `/sign-in?redirect_url=${encodeURIComponent(`/organizations/${organizationId}`)}`,
@@ -484,6 +486,8 @@ function OrganizationServicesContent({
   const handleOpenBookAppointment = (service: PublicService) => {
     if (!organizationId) return;
 
+    if (!isLoaded) return;
+
     if (!isSignedIn) {
       router.push(
         `/sign-in?redirect_url=${encodeURIComponent(`/organizations/${organizationId}`)}`,
@@ -505,6 +509,8 @@ function OrganizationServicesContent({
 
   const handleConfirmBookAppointment = async (scheduledAtIso: string) => {
     if (!organizationId || !bookingService) return;
+
+    if (!isLoaded) return;
 
     if (!isSignedIn) {
       router.push(
@@ -835,8 +841,10 @@ function OrganizationServicesContent({
                     <button
                       type="button"
                       onClick={() => handleOpenBookAppointment(service)}
+                      disabled={!isLoaded}
+                      aria-disabled={!isLoaded}
                       aria-label={`Book appointment for ${service.name}`}
-                      className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
+                      className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <svg
                         className="mr-1.5 h-3.5 w-3.5 text-gray-500"
@@ -869,7 +877,9 @@ function OrganizationServicesContent({
                           queue={queue}
                           availability={queueAvailability[queue.id]}
                           isSubmitting={joiningQueueId === queue.id}
-                          isAnyQueueSubmitting={joiningQueueId !== null}
+                          isAnyQueueSubmitting={
+                            joiningQueueId !== null || !isLoaded
+                          }
                           queueError={
                             queueError?.queueId === queue.id ? queueError : null
                           }
@@ -895,7 +905,7 @@ function OrganizationServicesContent({
           isOpen={Boolean(bookingService)}
           service={bookingService}
           organization={data.organization}
-          isSubmitting={isBooking}
+          isSubmitting={isBooking || !isLoaded}
           error={bookingError}
           successData={bookingSuccessData}
           onConfirm={handleConfirmBookAppointment}

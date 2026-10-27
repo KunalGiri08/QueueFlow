@@ -17,7 +17,7 @@ export default function Home() {
           </p>
 
           <Link
-            href="/sign-up"
+            href="/organizations"
             className="mt-8 inline-flex items-center justify-center rounded-lg bg-black px-6 py-3 text-white shadow-sm transition-all hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
           >
             Join Queue
