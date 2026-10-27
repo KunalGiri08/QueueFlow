@@ -1,0 +1,59 @@
+# Git metadata
+.git
+.gitignore
+.gitattributes
+
+# Editor and AI tooling
+.agents
+.claude
+.windsurf
+.vscode
+.idea
+skills-lock.json
+
+# Dependencies
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Environment files and secrets (never leak credentials into Docker build context)
+.env*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# Build output and compiler caches
+.next
+out
+build
+dist
+*.tsbuildinfo
+next-env.d.ts
+
+# Host-generated Prisma client (guarantees clean in-container generation)
+app/generated/prisma
+
+# Test artifacts, test database configuration, and test suites
+coverage
+tests
+__tests__
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+vitest.config.ts
+vitest.integration.config.ts
+docker-compose.test.yml
+
+# Docker Compose files (not needed inside the application container)
+docker-compose*.yml
+
+# Logs and temporary files
+*.log
+tmp
+temp
+.DS_Store
+Thumbs.db

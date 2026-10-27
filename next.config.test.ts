@@ -8,7 +8,8 @@ import nextConfig from "./next.config";
 
 describe("next.config.ts HTTP Security Headers", () => {
   it("verifies poweredByHeader is disabled and security headers are configured on /:path*", async () => {
-    // 1. poweredByHeader is false
+    // 1. output is standalone and poweredByHeader is false
+    expect(nextConfig.output).toBe("standalone");
     expect(nextConfig.poweredByHeader).toBe(false);
 
     // 2. headers() returns a rule matching /:path*
