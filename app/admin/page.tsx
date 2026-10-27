@@ -12,6 +12,8 @@ import { ServiceManagement } from "@/components/admin/ServiceManagement";
 import { QueueManagement } from "@/components/admin/QueueManagement";
 import { OperatingHoursManagement } from "@/components/admin/OperatingHoursManagement";
 import { StaffManagement } from "@/components/admin/StaffManagement";
+import { AdminSidebar, type AdminSectionId } from "@/components/admin/AdminSidebar";
+import { AdminSettings } from "@/components/admin/AdminSettings";
 
 type AdminAuthResult = "authorized" | "forbidden" | "error";
 
@@ -87,6 +89,7 @@ export default function OrganizationAdminPage() {
   const [adminAuthResult, setAdminAuthResult] = useState<AdminAuthResult | null>(null);
   const [adminError, setAdminError] = useState<string | null>(null);
   const [verifyRetryTrigger, setVerifyRetryTrigger] = useState(0);
+  const [activeSection, setActiveSection] = useState<AdminSectionId>("overview");
 
   // Stale request prevention refs
   const activeOrgControllerRef = useRef<AbortController | null>(null);
@@ -460,44 +463,159 @@ export default function OrganizationAdminPage() {
               )}
 
               {!isVerifying && adminAuthResult === "authorized" && selectedOrg && (
-                /* 200 OK: Admin Dashboard Content */
-                <div className="space-y-8">
-                  {/* Organization Info Banner */}
-                  <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <h2 className="text-xl font-bold text-gray-900">
-                          {selectedOrg.name}
-                        </h2>
-                        <div className="mt-1 flex items-center gap-2">
-                          <span className="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
-                            @{selectedOrg.slug}
-                          </span>
-                          <span className="text-xs text-gray-400 font-mono">
-                            ID: {selectedOrg.id}
-                          </span>
+                /* 200 OK: Admin Dashboard Content with Sidebar Navigation */
+                <div className="flex flex-col lg:flex-row gap-6 items-start">
+                  {/* Left Sidebar on Desktop & Collapsible on Mobile */}
+                  <AdminSidebar
+                    activeSection={activeSection}
+                    onSelectSection={setActiveSection}
+                  />
+
+                  {/* Main Administrative Section Panels */}
+                  <div className="flex-1 min-w-0 w-full">
+                    {/* 1. Overview */}
+                    <div
+                      id="admin-panel-overview"
+                      role="tabpanel"
+                      aria-labelledby="admin-tab-overview"
+                      hidden={activeSection !== "overview"}
+                      className={
+                        activeSection === "overview" ? "space-y-6" : "hidden"
+                      }
+                    >
+                      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <h2 className="text-xl font-bold text-gray-900">
+                              {selectedOrg.name}
+                            </h2>
+                            <div className="mt-1 flex items-center gap-2">
+                              <span className="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+                                @{selectedOrg.slug}
+                              </span>
+                              <span className="text-xs text-gray-400 font-mono">
+                                ID: {selectedOrg.id}
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setActiveSection("settings")}
+                            className="self-start sm:self-auto inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900"
+                          >
+                            Organization Settings
+                          </button>
                         </div>
                       </div>
+
+                      <OrganizationAnalytics organizationId={selectedOrg.id} />
+                    </div>
+
+                    {/* 2. Services & Queues */}
+                    <div
+                      id="admin-panel-services-queues"
+                      role="tabpanel"
+                      aria-labelledby="admin-tab-services-queues"
+                      hidden={activeSection !== "services-queues"}
+                      className={
+                        activeSection === "services-queues"
+                          ? "space-y-6"
+                          : "hidden"
+                      }
+                    >
+                      <div className="border-b border-gray-200 pb-4">
+                        <h2 className="text-xl font-bold text-gray-900">
+                          Services & Queues
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-600">
+                          Configure service categories, virtual queues, waiting limits, and admission cutoffs.
+                        </p>
+                      </div>
+                      <ServiceManagement organizationId={selectedOrg.id} />
+                      <QueueManagement organizationId={selectedOrg.id} />
+                    </div>
+
+                    {/* 3. Counters */}
+                    <div
+                      id="admin-panel-counters"
+                      role="tabpanel"
+                      aria-labelledby="admin-tab-counters"
+                      hidden={activeSection !== "counters"}
+                      className={
+                        activeSection === "counters" ? "space-y-6" : "hidden"
+                      }
+                    >
+                      <div className="border-b border-gray-200 pb-4">
+                        <h2 className="text-xl font-bold text-gray-900">
+                          Service Counters
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-600">
+                          Manage physical service counters, active windows, and counter display names.
+                        </p>
+                      </div>
+                      <CounterManagement organizationId={selectedOrg.id} />
+                    </div>
+
+                    {/* 4. Operating Hours */}
+                    <div
+                      id="admin-panel-operating-hours"
+                      role="tabpanel"
+                      aria-labelledby="admin-tab-operating-hours"
+                      hidden={activeSection !== "operating-hours"}
+                      className={
+                        activeSection === "operating-hours"
+                          ? "space-y-6"
+                          : "hidden"
+                      }
+                    >
+                      <div className="border-b border-gray-200 pb-4">
+                        <h2 className="text-xl font-bold text-gray-900">
+                          Operating Hours & Closures
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-600">
+                          Set weekly operating schedules, break times, and exceptional holiday closures.
+                        </p>
+                      </div>
+                      <OperatingHoursManagement organizationId={selectedOrg.id} />
+                    </div>
+
+                    {/* 5. Staff & Access */}
+                    <div
+                      id="admin-panel-staff"
+                      role="tabpanel"
+                      aria-labelledby="admin-tab-staff"
+                      hidden={activeSection !== "staff"}
+                      className={
+                        activeSection === "staff" ? "space-y-6" : "hidden"
+                      }
+                    >
+                      <div className="border-b border-gray-200 pb-4">
+                        <h2 className="text-xl font-bold text-gray-900">
+                          Staff Management & Counter Assignments
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-600">
+                          Manage staff operator accounts, counter assignments, and administrative roles.
+                        </p>
+                      </div>
+                      <StaffManagement organizationId={selectedOrg.id} />
+                    </div>
+
+                    {/* 6. Settings */}
+                    <div
+                      id="admin-panel-settings"
+                      role="tabpanel"
+                      aria-labelledby="admin-tab-settings"
+                      hidden={activeSection !== "settings"}
+                      className={
+                        activeSection === "settings" ? "space-y-6" : "hidden"
+                      }
+                    >
+                      <AdminSettings
+                        organization={selectedOrg}
+                        onNavigateSection={setActiveSection}
+                      />
                     </div>
                   </div>
-
-                  {/* Section: Organization Analytics */}
-                  <OrganizationAnalytics organizationId={selectedOrg.id} />
-
-                  {/* Section: Counter Management (Step 2) */}
-                  <CounterManagement organizationId={selectedOrg.id} />
-
-                  {/* Section: Service Management (Step 3A) */}
-                  <ServiceManagement organizationId={selectedOrg.id} />
-
-                  {/* Section: Queue Management (Step 3B) */}
-                  <QueueManagement organizationId={selectedOrg.id} />
-
-                  {/* Section: Operating Hours & Exceptional Closures */}
-                  <OperatingHoursManagement organizationId={selectedOrg.id} />
-
-                  {/* Section: Staff & Counter Assignments (Step 4) */}
-                  <StaffManagement organizationId={selectedOrg.id} />
                 </div>
               )}
             </div>

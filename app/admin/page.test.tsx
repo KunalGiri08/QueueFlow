@@ -547,4 +547,180 @@ describe("OrganizationAdminPage", () => {
       }
     });
   });
+
+  describe("SaaS Dashboard Sidebar Navigation & Section Switching", () => {
+    beforeEach(() => {
+      global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url === "/api/organizations") {
+          return Promise.resolve(jsonResponse(mockOrgs));
+        }
+        if (url === "/api/staff?organizationId=org-1") {
+          return Promise.resolve(jsonResponse(mockStaffList));
+        }
+        return Promise.reject(new Error(`Unhandled fetch: ${url}`));
+      });
+    });
+
+    it("renders sidebar with all 6 sections and displays Overview by default", async () => {
+      render(<OrganizationAdminPage />);
+
+      expect(await screen.findByText("Admin Access Verified")).toBeDefined();
+
+      // Check all 6 section tabs in the desktop sidebar
+      const expectedSections = [
+        /overview/i,
+        /services & queues/i,
+        /counters/i,
+        /operating hours/i,
+        /staff & access/i,
+        /settings/i,
+      ];
+
+      for (const sectionRegex of expectedSections) {
+        expect(screen.getByRole("tab", { name: sectionRegex })).toBeDefined();
+      }
+
+      // Overview tab should be active by default
+      const overviewTab = screen.getByRole("tab", { name: /overview/i });
+      expect(overviewTab.getAttribute("aria-selected")).toBe("true");
+
+      const overviewPanel = document.getElementById("admin-panel-overview");
+      expect(overviewPanel).not.toBeNull();
+      expect(overviewPanel?.hasAttribute("hidden")).toBe(false);
+
+      // Other panels should be hidden
+      const countersPanel = document.getElementById("admin-panel-counters");
+      expect(countersPanel?.hasAttribute("hidden")).toBe(true);
+
+      const servicesPanel = document.getElementById("admin-panel-services-queues");
+      expect(servicesPanel?.hasAttribute("hidden")).toBe(true);
+    });
+
+    it("switches active section and updates tabpanel visibility when clicking sidebar tabs", async () => {
+      render(<OrganizationAdminPage />);
+
+      expect(await screen.findByText("Admin Access Verified")).toBeDefined();
+
+      // Navigate to Counters section
+      const countersTab = screen.getByRole("tab", { name: /counters/i });
+      fireEvent.click(countersTab);
+
+      expect(countersTab.getAttribute("aria-selected")).toBe("true");
+      expect(screen.getByRole("tab", { name: /overview/i }).getAttribute("aria-selected")).toBe("false");
+
+      const countersPanel = document.getElementById("admin-panel-counters");
+      expect(countersPanel?.hasAttribute("hidden")).toBe(false);
+
+      const overviewPanel = document.getElementById("admin-panel-overview");
+      expect(overviewPanel?.hasAttribute("hidden")).toBe(true);
+
+      // Navigate to Services & Queues section
+      const servicesTab = screen.getByRole("tab", { name: /services & queues/i });
+      fireEvent.click(servicesTab);
+
+      expect(servicesTab.getAttribute("aria-selected")).toBe("true");
+      const servicesPanel = document.getElementById("admin-panel-services-queues");
+      expect(servicesPanel?.hasAttribute("hidden")).toBe(false);
+      expect(countersPanel?.hasAttribute("hidden")).toBe(true);
+
+      // Navigate to Staff & Access section
+      const staffTab = screen.getByRole("tab", { name: /staff & access/i });
+      fireEvent.click(staffTab);
+
+      expect(staffTab.getAttribute("aria-selected")).toBe("true");
+      const staffPanel = document.getElementById("admin-panel-staff");
+      expect(staffPanel?.hasAttribute("hidden")).toBe(false);
+      expect(servicesPanel?.hasAttribute("hidden")).toBe(true);
+    });
+
+    it("preserves child component mounts without re-fetching verification probe when switching sections", async () => {
+      let staffVerifyProbeCount = 0;
+      global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url === "/api/organizations") {
+          return Promise.resolve(jsonResponse(mockOrgs));
+        }
+        if (url === "/api/staff?organizationId=org-1") {
+          staffVerifyProbeCount++;
+          return Promise.resolve(jsonResponse(mockStaffList));
+        }
+        return Promise.reject(new Error(`Unhandled fetch: ${url}`));
+      });
+
+      render(<OrganizationAdminPage />);
+
+      expect(await screen.findByText("Admin Access Verified")).toBeDefined();
+      expect(staffVerifyProbeCount).toBe(1);
+
+      // Switch to Counters
+      fireEvent.click(screen.getByRole("tab", { name: /counters/i }));
+      // Switch to Operating Hours
+      fireEvent.click(screen.getByRole("tab", { name: /operating hours/i }));
+      // Switch back to Overview
+      fireEvent.click(screen.getByRole("tab", { name: /overview/i }));
+
+      // Probe count must NOT increase during section switching
+      expect(staffVerifyProbeCount).toBe(1);
+
+      // All management components remain present in the DOM
+      expect(screen.getByTestId("counter-management")).toBeDefined();
+      expect(screen.getByTestId("service-management")).toBeDefined();
+      expect(screen.getByTestId("queue-management")).toBeDefined();
+      expect(screen.getByTestId("operating-hours-management")).toBeDefined();
+      expect(screen.getByTestId("staff-management")).toBeDefined();
+    });
+
+    it("supports collapsible mobile navigation menu to switch sections", async () => {
+      render(<OrganizationAdminPage />);
+
+      expect(await screen.findByText("Admin Access Verified")).toBeDefined();
+
+      const toggleBtn = screen.getByRole("button", {
+        name: /toggle navigation menu/i,
+      });
+      expect(toggleBtn.getAttribute("aria-expanded")).toBe("false");
+
+      // Expand mobile menu
+      fireEvent.click(toggleBtn);
+      expect(toggleBtn.getAttribute("aria-expanded")).toBe("true");
+
+      const mobileNav = document.getElementById("admin-mobile-nav");
+      expect(mobileNav).not.toBeNull();
+
+      // Click "Counters" inside mobile dropdown
+      const mobileCountersBtn = Array.from(mobileNav!.querySelectorAll("button")).find((btn) =>
+        btn.textContent?.includes("Counters"),
+      );
+      expect(mobileCountersBtn).toBeDefined();
+      fireEvent.click(mobileCountersBtn!);
+
+      // Should have switched to Counters section and collapsed menu
+      expect(toggleBtn.getAttribute("aria-expanded")).toBe("false");
+      const countersPanel = document.getElementById("admin-panel-counters");
+      expect(countersPanel?.hasAttribute("hidden")).toBe(false);
+    });
+
+    it("allows navigating to Settings from the Overview card shortcut button", async () => {
+      render(<OrganizationAdminPage />);
+
+      expect(await screen.findByText("Admin Access Verified")).toBeDefined();
+
+      const settingsBtn = screen.getByRole("button", { name: /organization settings/i });
+      fireEvent.click(settingsBtn);
+
+      const settingsPanel = document.getElementById("admin-panel-settings");
+      expect(settingsPanel?.hasAttribute("hidden")).toBe(false);
+      expect(screen.getByRole("tab", { name: /settings/i }).getAttribute("aria-selected")).toBe("true");
+
+      // Verify settings content renders organization details and links
+      expect(screen.getByText("Organization Identity")).toBeDefined();
+      expect(screen.getByRole("link", { name: /view customer catalog/i }).getAttribute("href")).toBe(
+        "/organizations/org-1",
+      );
+      expect(screen.getByRole("link", { name: /open staff console/i }).getAttribute("href")).toBe(
+        "/staff",
+      );
+    });
+  });
 });
