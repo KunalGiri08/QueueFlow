@@ -86,6 +86,19 @@ function TicketTrackingContent({
   const rawToken = resolvedParams?.trackingToken || navParams?.trackingToken;
   const trackingToken = typeof rawToken === "string" ? rawToken.trim() : "";
 
+  return (
+    <TicketTrackingView
+      key={trackingToken}
+      trackingToken={trackingToken}
+    />
+  );
+}
+
+function TicketTrackingView({
+  trackingToken,
+}: {
+  trackingToken: string;
+}) {
   const [data, setData] = useState<PublicTicketTrackingData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -107,19 +120,6 @@ function TicketTrackingContent({
   const activeAbortRef = useRef<AbortController | null>(null);
   const requestGenRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Clear transition/notification refs if trackingToken changes
-  const [prevToken, setPrevToken] = useState(trackingToken);
-  if (trackingToken !== prevToken) {
-    setPrevToken(trackingToken);
-    prevStatusRef.current = null;
-    hasAlertedChimeRef.current = false;
-    setIsTurnAlertDismissed(false);
-    setIsCancelDialogOpen(false);
-    setCancelError(null);
-    setCancellationNotice(null);
-    isCancellingRef.current = false;
-  }
 
   const processTicketData = useCallback(
     (newData: PublicTicketTrackingData) => {
@@ -246,7 +246,7 @@ function TicketTrackingContent({
         }
       }
     },
-    [trackingToken, clearPollTimer],
+    [trackingToken, clearPollTimer, processTicketData],
   );
 
   useEffect(() => {
@@ -441,7 +441,15 @@ function TicketTrackingContent({
         );
       }
     };
-  }, [trackingToken, isDataActive, isNotFound, error, clearPollTimer, pollKey]);
+  }, [
+    trackingToken,
+    isDataActive,
+    isNotFound,
+    error,
+    clearPollTimer,
+    pollKey,
+    processTicketData,
+  ]);
 
   if (isLoading) {
     return <TicketTrackingSkeleton />;

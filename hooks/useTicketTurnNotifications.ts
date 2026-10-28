@@ -61,12 +61,34 @@ export function useTicketTurnNotifications(
   // Flag indicating whether we have processed the initial batch of tickets
   const isInitialBatchProcessedRef = useRef<boolean>(false);
 
+  // Derive the IDs of currently CALLED tickets
+  const activeCalledIds = useMemo(() => {
+    return new Set(
+      tickets.filter((t) => t.status === "CALLED").map((t) => t.id),
+    );
+  }, [tickets]);
+
+  // Adjust state during render: prune dismissed IDs for tickets that are no longer in CALLED status
+  let hasStaleDismissed = false;
+  for (const id of dismissedTicketIds) {
+    if (!activeCalledIds.has(id)) {
+      hasStaleDismissed = true;
+      break;
+    }
+  }
+
+  if (hasStaleDismissed) {
+    const nextDismissed = new Set(
+      Array.from(dismissedTicketIds).filter((id) => activeCalledIds.has(id)),
+    );
+    setDismissedTicketIds(nextDismissed);
+  }
+
   useEffect(() => {
     // If no tickets yet (e.g. initial empty load or empty dashboard), reset tracking if empty
     if (tickets.length === 0) {
       if (Object.keys(historyRef.current).length > 0) {
         historyRef.current = {};
-        setDismissedTicketIds(new Set());
       }
       return;
     }
@@ -74,8 +96,6 @@ export function useTicketTurnNotifications(
     const currentHistory = historyRef.current;
     const currentTicketIds = new Set(tickets.map((t) => t.id));
     let shouldPlayChime = false;
-    let dismissedChanged = false;
-    const nextDismissed = new Set(dismissedTicketIds);
 
     const isInitialBatch = !isInitialBatchProcessedRef.current;
     isInitialBatchProcessedRef.current = true;
@@ -85,18 +105,10 @@ export function useTicketTurnNotifications(
 
       if (!prev) {
         // First time seeing this ticket
-        if (ticket.status === "CALLED") {
-          // Already called on initial load: do not auto-play chime, but show banner
-          currentHistory[ticket.id] = {
-            prevStatus: ticket.status,
-            chimePlayed: true,
-          };
-        } else {
-          currentHistory[ticket.id] = {
-            prevStatus: ticket.status,
-            chimePlayed: false,
-          };
-        }
+        currentHistory[ticket.id] = {
+          prevStatus: ticket.status,
+          chimePlayed: ticket.status === "CALLED",
+        };
       } else {
         // Ticket was previously seen
         if (ticket.status === "CALLED") {
@@ -104,20 +116,11 @@ export function useTicketTurnNotifications(
             // Live transition to CALLED: trigger turn chime and banner
             shouldPlayChime = true;
             prev.chimePlayed = true;
-            if (nextDismissed.has(ticket.id)) {
-              nextDismissed.delete(ticket.id);
-              dismissedChanged = true;
-            }
           }
         } else {
-          // Ticket is not in CALLED status
+          // Ticket is not in CALLED status: reset chime readiness for next cycle
           if (prev.prevStatus === "CALLED") {
-            // Transitioned away from CALLED: reset cycle state
             prev.chimePlayed = false;
-            if (nextDismissed.has(ticket.id)) {
-              nextDismissed.delete(ticket.id);
-              dismissedChanged = true;
-            }
           }
         }
         prev.prevStatus = ticket.status;
@@ -126,32 +129,20 @@ export function useTicketTurnNotifications(
       // Cleanup terminal tickets
       if (isTicketTerminal(ticket.status)) {
         delete currentHistory[ticket.id];
-        if (nextDismissed.has(ticket.id)) {
-          nextDismissed.delete(ticket.id);
-          dismissedChanged = true;
-        }
       }
     }
 
-    // Prune removed tickets from historyRef and nextDismissed
+    // Prune removed tickets from historyRef
     for (const trackedId of Object.keys(currentHistory)) {
       if (!currentTicketIds.has(trackedId)) {
         delete currentHistory[trackedId];
-        if (nextDismissed.has(trackedId)) {
-          nextDismissed.delete(trackedId);
-          dismissedChanged = true;
-        }
       }
-    }
-
-    if (dismissedChanged) {
-      setDismissedTicketIds(nextDismissed);
     }
 
     if (shouldPlayChime && !isInitialBatch) {
       void playChime().catch(() => {});
     }
-  }, [tickets, playChime, dismissedTicketIds]);
+  }, [tickets, playChime]);
 
   const dismissNotification = (ticketId: string) => {
     setDismissedTicketIds((prev) => {

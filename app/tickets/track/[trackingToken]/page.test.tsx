@@ -1247,5 +1247,49 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       ).toBeNull();
     });
   });
+
+  describe("Tracking token navigation and lifecycle resets", () => {
+    it("resets state and loads new ticket cleanly when tracking token changes", async () => {
+      const ticketA = { ...mockWaitingTicket, ticketNumber: 10 };
+      const ticketB = { ...mockCalledTicket, ticketNumber: 20 };
+
+      activeFetchHandler = async (url: string) => {
+        if (url.includes(encodeURIComponent("token-AAA"))) {
+          return jsonResponse(ticketA);
+        }
+        if (url.includes(encodeURIComponent("token-BBB"))) {
+          return jsonResponse(ticketB);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      mockTrackingToken = "token-AAA";
+      let renderResult!: ReturnType<typeof render>;
+      await act(async () => {
+        renderResult = render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "token-AAA" })}
+          />,
+        );
+      });
+
+      expect(screen.getByText("#10")).toBeDefined();
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
+
+      // Switch token to token-BBB
+      mockTrackingToken = "token-BBB";
+      await act(async () => {
+        renderResult.rerender(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "token-BBB" })}
+          />,
+        );
+      });
+
+      // Renders ticket B and suppresses turn chime for initially called ticket B
+      expect(screen.getByText("#20")).toBeDefined();
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
+    });
+  });
 });
 
