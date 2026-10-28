@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import {
   doIntervalsOverlap,
   timeToMinutes,
@@ -37,13 +37,35 @@ export function ScheduleIntervalDialog({
   onSave,
   onClose,
 }: ScheduleIntervalDialogProps) {
-  const [dayOfWeek, setDayOfWeek] = useState<number>(defaultDayOfWeek);
-  const [startTime, setStartTime] = useState("09:00");
-  const [endTime, setEndTime] = useState("17:00");
-  const [isActive, setIsActive] = useState(true);
+  const [dayOfWeek, setDayOfWeek] = useState<number>(
+    editingInterval ? editingInterval.dayOfWeek : defaultDayOfWeek,
+  );
+  const [startTime, setStartTime] = useState(
+    editingInterval ? editingInterval.startTime : "09:00",
+  );
+  const [endTime, setEndTime] = useState(
+    editingInterval ? editingInterval.endTime : "17:00",
+  );
+  const [isActive, setIsActive] = useState(
+    editingInterval ? editingInterval.isActive : true,
+  );
   const [formError, setFormError] = useState<string | null>(null);
 
-  useEffect(() => {
+  // Derived-state reset: detect when the dialog opens, the editing target changes,
+  // or the default day changes, and synchronously re-initialise form fields during
+  // render (React's recommended "store previous props in state" pattern — no useEffect).
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  const [prevEditingInterval, setPrevEditingInterval] = useState(editingInterval);
+  const [prevDefaultDayOfWeek, setPrevDefaultDayOfWeek] = useState(defaultDayOfWeek);
+
+  if (
+    isOpen !== prevIsOpen ||
+    editingInterval !== prevEditingInterval ||
+    defaultDayOfWeek !== prevDefaultDayOfWeek
+  ) {
+    setPrevIsOpen(isOpen);
+    setPrevEditingInterval(editingInterval);
+    setPrevDefaultDayOfWeek(defaultDayOfWeek);
     if (editingInterval) {
       setDayOfWeek(editingInterval.dayOfWeek);
       setStartTime(editingInterval.startTime);
@@ -56,7 +78,7 @@ export function ScheduleIntervalDialog({
       setIsActive(true);
     }
     setFormError(null);
-  }, [editingInterval, defaultDayOfWeek, isOpen]);
+  }
 
   if (!isOpen) return null;
 

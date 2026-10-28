@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { isValidCalendarDateString } from "@/lib/validations/schedule";
 import {
   getTodayIsoDate,
@@ -28,16 +28,28 @@ export function ClosureDialog({
   onSave,
   onClose,
 }: ClosureDialogProps) {
-  const [startDate, setStartDate] = useState(getTodayIsoDate());
-  const [endDate, setEndDate] = useState(getTodayIsoDate());
-  const [reason, setReason] = useState("");
+  const [startDate, setStartDate] = useState(
+    editingClosure ? editingClosure.startDate : getTodayIsoDate(),
+  );
+  const [endDate, setEndDate] = useState(
+    editingClosure ? editingClosure.endDate : getTodayIsoDate(),
+  );
+  const [reason, setReason] = useState(editingClosure?.reason ?? "");
   const [formError, setFormError] = useState<string | null>(null);
 
-  useEffect(() => {
+  // Derived-state reset: detect when the dialog opens or the editing target changes
+  // and synchronously re-initialise form fields during render (React's recommended
+  // "store previous props in state" pattern — no useEffect needed).
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  const [prevEditingClosure, setPrevEditingClosure] = useState(editingClosure);
+
+  if (isOpen !== prevIsOpen || editingClosure !== prevEditingClosure) {
+    setPrevIsOpen(isOpen);
+    setPrevEditingClosure(editingClosure);
     if (editingClosure) {
       setStartDate(editingClosure.startDate);
       setEndDate(editingClosure.endDate);
-      setReason(editingClosure.reason || "");
+      setReason(editingClosure.reason ?? "");
     } else {
       const today = getTodayIsoDate();
       setStartDate(today);
@@ -45,7 +57,7 @@ export function ClosureDialog({
       setReason("");
     }
     setFormError(null);
-  }, [editingClosure, isOpen]);
+  }
 
   if (!isOpen) return null;
 

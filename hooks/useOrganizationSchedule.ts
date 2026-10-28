@@ -40,7 +40,12 @@ export function useOrganizationSchedule({
 }: UseOrganizationScheduleOptions): UseOrganizationScheduleReturn {
   const router = useRouter();
   const routerRef = useRef(router);
-  routerRef.current = router;
+
+  // Update routerRef after every render so callbacks always hold the latest router
+  // instance without being listed as a useCallback dependency.
+  useEffect(() => {
+    routerRef.current = router;
+  });
 
   const [intervals, setIntervals] = useState<ScheduleIntervalItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
