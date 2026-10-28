@@ -146,12 +146,12 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     setEditMaxDailyTickets("");
     setEditError(null);
     setIsSavingEdit(false);
-    isSavingEditRef.current = false;
   }
 
   // Synchronize currentOrgIdRef with prop
   useEffect(() => {
     isCreatingQueueRef.current = false;
+    isSavingEditRef.current = false;
     currentOrgIdRef.current = organizationId;
     currentServiceIdRef.current = null;
     activeCreationRequestIdRef.current += 1;

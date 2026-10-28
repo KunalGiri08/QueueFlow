@@ -100,9 +100,6 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
     setNewName("");
     setNewEmail("");
     setIsOnboarding(false);
-    isOnboardingRef.current = false;
-    isAssigningRef.current = false;
-    isRemovingRef.current = false;
     setFormError(null);
     setFormSuccess(null);
     setSelectedCounterByStaffId({});
@@ -114,6 +111,9 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
   }
 
   useEffect(() => {
+    isOnboardingRef.current = false;
+    isAssigningRef.current = false;
+    isRemovingRef.current = false;
     currentOrgIdRef.current = organizationId;
     activeActionRequestIdRef.current += 1;
   }, [organizationId]);
