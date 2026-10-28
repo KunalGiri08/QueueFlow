@@ -54,17 +54,21 @@ export function ScheduleIntervalDialog({
   // Derived-state reset: detect when the dialog opens, the editing target changes,
   // or the default day changes, and synchronously re-initialise form fields during
   // render (React's recommended "store previous props in state" pattern — no useEffect).
+  // Uses record ID rather than object identity so parent re-renders with fresh
+  // object references do not discard in-progress user input.
   const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
-  const [prevEditingInterval, setPrevEditingInterval] = useState(editingInterval);
+  const [prevIntervalId, setPrevIntervalId] = useState(editingInterval?.id ?? null);
   const [prevDefaultDayOfWeek, setPrevDefaultDayOfWeek] = useState(defaultDayOfWeek);
 
-  if (
-    isOpen !== prevIsOpen ||
-    editingInterval !== prevEditingInterval ||
-    defaultDayOfWeek !== prevDefaultDayOfWeek
-  ) {
+  const isOpening = isOpen && !prevIsOpen;
+  const currentIntervalId = editingInterval?.id ?? null;
+  const isRecordChanged = isOpen && currentIntervalId !== prevIntervalId;
+  const isDefaultDayChanged =
+    isOpen && !editingInterval && defaultDayOfWeek !== prevDefaultDayOfWeek;
+
+  if (isOpening || isRecordChanged || isDefaultDayChanged) {
     setPrevIsOpen(isOpen);
-    setPrevEditingInterval(editingInterval);
+    setPrevIntervalId(currentIntervalId);
     setPrevDefaultDayOfWeek(defaultDayOfWeek);
     if (editingInterval) {
       setDayOfWeek(editingInterval.dayOfWeek);
@@ -78,6 +82,8 @@ export function ScheduleIntervalDialog({
       setIsActive(true);
     }
     setFormError(null);
+  } else if (!isOpen && prevIsOpen) {
+    setPrevIsOpen(false);
   }
 
   if (!isOpen) return null;

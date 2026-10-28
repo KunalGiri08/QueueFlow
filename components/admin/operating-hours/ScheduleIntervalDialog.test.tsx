@@ -164,4 +164,143 @@ describe("ScheduleIntervalDialog Component", () => {
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(handleClose).toHaveBeenCalled();
   });
+
+  it("does not discard unsaved user input when parent re-renders with a new object reference for the same interval", () => {
+    const { rerender } = render(
+      <ScheduleIntervalDialog
+        isOpen={true}
+        editingInterval={{ ...mockIntervals[0] }}
+        defaultDayOfWeek={1}
+        existingIntervals={mockIntervals}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/opening time/i), { target: { value: "10:15" } });
+    expect((screen.getByLabelText(/opening time/i) as HTMLInputElement).value).toBe("10:15");
+
+    // Parent re-renders with a new object reference for the same interval (e.g. parent state change)
+    rerender(
+      <ScheduleIntervalDialog
+        isOpen={true}
+        editingInterval={{ ...mockIntervals[0] }}
+        defaultDayOfWeek={1}
+        existingIntervals={mockIntervals}
+        isSaving={true}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText(/opening time/i) as HTMLInputElement).value).toBe("10:15");
+  });
+
+  it("resets form values when closed and reopened", () => {
+    const { rerender } = render(
+      <ScheduleIntervalDialog
+        isOpen={true}
+        editingInterval={{ ...mockIntervals[0] }}
+        defaultDayOfWeek={1}
+        existingIntervals={mockIntervals}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/opening time/i), { target: { value: "10:15" } });
+    expect((screen.getByLabelText(/opening time/i) as HTMLInputElement).value).toBe("10:15");
+
+    // Close the dialog
+    rerender(
+      <ScheduleIntervalDialog
+        isOpen={false}
+        editingInterval={{ ...mockIntervals[0] }}
+        defaultDayOfWeek={1}
+        existingIntervals={mockIntervals}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    // Reopen the dialog
+    rerender(
+      <ScheduleIntervalDialog
+        isOpen={true}
+        editingInterval={{ ...mockIntervals[0] }}
+        defaultDayOfWeek={1}
+        existingIntervals={mockIntervals}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText(/opening time/i) as HTMLInputElement).value).toBe("09:00");
+  });
+
+  it("updates dayOfWeek when defaultDayOfWeek changes in create mode", () => {
+    const { rerender } = render(
+      <ScheduleIntervalDialog
+        isOpen={true}
+        editingInterval={null}
+        defaultDayOfWeek={1}
+        existingIntervals={[]}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText(/day of week/i) as HTMLSelectElement).value).toBe("1");
+
+    // Parent changes defaultDayOfWeek while in create mode
+    rerender(
+      <ScheduleIntervalDialog
+        isOpen={true}
+        editingInterval={null}
+        defaultDayOfWeek={4}
+        existingIntervals={[]}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText(/day of week/i) as HTMLSelectElement).value).toBe("4");
+  });
+
+  it("does not overwrite dayOfWeek with defaultDayOfWeek when editing an interval", () => {
+    const { rerender } = render(
+      <ScheduleIntervalDialog
+        isOpen={true}
+        editingInterval={mockIntervals[0]} // dayOfWeek: 1
+        defaultDayOfWeek={1}
+        existingIntervals={mockIntervals}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText(/day of week/i) as HTMLSelectElement).value).toBe("1");
+
+    // Parent changes defaultDayOfWeek while editing an interval
+    rerender(
+      <ScheduleIntervalDialog
+        isOpen={true}
+        editingInterval={mockIntervals[0]}
+        defaultDayOfWeek={5}
+        existingIntervals={mockIntervals}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText(/day of week/i) as HTMLSelectElement).value).toBe("1");
+  });
 });

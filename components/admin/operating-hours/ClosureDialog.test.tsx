@@ -124,4 +124,104 @@ describe("ClosureDialog Component", () => {
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(handleClose).toHaveBeenCalled();
   });
+
+  it("does not discard unsaved user input when parent re-renders with a new object reference for the same closure", () => {
+    const { rerender } = render(
+      <ClosureDialog
+        isOpen={true}
+        editingClosure={{ ...mockClosure }}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: "Draft unsaved reason" } });
+    expect((screen.getByLabelText(/reason/i) as HTMLInputElement).value).toBe("Draft unsaved reason");
+
+    // Parent re-renders with a new object reference for the same closure (e.g. state change in parent)
+    rerender(
+      <ClosureDialog
+        isOpen={true}
+        editingClosure={{ ...mockClosure }}
+        isSaving={true}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText(/reason/i) as HTMLInputElement).value).toBe("Draft unsaved reason");
+  });
+
+  it("resets form values when closed and reopened", () => {
+    const { rerender } = render(
+      <ClosureDialog
+        isOpen={true}
+        editingClosure={{ ...mockClosure }}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: "Draft unsaved reason" } });
+    expect((screen.getByLabelText(/reason/i) as HTMLInputElement).value).toBe("Draft unsaved reason");
+
+    // Close the dialog
+    rerender(
+      <ClosureDialog
+        isOpen={false}
+        editingClosure={{ ...mockClosure }}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    // Reopen the dialog
+    rerender(
+      <ClosureDialog
+        isOpen={true}
+        editingClosure={{ ...mockClosure }}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText(/reason/i) as HTMLInputElement).value).toBe("Christmas Day");
+  });
+
+  it("re-initializes values when switching edit records while open", () => {
+    const otherClosure: ClosureItem = {
+      ...mockClosure,
+      id: "closure-2",
+      reason: "New Year Holiday",
+    };
+
+    const { rerender } = render(
+      <ClosureDialog
+        isOpen={true}
+        editingClosure={mockClosure}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText(/reason/i) as HTMLInputElement).value).toBe("Christmas Day");
+
+    // Switch to editing other closure
+    rerender(
+      <ClosureDialog
+        isOpen={true}
+        editingClosure={otherClosure}
+        isSaving={false}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText(/reason/i) as HTMLInputElement).value).toBe("New Year Holiday");
+  });
 });

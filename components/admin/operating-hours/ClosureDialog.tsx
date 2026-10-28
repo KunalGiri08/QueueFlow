@@ -40,12 +40,18 @@ export function ClosureDialog({
   // Derived-state reset: detect when the dialog opens or the editing target changes
   // and synchronously re-initialise form fields during render (React's recommended
   // "store previous props in state" pattern — no useEffect needed).
+  // Uses record ID rather than object identity so parent re-renders with fresh
+  // object references do not discard in-progress user input.
   const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
-  const [prevEditingClosure, setPrevEditingClosure] = useState(editingClosure);
+  const [prevClosureId, setPrevClosureId] = useState(editingClosure?.id ?? null);
 
-  if (isOpen !== prevIsOpen || editingClosure !== prevEditingClosure) {
+  const isOpening = isOpen && !prevIsOpen;
+  const currentClosureId = editingClosure?.id ?? null;
+  const isRecordChanged = isOpen && currentClosureId !== prevClosureId;
+
+  if (isOpening || isRecordChanged) {
     setPrevIsOpen(isOpen);
-    setPrevEditingClosure(editingClosure);
+    setPrevClosureId(currentClosureId);
     if (editingClosure) {
       setStartDate(editingClosure.startDate);
       setEndDate(editingClosure.endDate);
@@ -57,6 +63,8 @@ export function ClosureDialog({
       setReason("");
     }
     setFormError(null);
+  } else if (!isOpen && prevIsOpen) {
+    setPrevIsOpen(false);
   }
 
   if (!isOpen) return null;
