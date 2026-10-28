@@ -6,18 +6,12 @@ const {
   mockMembershipFindMany,
   mockOrganizationFindUnique,
   mockTransaction,
-  mockUserFindUnique,
-  mockUserCreate,
-  mockMembershipCreate,
 } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
   mockMembershipFindUnique: vi.fn(),
   mockMembershipFindMany: vi.fn(),
   mockOrganizationFindUnique: vi.fn(),
   mockTransaction: vi.fn(),
-  mockUserFindUnique: vi.fn(),
-  mockUserCreate: vi.fn(),
-  mockMembershipCreate: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/current-user", () => ({

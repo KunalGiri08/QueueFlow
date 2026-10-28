@@ -354,8 +354,9 @@ describe("POST /api/public/organizations/[organizationId]/services/[serviceId]/q
 
   it("returns 409 when database throws a unique constraint violation (P2002)", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: userId });
-    const p2002 = new Error("Unique constraint failed");
-    (p2002 as any).code = "P2002";
+    const p2002 = Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+    });
     mockTicketCreate.mockRejectedValue(p2002);
 
     const response = await POST(

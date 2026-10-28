@@ -28,7 +28,7 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-import { GET, POST } from "./route";
+import { POST } from "./route";
 
 const organizationId = "org-1";
 

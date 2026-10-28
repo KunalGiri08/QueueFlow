@@ -486,7 +486,7 @@ describe("Operating Hours Evaluation Engine (schedule.service)", () => {
     });
 
     it("filters and ignores malformed schedule intervals rather than throwing", () => {
-      const malformedIntervals: any[] = [
+      const malformedIntervals: unknown[] = [
         { dayOfWeek: -1, startTime: "09:00", endTime: "17:00" }, // invalid day
         { dayOfWeek: 1, startTime: "17:00", endTime: "09:00" }, // inverted times
         { dayOfWeek: 1, startTime: "bad-time", endTime: "17:00" }, // bad format
@@ -498,7 +498,7 @@ describe("Operating Hours Evaluation Engine (schedule.service)", () => {
       const instant = new Date("2026-10-26T06:30:00.000Z");
       const result = evaluateOperatingHours({
         timezone: defaultTimezone,
-        intervals: malformedIntervals,
+        intervals: malformedIntervals as unknown as ScheduleIntervalItem[],
         instant,
       });
 
@@ -508,7 +508,7 @@ describe("Operating Hours Evaluation Engine (schedule.service)", () => {
     });
 
     it("filters and ignores malformed closure items", () => {
-      const malformedClosures: any[] = [
+      const malformedClosures: unknown[] = [
         { startDate: "2026-02-30", endDate: "2026-02-30" }, // impossible date
         { startDate: "2026-12-25", endDate: "2026-12-20" }, // end < start
         null,
@@ -519,7 +519,7 @@ describe("Operating Hours Evaluation Engine (schedule.service)", () => {
       const result = evaluateOperatingHours({
         timezone: defaultTimezone,
         intervals: standardWeekIntervals,
-        closures: malformedClosures,
+        closures: malformedClosures as unknown as ClosureItem[],
         instant,
       });
 

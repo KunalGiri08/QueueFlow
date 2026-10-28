@@ -8,11 +8,8 @@ import {
 } from "@/lib/services/ticket.service";
 import { estimateTicketWaitTime } from "@/lib/services/prediction.service";
 import {
-  evaluateOperatingHours,
   evaluateServiceAdmission,
-  ServiceAdmissionEvaluationResult,
-  isValidClosureItem,
-  isValidIntervalItem,
+  type ServiceAdmissionEvaluationResult,
 } from "@/lib/services/schedule.service";
 import { createTicketSchema } from "@/lib/validations/ticket";
 import { randomBytes } from "node:crypto";

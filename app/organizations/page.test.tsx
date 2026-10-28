@@ -220,7 +220,7 @@ describe("app/organizations/page", () => {
       const deferredPage1 = createDeferred<Response>();
       const deferredPage2 = createDeferred<Response>();
 
-      let capturedSignals: AbortSignal[] = [];
+      const capturedSignals: AbortSignal[] = [];
 
       fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
         const url = input.toString();
