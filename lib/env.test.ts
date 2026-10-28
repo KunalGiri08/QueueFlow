@@ -60,6 +60,47 @@ describe("Environment Validation", () => {
         expect(result.data.NODE_ENV).toBe("development");
       }
     });
+
+    it("defaults HEALTH_DB_TIMEOUT_MS to 8000 when unspecified", () => {
+      const result = validateEnv(validMockEnv);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.HEALTH_DB_TIMEOUT_MS).toBe(8000);
+      }
+    });
+
+    it("defaults HEALTH_DB_TIMEOUT_MS to 8000 when empty string", () => {
+      const result = validateEnv({
+        ...validMockEnv,
+        HEALTH_DB_TIMEOUT_MS: "",
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.HEALTH_DB_TIMEOUT_MS).toBe(8000);
+      }
+    });
+
+    it("accepts valid custom HEALTH_DB_TIMEOUT_MS within range", () => {
+      const stringResult = validateEnv({
+        ...validMockEnv,
+        HEALTH_DB_TIMEOUT_MS: "5000",
+      });
+      expect(stringResult.success).toBe(true);
+      if (stringResult.success) {
+        expect(stringResult.data.HEALTH_DB_TIMEOUT_MS).toBe(5000);
+      }
+
+      const numberResult = validateEnv({
+        ...validMockEnv,
+        HEALTH_DB_TIMEOUT_MS: 12000,
+      });
+      expect(numberResult.success).toBe(true);
+      if (numberResult.success) {
+        expect(numberResult.data.HEALTH_DB_TIMEOUT_MS).toBe(12000);
+      }
+    });
   });
 
   describe("Missing variables", () => {
@@ -233,6 +274,68 @@ describe("Environment Validation", () => {
     });
   });
 
+  describe("HEALTH_DB_TIMEOUT_MS validation", () => {
+    it("rejects non-numeric string values", () => {
+      const result = validateEnv({
+        ...validMockEnv,
+        HEALTH_DB_TIMEOUT_MS: "not-a-number",
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errors.HEALTH_DB_TIMEOUT_MS).toBeDefined();
+        expect(result.errors.HEALTH_DB_TIMEOUT_MS[0]).toContain(
+          "HEALTH_DB_TIMEOUT_MS must be a valid number",
+        );
+      }
+    });
+
+    it("rejects timeout values below minimum (1000 ms)", () => {
+      const result = validateEnv({
+        ...validMockEnv,
+        HEALTH_DB_TIMEOUT_MS: "500",
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errors.HEALTH_DB_TIMEOUT_MS).toBeDefined();
+        expect(result.errors.HEALTH_DB_TIMEOUT_MS[0]).toContain(
+          "HEALTH_DB_TIMEOUT_MS must be at least 1000 ms",
+        );
+      }
+    });
+
+    it("rejects timeout values exceeding maximum (15000 ms)", () => {
+      const result = validateEnv({
+        ...validMockEnv,
+        HEALTH_DB_TIMEOUT_MS: 20000,
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errors.HEALTH_DB_TIMEOUT_MS).toBeDefined();
+        expect(result.errors.HEALTH_DB_TIMEOUT_MS[0]).toContain(
+          "HEALTH_DB_TIMEOUT_MS cannot exceed 15000 ms",
+        );
+      }
+    });
+
+    it("rejects fractional timeout values", () => {
+      const result = validateEnv({
+        ...validMockEnv,
+        HEALTH_DB_TIMEOUT_MS: "8000.5",
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errors.HEALTH_DB_TIMEOUT_MS).toBeDefined();
+        expect(result.errors.HEALTH_DB_TIMEOUT_MS[0]).toContain(
+          "HEALTH_DB_TIMEOUT_MS must be an integer",
+        );
+      }
+    });
+  });
+
   describe("Client-side isolation", () => {
     it("blocks access to server-only variables when running in a browser environment", () => {
       // Mock client-side window environment
@@ -245,6 +348,10 @@ describe("Environment Validation", () => {
       expect(() => {
         void env.CLERK_SECRET_KEY;
       }).toThrow("Cannot access server environment variable 'CLERK_SECRET_KEY' on the client");
+
+      expect(() => {
+        void env.HEALTH_DB_TIMEOUT_MS;
+      }).toThrow("Cannot access server environment variable 'HEALTH_DB_TIMEOUT_MS' on the client");
 
       expect(() => {
         getServerEnv(validMockEnv);
@@ -260,6 +367,7 @@ describe("Environment Validation", () => {
       // Verify server secrets are not on clientEnv type
       expect("DATABASE_URL" in client).toBe(false);
       expect("CLERK_SECRET_KEY" in client).toBe(false);
+      expect("HEALTH_DB_TIMEOUT_MS" in client).toBe(false);
     });
   });
 });

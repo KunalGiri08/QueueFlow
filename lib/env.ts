@@ -30,6 +30,24 @@ export const serverEnvSchema = z.object({
     .string()
     .trim()
     .optional(),
+  HEALTH_DB_TIMEOUT_MS: z
+    .preprocess(
+      (val) => {
+        if (val === undefined || val === "") return 8000;
+        if (typeof val === "string") {
+          const trimmed = val.trim();
+          const num = Number(trimmed);
+          return Number.isNaN(num) ? val : num;
+        }
+        return val;
+      },
+      z
+        .number({ message: "HEALTH_DB_TIMEOUT_MS must be a valid number" })
+        .int("HEALTH_DB_TIMEOUT_MS must be an integer")
+        .min(1000, "HEALTH_DB_TIMEOUT_MS must be at least 1000 ms")
+        .max(15000, "HEALTH_DB_TIMEOUT_MS cannot exceed 15000 ms"),
+    )
+    .default(8000),
 });
 
 /**
@@ -86,11 +104,14 @@ export function formatEnvIssues(
     if (!errors[key]) {
       errors[key] = [];
     }
-    if (
+    const isMissing =
       issue.code === "invalid_type" &&
       ((issue as { received?: string }).received === "undefined" ||
-        (issue as { input?: unknown }).input === undefined)
-    ) {
+        ("input" in issue &&
+          (issue as { input?: unknown }).input === undefined) ||
+        issue.message.includes("received undefined"));
+
+    if (isMissing) {
       errors[key].push(`${key} is required`);
     } else {
       errors[key].push(issue.message);
