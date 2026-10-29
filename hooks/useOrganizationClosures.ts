@@ -53,23 +53,16 @@ export function useOrganizationClosures({
   if (organizationId !== prevOrgId) {
     setPrevOrgId(organizationId);
     setClosures([]);
+    setIsLoading(true);
     setError(null);
     setDeletingClosureId(null);
   }
 
-  const confirmFn =
-    confirmDialog ??
-    (typeof window !== "undefined" && typeof window.confirm === "function"
-      ? window.confirm.bind(window)
-      : () => true);
-
-  // Fetch closures
-  const fetchClosures = useCallback(
+  // Fetch closures implementation without synchronous render-phase setState
+  const loadClosures = useCallback(
     async (signal?: AbortSignal) => {
       if (signal?.aborted) return;
       const gen = ++fetchGenRef.current;
-      setIsLoading(true);
-      setError(null);
 
       try {
         const res = await fetch(
@@ -131,17 +124,27 @@ export function useOrganizationClosures({
     [organizationId],
   );
 
+  // External trigger for manual reload / retry (e.g. from user action)
+  const fetchClosures = useCallback(
+    async (signal?: AbortSignal) => {
+      setIsLoading(true);
+      setError(null);
+      await loadClosures(signal);
+    },
+    [loadClosures],
+  );
+
   useEffect(() => {
     activeControllerRef.current?.abort();
     const controller = new AbortController();
     activeControllerRef.current = controller;
 
-    void fetchClosures(controller.signal);
+    void Promise.resolve().then(() => loadClosures(controller.signal));
 
     return () => {
       controller.abort();
     };
-  }, [fetchClosures]);
+  }, [loadClosures]);
 
   // Save closure (POST new or PATCH existing)
   const saveClosure = useCallback(
@@ -203,6 +206,12 @@ export function useOrganizationClosures({
   // Delete closure
   const deleteClosure = useCallback(
     async (closure: ClosureItem): Promise<boolean> => {
+      const confirmFn =
+        confirmDialog ??
+        (typeof window !== "undefined" && typeof window.confirm === "function"
+          ? window.confirm.bind(window)
+          : () => true);
+
       const confirmed = confirmFn(
         `Are you sure you want to remove the closure from ${closure.startDate} to ${closure.endDate}?`,
       );
@@ -241,7 +250,7 @@ export function useOrganizationClosures({
         setDeletingClosureId(null);
       }
     },
-    [confirmFn, organizationId, onSuccess, onError],
+    [confirmDialog, organizationId, onSuccess, onError],
   );
 
   return {

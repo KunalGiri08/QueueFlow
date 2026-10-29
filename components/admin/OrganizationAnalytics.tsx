@@ -67,7 +67,7 @@ export function OrganizationAnalytics({
   organizationId,
 }: OrganizationAnalyticsProps) {
   const [data, setData] = useState<OrganizationAnalyticsData | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(Boolean(organizationId));
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -76,75 +76,79 @@ export function OrganizationAnalytics({
   const activeControllerRef = useRef<AbortController | null>(null);
   const fetchGenerationRef = useRef<number>(0);
 
-  const fetchAnalytics = useCallback(
-    async (targetOrgId: string, signal?: AbortSignal, isManualRefresh = false) => {
-      const fetchGen = ++fetchGenerationRef.current;
+  // Adjust state during render when organizationId prop changes
+  const [prevOrgId, setPrevOrgId] = useState(organizationId);
+  if (organizationId !== prevOrgId) {
+    setPrevOrgId(organizationId);
+    setData(null);
+    setError(null);
+    setIsLoading(Boolean(organizationId));
+  }
 
-      if (!isManualRefresh) {
-        setIsLoading(true);
-        setError(null);
-      } else {
-        setIsRefreshing(true);
-      }
-
-      try {
-        const response = await fetch(
+  const performFetch = useCallback(
+    (targetOrgId: string, signal: AbortSignal, fetchGen: number) => {
+      Promise.resolve(
+        fetch(
           `/api/organizations/${encodeURIComponent(targetOrgId)}/analytics`,
           { signal },
-        );
-
-        if (signal?.aborted || fetchGenerationRef.current !== fetchGen) {
-          return;
-        }
-
-        if (!response.ok) {
-          let errorMsg = "Unable to load analytics at this time. Please try again.";
-          try {
-            const errData = await response.json();
-            if (errData && typeof errData.error === "string") {
-              errorMsg = errData.error;
-            }
-          } catch {
-            // Ignore JSON parse error on non-JSON response
+        ),
+      )
+        .then(async (response) => {
+          if (signal.aborted || fetchGenerationRef.current !== fetchGen) {
+            return;
           }
-          throw new Error(errorMsg);
-        }
 
-        const json = await response.json();
+          if (!response.ok) {
+            let errorMsg =
+              "Unable to load analytics at this time. Please try again.";
+            try {
+              const errData = await response.json();
+              if (errData && typeof errData.error === "string") {
+                errorMsg = errData.error;
+              }
+            } catch {
+              // Ignore JSON parse error on non-JSON response
+            }
+            throw new Error(errorMsg);
+          }
 
-        if (signal?.aborted || fetchGenerationRef.current !== fetchGen) {
-          return;
-        }
+          const json = (await response.json()) as OrganizationAnalyticsData;
 
-        setData(json);
-        setLastUpdated(new Date());
-        setError(null);
-      } catch (err: unknown) {
-        if (signal?.aborted || fetchGenerationRef.current !== fetchGen) {
-          return;
-        }
+          if (signal.aborted || fetchGenerationRef.current !== fetchGen) {
+            return;
+          }
 
-        const isAbort =
-          (err instanceof Error && err.name === "AbortError") ||
-          (typeof err === "object" &&
-            err !== null &&
-            "name" in err &&
-            (err as { name: string }).name === "AbortError") ||
-          Boolean(signal?.aborted);
+          setData(json);
+          setLastUpdated(new Date());
+          setError(null);
+        })
+        .catch((err: unknown) => {
+          if (signal.aborted || fetchGenerationRef.current !== fetchGen) {
+            return;
+          }
 
-        if (isAbort) return;
+          const isAbort =
+            (err instanceof Error && err.name === "AbortError") ||
+            (typeof err === "object" &&
+              err !== null &&
+              "name" in err &&
+              (err as { name: string }).name === "AbortError") ||
+            Boolean(signal.aborted);
 
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Unable to load analytics at this time. Please try again.",
-        );
-      } finally {
-        if (!signal?.aborted && fetchGenerationRef.current === fetchGen) {
-          setIsLoading(false);
-          setIsRefreshing(false);
-        }
-      }
+          if (isAbort) return;
+
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Unable to load analytics at this time. Please try again.",
+          );
+        })
+        .finally(() => {
+          if (!signal.aborted && fetchGenerationRef.current === fetchGen) {
+            setIsLoading(false);
+            setIsRefreshing(false);
+          }
+        });
     },
     [],
   );
@@ -155,25 +159,21 @@ export function OrganizationAnalytics({
       activeControllerRef.current.abort();
     }
 
-    // Reset data to prevent displaying stale metrics from prior organization
-    setData(null);
-    setError(null);
-
     if (!organizationId) {
-      setIsLoading(false);
       return;
     }
 
     const controller = new AbortController();
     activeControllerRef.current = controller;
+    const fetchGen = ++fetchGenerationRef.current;
 
-    void fetchAnalytics(organizationId, controller.signal, false);
+    performFetch(organizationId, controller.signal, fetchGen);
 
     return () => {
       controller.abort();
       activeControllerRef.current = null;
     };
-  }, [organizationId, fetchAnalytics]);
+  }, [organizationId, performFetch]);
 
   const handleRefresh = () => {
     if (!organizationId) return;
@@ -182,10 +182,13 @@ export function OrganizationAnalytics({
       activeControllerRef.current.abort();
     }
 
+    setIsRefreshing(true);
+
     const controller = new AbortController();
     activeControllerRef.current = controller;
+    const fetchGen = ++fetchGenerationRef.current;
 
-    void fetchAnalytics(organizationId, controller.signal, true);
+    performFetch(organizationId, controller.signal, fetchGen);
   };
 
   const handleRetry = () => {
@@ -195,10 +198,14 @@ export function OrganizationAnalytics({
       activeControllerRef.current.abort();
     }
 
+    setIsLoading(true);
+    setError(null);
+
     const controller = new AbortController();
     activeControllerRef.current = controller;
+    const fetchGen = ++fetchGenerationRef.current;
 
-    void fetchAnalytics(organizationId, controller.signal, false);
+    performFetch(organizationId, controller.signal, fetchGen);
   };
 
   if (isLoading && !data) {

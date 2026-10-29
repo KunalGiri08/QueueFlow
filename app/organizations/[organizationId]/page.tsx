@@ -18,14 +18,13 @@ import {
   type QueueAvailabilityEntry,
 } from "@/components/organizations";
 
-export {
-  formatAdmissionErrorMessage,
-  type QueueAvailabilityData,
-  type AdmissionErrorPayload,
-  type PublicQueue,
-  type PublicService,
-  type OrganizationServicesData,
-  type QueueAvailabilityEntry,
+export type {
+  QueueAvailabilityData,
+  AdmissionErrorPayload,
+  PublicQueue,
+  PublicService,
+  OrganizationServicesData,
+  QueueAvailabilityEntry,
 };
 
 interface PageProps {
@@ -262,48 +261,53 @@ function OrganizationServicesContent({
     setQueueAvailability({});
   }
 
-  const fetchQueueAvailability = useCallback(async (queueId: string) => {
-    setQueueAvailability((prev) => ({
-      ...prev,
-      [queueId]: {
-        data: prev[queueId]?.data ?? null,
-        isLoading: prev[queueId]?.data ? false : true,
-        error: null,
-      },
-    }));
+  const performFetchQueueAvailability = useCallback((queueId: string) => {
+    Promise.resolve(fetch(`/api/queues/${encodeURIComponent(queueId)}`))
+      .then((response) => {
+        if (!response || typeof response.ok !== "boolean" || !response.ok) {
+          throw new Error(`Server returned status ${response?.status}`);
+        }
+        return response.json() as Promise<QueueAvailabilityData>;
+      })
+      .then((avail) => {
+        if (!isMountedRef.current) return;
+        setQueueAvailability((prev) => ({
+          ...prev,
+          [queueId]: {
+            data: avail,
+            isLoading: false,
+            error: null,
+          },
+        }));
+      })
+      .catch(() => {
+        if (!isMountedRef.current) return;
+        setQueueAvailability((prev) => ({
+          ...prev,
+          [queueId]: {
+            data: prev[queueId]?.data ?? null,
+            isLoading: false,
+            error: "Unable to load availability",
+          },
+        }));
+      });
+  }, []);
 
-    try {
-      const response = await fetch(
-        `/api/queues/${encodeURIComponent(queueId)}`,
-      );
-      if (!response || typeof response.ok !== "boolean") {
-        throw new Error("Invalid response");
-      }
-      if (!response.ok) {
-        throw new Error(`Server returned status ${response.status}`);
-      }
-      const avail = (await response.json()) as QueueAvailabilityData;
-      if (!isMountedRef.current) return;
-      setQueueAvailability((prev) => ({
-        ...prev,
-        [queueId]: {
-          data: avail,
-          isLoading: false,
-          error: null,
-        },
-      }));
-    } catch {
-      if (!isMountedRef.current) return;
+  const fetchQueueAvailability = useCallback(
+    (queueId: string) => {
       setQueueAvailability((prev) => ({
         ...prev,
         [queueId]: {
           data: prev[queueId]?.data ?? null,
-          isLoading: false,
-          error: "Unable to load availability",
+          isLoading: prev[queueId]?.data ? false : true,
+          error: null,
         },
       }));
-    }
-  }, []);
+
+      performFetchQueueAvailability(queueId);
+    },
+    [performFetchQueueAvailability],
+  );
 
   useEffect(() => {
     if (!data) return;
@@ -312,9 +316,9 @@ function OrganizationServicesContent({
       .filter((q) => q.isActive !== false);
 
     for (const q of activeQueues) {
-      void fetchQueueAvailability(q.id);
+      performFetchQueueAvailability(q.id);
     }
-  }, [data, fetchQueueAvailability]);
+  }, [data, performFetchQueueAvailability]);
 
   useEffect(() => {
     // Invalidate pending join and booking when organization identity changes

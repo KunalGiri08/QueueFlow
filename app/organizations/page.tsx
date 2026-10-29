@@ -77,7 +77,89 @@ function OrganizationsContent() {
     };
   }, []);
 
-  const fetchOrganizations = useCallback(async (targetPage: number) => {
+  const [prevPage, setPrevPage] = useState(currentPage);
+  if (currentPage !== prevPage) {
+    setPrevPage(currentPage);
+    setIsLoading(true);
+    setError(null);
+  }
+
+  const performFetch = useCallback(
+    (targetPage: number, controller: AbortController, currentGen: number) => {
+      fetch(
+        `/api/public/organizations?page=${targetPage}&limit=${PAGE_SIZE}`,
+        { signal: controller.signal },
+      )
+        .then(async (response) => {
+          if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
+
+          if (!response.ok) {
+            throw new Error(`Server returned status ${response.status}`);
+          }
+
+          const data: unknown = await response.json();
+
+          if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
+
+          if (
+            !data ||
+            typeof data !== "object" ||
+            !("organizations" in data) ||
+            !Array.isArray((data as { organizations: unknown }).organizations)
+          ) {
+            throw new Error("Malformed response format");
+          }
+
+          const validOrganizations = (
+            data as PublicOrganizationsResponse
+          ).organizations.filter(
+            (org): org is PublicOrganization =>
+              typeof org === "object" &&
+              org !== null &&
+              typeof org.id === "string" &&
+              typeof org.name === "string" &&
+              typeof org.slug === "string",
+          );
+
+          if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
+
+          setOrganizations(validOrganizations);
+
+          if (prevAnnouncedPageRef.current !== targetPage) {
+            prevAnnouncedPageRef.current = targetPage;
+            setPaginationAnnouncement(
+              validOrganizations.length === 0
+                ? `Page ${targetPage} loaded with no organizations.`
+                : `Page ${targetPage} loaded. Showing ${validOrganizations.length} ${
+                    validOrganizations.length === 1 ? "organization" : "organizations"
+                  }.`,
+            );
+          }
+        })
+        .catch((err: unknown) => {
+          if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
+          if (
+            (err instanceof DOMException && err.name === "AbortError") ||
+            (err instanceof Error && err.name === "AbortError")
+          ) {
+            return;
+          }
+          setError("Unable to load organizations at this time. Please try again.");
+          setOrganizations([]);
+        })
+        .finally(() => {
+          if (currentGen === requestGenRef.current && isMountedRef.current) {
+            setIsLoading(false);
+            if (activeControllerRef.current === controller) {
+              activeControllerRef.current = null;
+            }
+          }
+        });
+    },
+    [],
+  );
+
+  useEffect(() => {
     if (activeControllerRef.current) {
       activeControllerRef.current.abort();
     }
@@ -86,87 +168,32 @@ function OrganizationsContent() {
     activeControllerRef.current = controller;
     const currentGen = ++requestGenRef.current;
 
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const response = await fetch(
-        `/api/public/organizations?page=${targetPage}&limit=${PAGE_SIZE}`,
-        { signal: controller.signal },
-      );
-
-      if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
-
-      if (!response.ok) {
-        throw new Error(`Server returned status ${response.status}`);
-      }
-
-      const data: unknown = await response.json();
-
-      if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
-
-      if (
-        !data ||
-        typeof data !== "object" ||
-        !("organizations" in data) ||
-        !Array.isArray((data as { organizations: unknown }).organizations)
-      ) {
-        throw new Error("Malformed response format");
-      }
-
-      const validOrganizations = (
-        data as PublicOrganizationsResponse
-      ).organizations.filter(
-        (org): org is PublicOrganization =>
-          typeof org === "object" &&
-          org !== null &&
-          typeof org.id === "string" &&
-          typeof org.name === "string" &&
-          typeof org.slug === "string",
-      );
-
-      if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
-
-      setOrganizations(validOrganizations);
-
-      if (prevAnnouncedPageRef.current !== targetPage) {
-        prevAnnouncedPageRef.current = targetPage;
-        setPaginationAnnouncement(
-          validOrganizations.length === 0
-            ? `Page ${targetPage} loaded with no organizations.`
-            : `Page ${targetPage} loaded. Showing ${validOrganizations.length} ${
-                validOrganizations.length === 1 ? "organization" : "organizations"
-              }.`,
-        );
-      }
-    } catch (err: unknown) {
-      if (currentGen !== requestGenRef.current || !isMountedRef.current) return;
-      if (
-        (err instanceof DOMException && err.name === "AbortError") ||
-        (err instanceof Error && err.name === "AbortError")
-      ) {
-        return;
-      }
-      setError("Unable to load organizations at this time. Please try again.");
-      setOrganizations([]);
-    } finally {
-      if (currentGen === requestGenRef.current && isMountedRef.current) {
-        setIsLoading(false);
-        activeControllerRef.current = null;
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void fetchOrganizations(currentPage);
+    performFetch(currentPage, controller, currentGen);
 
     return () => {
-      if (activeControllerRef.current) {
-        activeControllerRef.current.abort();
+      controller.abort();
+      if (activeControllerRef.current === controller) {
         activeControllerRef.current = null;
       }
     };
-  }, [currentPage, fetchOrganizations]);
+  }, [currentPage, performFetch]);
+
+  const fetchOrganizations = useCallback(
+    async (targetPage: number) => {
+      if (activeControllerRef.current) {
+        activeControllerRef.current.abort();
+      }
+
+      const controller = new AbortController();
+      activeControllerRef.current = controller;
+      const currentGen = ++requestGenRef.current;
+
+      setIsLoading(true);
+      setError(null);
+      performFetch(targetPage, controller, currentGen);
+    },
+    [performFetch],
+  );
 
   const handlePageChange = (newPage: number) => {
     if (newPage < 1) return;

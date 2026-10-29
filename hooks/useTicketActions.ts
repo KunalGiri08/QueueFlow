@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import type {
   ActiveTicket,
@@ -114,27 +114,30 @@ export function useTicketActions(
   const [activeTicketAction, setActiveTicketAction] = useState<ActiveTicketAction | null>(null);
   const [ticketActionError, setTicketActionError] = useState<string | null>(null);
 
-  // Synchronous identity refs to avoid effect-timing race windows
+  // Identity refs for stale-response protection in async callbacks
   const orgIdRef = useRef<string | null>(orgId);
   const staffIdRef = useRef<string | null>(staffId);
-  orgIdRef.current = orgId;
-  staffIdRef.current = staffId;
 
   // Mutation generation counter for strict stale-response protection
   const mutationGenerationRef = useRef<number>(0);
 
   // Synchronously reset mutation errors and in-flight flags when identity changes
-  const prevOrgIdRef = useRef<string | null>(orgId);
-  const prevStaffIdRef = useRef<string | null>(staffId);
-  if (prevOrgIdRef.current !== orgId || prevStaffIdRef.current !== staffId) {
-    prevOrgIdRef.current = orgId;
-    prevStaffIdRef.current = staffId;
-    mutationGenerationRef.current++;
+  const [prevIdentity, setPrevIdentity] = useState({ orgId, staffId });
+  if (prevIdentity.orgId !== orgId || prevIdentity.staffId !== staffId) {
+    setPrevIdentity({ orgId, staffId });
     setCallingQueueId(null);
     setActiveTicketAction(null);
     setCallActionError(null);
     setTicketActionError(null);
   }
+
+  useEffect(() => {
+    if (orgIdRef.current !== orgId || staffIdRef.current !== staffId) {
+      orgIdRef.current = orgId;
+      staffIdRef.current = staffId;
+      mutationGenerationRef.current++;
+    }
+  }, [orgId, staffId]);
 
   const redirectUrl =
     options.signInRedirectUrl ??

@@ -1,8 +1,5 @@
 import { prisma } from "@/lib/prisma";
-
-export function isValidTrackingTokenFormat(token: string): boolean {
-  return typeof token === "string" && /^[a-f0-9]{64}$/i.test(token.trim());
-}
+import { isValidTrackingTokenFormat } from "@/lib/validations/ticket";
 
 export async function PATCH(
   request: Request,

@@ -1,9 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup, act, within } from "@testing-library/react";
-import OrganizationServicesPage, {
-  formatAdmissionErrorMessage,
-} from "./page";
+import OrganizationServicesPage from "./page";
+import { formatAdmissionErrorMessage } from "@/components/organizations";
 
 // 1. Mock Next.js navigation with dynamic params
 const mockPush = vi.fn();

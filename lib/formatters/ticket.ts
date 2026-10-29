@@ -40,6 +40,15 @@ export function isTicketActive(status: string): boolean {
 }
 
 /**
+ * Checks if a list of customer tickets contains at least one active ticket.
+ */
+export function hasActiveCustomerTickets(
+  tickets: Array<{ status: string }>,
+): boolean {
+  return tickets.some((t) => isTicketActive(t.status));
+}
+
+/**
  * Checks if a ticket status is in a terminal state (cannot transition further).
  */
 export function isTicketTerminal(status: string): boolean {

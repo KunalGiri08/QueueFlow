@@ -218,12 +218,18 @@ export default function OrganizationAdminPage() {
     void fetchOrganizations(controller.signal);
   };
 
+  // Reset verification state during render when selectedOrgId changes
+  const [prevSelectedOrgId, setPrevSelectedOrgId] = useState(selectedOrgId);
+  if (selectedOrgId !== prevSelectedOrgId) {
+    setPrevSelectedOrgId(selectedOrgId);
+    setVerifiedOrgId(null);
+    setAdminAuthResult(null);
+    setAdminError(null);
+  }
+
   // Verification effect: triggers whenever selected organization changes or retry is triggered
   useEffect(() => {
     if (!selectedOrgId) {
-      setVerifiedOrgId(null);
-      setAdminAuthResult(null);
-      setAdminError(null);
       return;
     }
 

@@ -61,24 +61,17 @@ export function useOrganizationSchedule({
   if (organizationId !== prevOrgId) {
     setPrevOrgId(organizationId);
     setIntervals([]);
+    setIsLoading(true);
     setError(null);
     setMutatingIntervalId(null);
     setMutatingDayOfWeek(null);
   }
 
-  const confirmFn =
-    confirmDialog ??
-    (typeof window !== "undefined" && typeof window.confirm === "function"
-      ? window.confirm.bind(window)
-      : () => true);
-
-  // Fetch schedule
-  const fetchSchedule = useCallback(
+  // Fetch schedule implementation without synchronous render-phase setState
+  const loadSchedule = useCallback(
     async (signal?: AbortSignal) => {
       if (signal?.aborted) return;
       const gen = ++fetchGenRef.current;
-      setIsLoading(true);
-      setError(null);
 
       try {
         const res = await fetch(
@@ -142,17 +135,27 @@ export function useOrganizationSchedule({
     [organizationId],
   );
 
+  // External trigger for manual reload / retry (e.g. from user action)
+  const fetchSchedule = useCallback(
+    async (signal?: AbortSignal) => {
+      setIsLoading(true);
+      setError(null);
+      await loadSchedule(signal);
+    },
+    [loadSchedule],
+  );
+
   useEffect(() => {
     activeControllerRef.current?.abort();
     const controller = new AbortController();
     activeControllerRef.current = controller;
 
-    void fetchSchedule(controller.signal);
+    void Promise.resolve().then(() => loadSchedule(controller.signal));
 
     return () => {
       controller.abort();
     };
-  }, [fetchSchedule]);
+  }, [loadSchedule]);
 
   // Save interval (POST new or PATCH existing)
   const saveInterval = useCallback(
@@ -283,6 +286,12 @@ export function useOrganizationSchedule({
   // Delete interval
   const deleteInterval = useCallback(
     async (interval: ScheduleIntervalItem): Promise<boolean> => {
+      const confirmFn =
+        confirmDialog ??
+        (typeof window !== "undefined" && typeof window.confirm === "function"
+          ? window.confirm.bind(window)
+          : () => true);
+
       const confirmed = confirmFn(
         `Are you sure you want to remove the hours ${interval.startTime} - ${interval.endTime}?`,
       );
@@ -321,7 +330,7 @@ export function useOrganizationSchedule({
         setMutatingIntervalId(null);
       }
     },
-    [confirmFn, organizationId, onSuccess, onError],
+    [confirmDialog, organizationId, onSuccess, onError],
   );
 
   // Toggle whole day enabled / disabled

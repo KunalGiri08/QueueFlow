@@ -8,7 +8,10 @@ import { CustomerTicketCard } from "@/components/tickets/CustomerTicketCard";
 import { CustomerTicketsEmptyState } from "@/components/tickets/CustomerTicketsEmptyState";
 import { TurnNotificationBanner } from "@/components/tickets/track/TurnNotificationBanner";
 import { useTicketTurnNotifications } from "@/hooks/useTicketTurnNotifications";
-import { isTicketActive, type TicketStatus } from "@/lib/formatters/ticket";
+import {
+  hasActiveCustomerTickets,
+  type TicketStatus,
+} from "@/lib/formatters/ticket";
 
 export type { TicketStatus };
 
@@ -36,11 +39,7 @@ export interface CustomerTicket {
   };
 }
 
-export function hasActiveCustomerTickets(tickets: CustomerTicket[]): boolean {
-  return tickets.some((t) => isTicketActive(t.status));
-}
-
-export function parseCustomerTickets(json: unknown): CustomerTicket[] {
+function parseCustomerTickets(json: unknown): CustomerTicket[] {
   if (!Array.isArray(json)) return [];
   return json.filter(
     (item): item is CustomerTicket =>

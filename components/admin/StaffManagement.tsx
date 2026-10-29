@@ -94,6 +94,7 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
   const [prevOrgId, setPrevOrgId] = useState(organizationId);
   if (organizationId !== prevOrgId) {
     setPrevOrgId(organizationId);
+    setIsLoading(true);
     setStaff([]);
     setCounters([]);
     setFetchError(null);
@@ -119,84 +120,86 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
   }, [organizationId]);
 
   // Fetch staff members and available counters in parallel
-  const fetchStaffAndCounters = useCallback(async (signal?: AbortSignal) => {
-    if (signal?.aborted) return;
+  const performFetchStaffAndCounters = useCallback(
+    (signal: AbortSignal, fetchGen: number) => {
+      Promise.all([
+        Promise.resolve(
+          fetch(`/api/staff?organizationId=${encodeURIComponent(organizationId)}`, { signal }),
+        ),
+        Promise.resolve(
+          fetch(`/api/organizations/${encodeURIComponent(organizationId)}/counters`, { signal }),
+        ),
+      ])
+        .then(async ([staffRes, countersRes]) => {
+          if (signal.aborted || fetchGenerationRef.current !== fetchGen) return;
 
-    const fetchGen = ++fetchGenerationRef.current;
-    setIsLoading(true);
-    setFetchError(null);
+          if (staffRes.status === 401 || countersRes.status === 401) {
+            router.push(`/sign-in?redirect_url=${encodeURIComponent("/admin")}`);
+            return;
+          }
 
-    try {
-      const [staffRes, countersRes] = await Promise.all([
-        fetch(`/api/staff?organizationId=${encodeURIComponent(organizationId)}`, { signal }),
-        fetch(`/api/organizations/${encodeURIComponent(organizationId)}/counters`, { signal }),
-      ]);
+          if (!staffRes.ok) {
+            throw new Error(`Failed to load staff members (status ${staffRes.status})`);
+          }
 
-      if (signal?.aborted || fetchGenerationRef.current !== fetchGen) return;
+          if (!countersRes.ok) {
+            throw new Error(`Failed to load counters (status ${countersRes.status})`);
+          }
 
-      if (staffRes.status === 401 || countersRes.status === 401) {
-        router.push(`/sign-in?redirect_url=${encodeURIComponent("/admin")}`);
-        return;
-      }
+          const staffData: unknown = await staffRes.json();
+          const countersData: unknown = await countersRes.json();
 
-      if (!staffRes.ok) {
-        throw new Error(`Failed to load staff members (status ${staffRes.status})`);
-      }
+          if (signal.aborted || fetchGenerationRef.current !== fetchGen) return;
 
-      if (!countersRes.ok) {
-        throw new Error(`Failed to load counters (status ${countersRes.status})`);
-      }
+          if (!Array.isArray(staffData)) {
+            throw new Error("Malformed staff response");
+          }
 
-      const staffData: unknown = await staffRes.json();
-      const countersData: unknown = await countersRes.json();
+          const validatedStaff: StaffMemberItem[] = staffData.filter(
+            (item): item is StaffMemberItem =>
+              typeof item === "object" &&
+              item !== null &&
+              typeof (item as { id?: unknown }).id === "string" &&
+              typeof (item as { email?: unknown }).email === "string" &&
+              ((item as { role?: unknown }).role === "ADMIN" || (item as { role?: unknown }).role === "STAFF") &&
+              Array.isArray((item as { counters?: unknown }).counters),
+          );
 
-      if (signal?.aborted || fetchGenerationRef.current !== fetchGen) return;
+          const validatedCounters: CounterOption[] = Array.isArray(countersData)
+            ? countersData.filter(
+                (c): c is CounterOption =>
+                  typeof c === "object" &&
+                  c !== null &&
+                  typeof (c as { id?: unknown }).id === "string" &&
+                  typeof (c as { name?: unknown }).name === "string" &&
+                  typeof (c as { isActive?: unknown }).isActive === "boolean",
+              )
+            : [];
 
-      if (!Array.isArray(staffData)) {
-        throw new Error("Malformed staff response");
-      }
+          setStaff(validatedStaff);
+          setCounters(validatedCounters);
+        })
+        .catch((err: unknown) => {
+          if (signal.aborted || fetchGenerationRef.current !== fetchGen) return;
+          const isAbort =
+            (err instanceof Error && err.name === "AbortError") ||
+            (typeof err === "object" &&
+              err !== null &&
+              "name" in err &&
+              (err as { name: string }).name === "AbortError") ||
+            Boolean(signal.aborted);
+          if (isAbort) return;
 
-      const validatedStaff: StaffMemberItem[] = staffData.filter(
-        (item): item is StaffMemberItem =>
-          typeof item === "object" &&
-          item !== null &&
-          typeof (item as { id?: unknown }).id === "string" &&
-          typeof (item as { email?: unknown }).email === "string" &&
-          ((item as { role?: unknown }).role === "ADMIN" || (item as { role?: unknown }).role === "STAFF") &&
-          Array.isArray((item as { counters?: unknown }).counters),
-      );
-
-      const validatedCounters: CounterOption[] = Array.isArray(countersData)
-        ? countersData.filter(
-            (c): c is CounterOption =>
-              typeof c === "object" &&
-              c !== null &&
-              typeof (c as { id?: unknown }).id === "string" &&
-              typeof (c as { name?: unknown }).name === "string" &&
-              typeof (c as { isActive?: unknown }).isActive === "boolean",
-          )
-        : [];
-
-      setStaff(validatedStaff);
-      setCounters(validatedCounters);
-    } catch (err: unknown) {
-      if (signal?.aborted || fetchGenerationRef.current !== fetchGen) return;
-      const isAbort =
-        (err instanceof Error && err.name === "AbortError") ||
-        (typeof err === "object" &&
-          err !== null &&
-          "name" in err &&
-          (err as { name: string }).name === "AbortError") ||
-        Boolean(signal?.aborted);
-      if (isAbort) return;
-
-      setFetchError("Unable to load staff members and counters. Please try again.");
-    } finally {
-      if (!signal?.aborted && fetchGenerationRef.current === fetchGen) {
-        setIsLoading(false);
-      }
-    }
-  }, [organizationId, router]);
+          setFetchError("Unable to load staff members and counters. Please try again.");
+        })
+        .finally(() => {
+          if (!signal.aborted && fetchGenerationRef.current === fetchGen) {
+            setIsLoading(false);
+          }
+        });
+    },
+    [organizationId, router],
+  );
 
   useEffect(() => {
     if (activeControllerRef.current) {
@@ -205,7 +208,9 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
 
     const controller = new AbortController();
     activeControllerRef.current = controller;
-    void fetchStaffAndCounters(controller.signal);
+    const fetchGen = ++fetchGenerationRef.current;
+
+    performFetchStaffAndCounters(controller.signal, fetchGen);
 
     return () => {
       controller.abort();
@@ -213,11 +218,13 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
         activeControllerRef.current = null;
       }
     };
-  }, [fetchStaffAndCounters, fetchRetryTrigger]);
+  }, [performFetchStaffAndCounters, fetchRetryTrigger]);
 
   const handleManualRefresh = () => {
     setActionError(null);
     setActionSuccess(null);
+    setIsLoading(true);
+    setFetchError(null);
     setFetchRetryTrigger((prev) => prev + 1);
   };
 
