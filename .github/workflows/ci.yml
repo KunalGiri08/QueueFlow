@@ -47,3 +47,9 @@ jobs:
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_ci_placeholder_key
           DATABASE_URL: postgresql://ci_placeholder:ci_placeholder@localhost:5432/ci_placeholder
           CLERK_SECRET_KEY: sk_test_ci_placeholder_key
+
+      - name: Verify Docker build
+        run: |
+          docker build \
+            --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_ci_placeholder_key \
+            -t queueflow:ci .
