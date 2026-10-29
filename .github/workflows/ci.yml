@@ -14,6 +14,8 @@ jobs:
   validate:
     name: Lint, Typecheck, Test & Build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -53,3 +55,67 @@ jobs:
           docker build \
             --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_ci_placeholder_key \
             -t queueflow:ci .
+
+  publish:
+    name: Build & Publish Image to GHCR
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Clerk publishable key configuration
+        env:
+          CLERK_PUB_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+        run: |
+          if [ -z "$CLERK_PUB_KEY" ]; then
+            echo "::error::NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is not configured in repository secrets or variables. Publishing aborted to prevent publishing an image with an invalid or placeholder key."
+            exit 1
+          fi
+          if [ "$CLERK_PUB_KEY" = "pk_test_ci_placeholder_key" ]; then
+            echo "::error::NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY cannot be the CI placeholder key. A real Clerk publishable key is required to build the container image."
+            exit 1
+          fi
+          case "$CLERK_PUB_KEY" in
+            pk_*) ;;
+            *)
+              echo "::error::NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY must be a valid Clerk publishable key starting with 'pk_'."
+              exit 1
+              ;;
+          esac
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
