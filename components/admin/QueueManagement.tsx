@@ -4,29 +4,22 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { formatCreationDate } from "@/lib/formatters/date";
 
-export interface QueueItem {
-  id: string;
-  name: string;
-  serviceId: string;
-  nextTicketNumber: number;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-  maxWaitingTickets?: number | null;
-  maxDailyTickets?: number | null;
-}
+import type {
+  QueueItem,
+  ServiceOption,
+  QueueManagementProps,
+  CreateQueuePayload,
+  UpdateQueuePayload,
+} from "./queues/types";
+import {
+  validateQueueFormInputs,
+  sortQueuesByName,
+  normalizeQueueItem,
+  parseQueueApiError,
+} from "./queues/validation";
 
-export interface ServiceOption {
-  id: string;
-  name: string;
-  description: string | null;
-  organizationId: string;
-  isActive?: boolean;
-}
-
-export interface QueueManagementProps {
-  organizationId: string;
-}
+// Re-export types for backward compatibility with external callers and tests
+export type { QueueItem, ServiceOption, QueueManagementProps };
 
 function QueuesSkeleton() {
   return (
@@ -318,21 +311,13 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
               typeof (q as { createdAt?: unknown }).createdAt === "string" &&
               typeof (q as { updatedAt?: unknown }).updatedAt === "string",
           )
-          .map((q) => ({
-            ...q,
-            maxWaitingTickets:
-              typeof q.maxWaitingTickets === "number" ? q.maxWaitingTickets : null,
-            maxDailyTickets:
-              typeof q.maxDailyTickets === "number" ? q.maxDailyTickets : null,
-          }));
+          .map(normalizeQueueItem);
 
-        validated.sort((a, b) =>
-          a.name.localeCompare(b.name, undefined, { numeric: true }),
-        );
+        const sorted = sortQueuesByName(validated);
 
         if (!isCurrent || queuesFetchGenRef.current !== fetchGen) return;
 
-        setQueues(validated);
+        setQueues(sorted);
         setQueuesServiceId(selectedServiceId);
         setQueuesError(null);
       })
@@ -402,30 +387,14 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     e.preventDefault();
     if (!selectedServiceId || isCreatingQueueRef.current) return;
 
-    const trimmed = newQueueName.trim();
-    if (!trimmed) {
-      setFormError("Queue name is required.");
+    const validation = validateQueueFormInputs(
+      newQueueName,
+      maxWaitingTickets,
+      maxDailyTickets,
+    );
+    if (!validation.isValid) {
+      setFormError(validation.error || "Invalid queue parameters.");
       return;
-    }
-
-    let parsedMaxWaiting: number | undefined = undefined;
-    if (maxWaitingTickets.trim() !== "") {
-      const parsed = Number(maxWaitingTickets.trim());
-      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 10000) {
-        setFormError("Max waiting tickets must be an integer between 1 and 10,000.");
-        return;
-      }
-      parsedMaxWaiting = parsed;
-    }
-
-    let parsedMaxDaily: number | undefined = undefined;
-    if (maxDailyTickets.trim() !== "") {
-      const parsed = Number(maxDailyTickets.trim());
-      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100000) {
-        setFormError("Max daily tickets must be an integer between 1 and 100,000.");
-        return;
-      }
-      parsedMaxDaily = parsed;
     }
 
     isCreatingQueueRef.current = true;
@@ -438,14 +407,14 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     const targetServiceId = selectedServiceId;
 
     try {
-      const payload: {
-        name: string;
-        maxWaitingTickets?: number;
-        maxDailyTickets?: number;
-      } = {
-        name: trimmed,
-        ...(parsedMaxWaiting !== undefined ? { maxWaitingTickets: parsedMaxWaiting } : {}),
-        ...(parsedMaxDaily !== undefined ? { maxDailyTickets: parsedMaxDaily } : {}),
+      const payload: CreateQueuePayload = {
+        name: validation.trimmedName,
+        ...(validation.parsedMaxWaiting != null
+          ? { maxWaitingTickets: validation.parsedMaxWaiting }
+          : {}),
+        ...(validation.parsedMaxDaily != null
+          ? { maxDailyTickets: validation.parsedMaxDaily }
+          : {}),
       };
 
       const res = await fetch(
@@ -482,23 +451,8 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
       }
 
       if (res.status === 400) {
-        const data = (await res.json().catch(() => ({}))) as {
-          error?: string;
-          details?: {
-            fieldErrors?: {
-              name?: string[];
-              maxWaitingTickets?: string[];
-              maxDailyTickets?: string[];
-            };
-          };
-        };
-        const message =
-          data.details?.fieldErrors?.name?.[0] ||
-          data.details?.fieldErrors?.maxWaitingTickets?.[0] ||
-          data.details?.fieldErrors?.maxDailyTickets?.[0] ||
-          data.error ||
-          "Invalid queue parameters.";
-        setFormError(message);
+        const data: unknown = await res.json().catch(() => ({}));
+        setFormError(parseQueueApiError(data));
         return;
       }
 
@@ -544,25 +498,8 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
         typeof (newQueue as { createdAt?: unknown }).createdAt === "string" &&
         typeof (newQueue as { updatedAt?: unknown }).updatedAt === "string"
       ) {
-        const rawQueue = newQueue as QueueItem;
-        const validQueue: QueueItem = {
-          ...rawQueue,
-          maxWaitingTickets:
-            typeof rawQueue.maxWaitingTickets === "number"
-              ? rawQueue.maxWaitingTickets
-              : null,
-          maxDailyTickets:
-            typeof rawQueue.maxDailyTickets === "number"
-              ? rawQueue.maxDailyTickets
-              : null,
-        };
-        setQueues((prev) => {
-          const updated = [...prev, validQueue];
-          updated.sort((a, b) =>
-            a.name.localeCompare(b.name, undefined, { numeric: true }),
-          );
-          return updated;
-        });
+        const validQueue = normalizeQueueItem(newQueue as QueueItem);
+        setQueues((prev) => sortQueuesByName([...prev, validQueue]));
         setNewQueueName("");
         setMaxWaitingTickets("");
         setMaxDailyTickets("");
@@ -572,7 +509,7 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
         setNewQueueName("");
         setMaxWaitingTickets("");
         setMaxDailyTickets("");
-        setFormSuccess(`Queue "${trimmed}" created successfully.`);
+        setFormSuccess(`Queue "${validation.trimmedName}" created successfully.`);
       }
     } catch {
       if (
@@ -735,30 +672,14 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     e.preventDefault();
     if (!editingQueue || isSavingEditRef.current || !selectedServiceId) return;
 
-    const trimmed = editName.trim();
-    if (!trimmed) {
-      setEditError("Queue name is required.");
+    const validation = validateQueueFormInputs(
+      editName,
+      editMaxWaitingTickets,
+      editMaxDailyTickets,
+    );
+    if (!validation.isValid) {
+      setEditError(validation.error || "Invalid queue parameters.");
       return;
-    }
-
-    let parsedMaxWaiting: number | null = null;
-    if (editMaxWaitingTickets.trim() !== "") {
-      const parsed = Number(editMaxWaitingTickets.trim());
-      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 10000) {
-        setEditError("Max waiting tickets must be an integer between 1 and 10,000.");
-        return;
-      }
-      parsedMaxWaiting = parsed;
-    }
-
-    let parsedMaxDaily: number | null = null;
-    if (editMaxDailyTickets.trim() !== "") {
-      const parsed = Number(editMaxDailyTickets.trim());
-      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100000) {
-        setEditError("Max daily tickets must be an integer between 1 and 100,000.");
-        return;
-      }
-      parsedMaxDaily = parsed;
     }
 
     isSavingEditRef.current = true;
@@ -771,10 +692,10 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     const targetQueueId = editingQueue.id;
 
     try {
-      const payload = {
-        name: trimmed,
-        maxWaitingTickets: parsedMaxWaiting,
-        maxDailyTickets: parsedMaxDaily,
+      const payload: UpdateQueuePayload = {
+        name: validation.trimmedName,
+        maxWaitingTickets: validation.parsedMaxWaiting,
+        maxDailyTickets: validation.parsedMaxDaily,
       };
 
       const res = await fetch(
@@ -810,23 +731,8 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
       }
 
       if (res.status === 400) {
-        const data = (await res.json().catch(() => ({}))) as {
-          error?: string;
-          details?: {
-            fieldErrors?: {
-              name?: string[];
-              maxWaitingTickets?: string[];
-              maxDailyTickets?: string[];
-            };
-          };
-        };
-        const message =
-          data.details?.fieldErrors?.name?.[0] ||
-          data.details?.fieldErrors?.maxWaitingTickets?.[0] ||
-          data.details?.fieldErrors?.maxDailyTickets?.[0] ||
-          data.error ||
-          "Invalid queue parameters.";
-        setEditError(message);
+        const data: unknown = await res.json().catch(() => ({}));
+        setEditError(parseQueueApiError(data));
         return;
       }
 
@@ -865,34 +771,18 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
         typeof (updatedQueue as { createdAt?: unknown }).createdAt === "string" &&
         typeof (updatedQueue as { updatedAt?: unknown }).updatedAt === "string"
       ) {
-        const rawUpdated = updatedQueue as QueueItem;
-        const validUpdated: QueueItem = {
-          ...rawUpdated,
-          maxWaitingTickets:
-            typeof rawUpdated.maxWaitingTickets === "number"
-              ? rawUpdated.maxWaitingTickets
-              : null,
-          maxDailyTickets:
-            typeof rawUpdated.maxDailyTickets === "number"
-              ? rawUpdated.maxDailyTickets
-              : null,
-        };
-
-        setQueues((prev) => {
-          const updated = prev.map((q) =>
-            q.id === targetQueueId ? validUpdated : q,
-          );
-          updated.sort((a, b) =>
-            a.name.localeCompare(b.name, undefined, { numeric: true }),
-          );
-          return updated;
-        });
+        const validUpdated = normalizeQueueItem(updatedQueue as QueueItem);
+        setQueues((prev) =>
+          sortQueuesByName(
+            prev.map((q) => (q.id === targetQueueId ? validUpdated : q)),
+          ),
+        );
         setEditingQueue(null);
         setActionSuccess(`Queue "${validUpdated.name}" updated successfully.`);
       } else {
         handleRetryQueues();
         setEditingQueue(null);
-        setActionSuccess(`Queue "${trimmed}" updated successfully.`);
+        setActionSuccess(`Queue "${validation.trimmedName}" updated successfully.`);
       }
     } catch {
       if (
