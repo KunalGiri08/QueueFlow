@@ -10,7 +10,6 @@ import type {
   UpdateQueuePayload,
 } from "./queues/types";
 import {
-  validateQueueFormInputs,
   sortQueuesByName,
   normalizeQueueItem,
   parseQueueApiError,
@@ -18,6 +17,7 @@ import {
 import { QueueCard } from "./queues/QueueCard";
 import { ServiceSelectorCard } from "./queues/ServiceSelectorCard";
 import { EditQueueDialog } from "./queues/EditQueueDialog";
+import { CreateQueueCard } from "./queues/CreateQueueCard";
 
 // Re-export types for backward compatibility with external callers and tests
 export type { QueueItem, ServiceOption, QueueManagementProps };
@@ -68,10 +68,7 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
   const [queuesError, setQueuesError] = useState<string | null>(null);
   const [queuesRetryTrigger, setQueuesRetryTrigger] = useState(0);
 
-  // Queue creation form state
-  const [newQueueName, setNewQueueName] = useState("");
-  const [maxWaitingTickets, setMaxWaitingTickets] = useState("");
-  const [maxDailyTickets, setMaxDailyTickets] = useState("");
+  // Queue creation state
   const [isCreatingQueue, setIsCreatingQueue] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
@@ -110,9 +107,6 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     setQueues([]);
     setQueuesServiceId(null);
     setQueuesError(null);
-    setNewQueueName("");
-    setMaxWaitingTickets("");
-    setMaxDailyTickets("");
     setFormError(null);
     setFormSuccess(null);
     setIsCreatingQueue(false);
@@ -352,9 +346,6 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     setUpdatingQueueId(null);
     setActionError(null);
     setActionSuccess(null);
-    setNewQueueName("");
-    setMaxWaitingTickets("");
-    setMaxDailyTickets("");
     setFormError(null);
     setFormSuccess(null);
     setEditingQueue(null);
@@ -363,19 +354,10 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     isSavingEditRef.current = false;
   };
 
-  const handleCreateQueue = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedServiceId || isCreatingQueueRef.current) return;
-
-    const validation = validateQueueFormInputs(
-      newQueueName,
-      maxWaitingTickets,
-      maxDailyTickets,
-    );
-    if (!validation.isValid) {
-      setFormError(validation.error || "Invalid queue parameters.");
-      return;
-    }
+  const handleCreateQueue = async (
+    payload: CreateQueuePayload,
+  ): Promise<boolean> => {
+    if (!selectedServiceId || isCreatingQueueRef.current) return false;
 
     isCreatingQueueRef.current = true;
     const creationRequestId = ++activeCreationRequestIdRef.current;
@@ -387,16 +369,6 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
     const targetServiceId = selectedServiceId;
 
     try {
-      const payload: CreateQueuePayload = {
-        name: validation.trimmedName,
-        ...(validation.parsedMaxWaiting != null
-          ? { maxWaitingTickets: validation.parsedMaxWaiting }
-          : {}),
-        ...(validation.parsedMaxDaily != null
-          ? { maxDailyTickets: validation.parsedMaxDaily }
-          : {}),
-      };
-
       const res = await fetch(
         `/api/organizations/${encodeURIComponent(targetOrgId)}/services/${encodeURIComponent(targetServiceId)}/queues`,
         {
@@ -414,12 +386,12 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
         currentServiceIdRef.current !== targetServiceId ||
         activeCreationRequestIdRef.current !== creationRequestId
       ) {
-        return;
+        return false;
       }
 
       if (res.status === 401) {
         router.push(`/sign-in?redirect_url=${encodeURIComponent("/admin")}`);
-        return;
+        return false;
       }
 
       if (res.status === 409) {
@@ -427,23 +399,23 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
         setFormError(
           data.error || "A queue with this name already exists in this service.",
         );
-        return;
+        return false;
       }
 
       if (res.status === 400) {
         const data: unknown = await res.json().catch(() => ({}));
         setFormError(parseQueueApiError(data));
-        return;
+        return false;
       }
 
       if (res.status === 403) {
         setFormError("Only organization admins can create queues.");
-        return;
+        return false;
       }
 
       if (res.status === 404) {
         setFormError("The selected service was not found. Please refresh and try again.");
-        return;
+        return false;
       }
 
       if (!res.ok) {
@@ -457,7 +429,7 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
         currentServiceIdRef.current !== targetServiceId ||
         activeCreationRequestIdRef.current !== creationRequestId
       ) {
-        return;
+        return false;
       }
 
       // Cancel any in-flight GET requests and bump fetch generation so older GET responses cannot overwrite this creation
@@ -480,16 +452,12 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
       ) {
         const validQueue = normalizeQueueItem(newQueue as QueueItem);
         setQueues((prev) => sortQueuesByName([...prev, validQueue]));
-        setNewQueueName("");
-        setMaxWaitingTickets("");
-        setMaxDailyTickets("");
         setFormSuccess(`Queue "${validQueue.name}" created successfully.`);
+        return true;
       } else {
         handleRetryQueues();
-        setNewQueueName("");
-        setMaxWaitingTickets("");
-        setMaxDailyTickets("");
-        setFormSuccess(`Queue "${validation.trimmedName}" created successfully.`);
+        setFormSuccess(`Queue "${payload.name}" created successfully.`);
+        return true;
       }
     } catch {
       if (
@@ -501,6 +469,7 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
           "Failed to create queue due to a network error. Please try again.",
         );
       }
+      return false;
     } finally {
       if (
         currentOrgIdRef.current === targetOrgId &&
@@ -820,186 +789,16 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
         <div className="space-y-6">
           {/* Create Queue Card */}
           {selectedService && (
-            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-              <div className="mb-4">
-                <h3 className="text-sm font-semibold text-gray-900">
-                  Add Queue to {selectedService.name}
-                </h3>
-                <p className="mt-0.5 text-xs text-gray-500">
-                  Enter a unique queue name for this service (e.g., &ldquo;General Walk-in&rdquo;, &ldquo;Priority / Accessible&rdquo;, &ldquo;Fast Track&rdquo;).
-                </p>
-              </div>
-
-              <form onSubmit={handleCreateQueue} noValidate className="space-y-4">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                  <div className="sm:col-span-1">
-                    <label
-                      htmlFor="new-queue-name"
-                      className="block text-xs font-semibold text-gray-700 mb-1"
-                    >
-                      Queue Name <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      id="new-queue-name"
-                      type="text"
-                      value={newQueueName}
-                      onChange={(e) => {
-                        setNewQueueName(e.target.value);
-                        if (formError) setFormError(null);
-                        if (formSuccess) setFormSuccess(null);
-                      }}
-                      placeholder="e.g., General Walk-in or Priority Desk"
-                      disabled={isCreatingQueue}
-                      aria-invalid={Boolean(formError)}
-                      aria-describedby={
-                        formError
-                          ? "queue-form-error"
-                          : formSuccess
-                          ? "queue-form-success"
-                          : undefined
-                      }
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
-                    />
-                  </div>
-
-                  <div>
-                    <label
-                      htmlFor="new-queue-max-waiting"
-                      className="block text-xs font-semibold text-gray-700 mb-1"
-                    >
-                      Max Waiting Limit{" "}
-                      <span className="font-normal text-gray-400">(Optional)</span>
-                    </label>
-                    <input
-                      id="new-queue-max-waiting"
-                      type="number"
-                      min="1"
-                      max="10000"
-                      value={maxWaitingTickets}
-                      onChange={(e) => {
-                        setMaxWaitingTickets(e.target.value);
-                        if (formError) setFormError(null);
-                        if (formSuccess) setFormSuccess(null);
-                      }}
-                      placeholder="Unlimited"
-                      disabled={isCreatingQueue}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
-                    />
-                  </div>
-
-                  <div>
-                    <label
-                      htmlFor="new-queue-max-daily"
-                      className="block text-xs font-semibold text-gray-700 mb-1"
-                    >
-                      Max Daily Limit{" "}
-                      <span className="font-normal text-gray-400">(Optional)</span>
-                    </label>
-                    <input
-                      id="new-queue-max-daily"
-                      type="number"
-                      min="1"
-                      max="100000"
-                      value={maxDailyTickets}
-                      onChange={(e) => {
-                        setMaxDailyTickets(e.target.value);
-                        if (formError) setFormError(null);
-                        if (formSuccess) setFormSuccess(null);
-                      }}
-                      placeholder="Unlimited"
-                      disabled={isCreatingQueue}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between pt-1">
-                  <p className="text-xs text-gray-500">
-                    Leave capacity limits empty for unlimited admittance. Configured limits are strictly enforced via transactional row locks.
-                  </p>
-                  <button
-                    type="submit"
-                    disabled={isCreatingQueue || !newQueueName.trim()}
-                    className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none sm:w-auto"
-                  >
-                    {isCreatingQueue ? (
-                      <>
-                        <svg
-                          className="mr-2 h-4 w-4 animate-spin text-white"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                        >
-                          <circle
-                            className="opacity-25"
-                            cx="12"
-                            cy="12"
-                            r="10"
-                            stroke="currentColor"
-                            strokeWidth="4"
-                          />
-                          <path
-                            className="opacity-75"
-                            fill="currentColor"
-                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                          />
-                        </svg>
-                        Creating...
-                      </>
-                    ) : (
-                      "Create Queue"
-                    )}
-                  </button>
-                </div>
-
-                {formError && (
-                  <div
-                    id="queue-form-error"
-                    role="alert"
-                    className="rounded-lg border border-red-200 bg-red-50/80 p-3 text-xs font-medium text-red-800 flex items-center gap-2"
-                  >
-                    <svg
-                      className="h-4 w-4 text-red-600 shrink-0"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      strokeWidth="1.5"
-                      stroke="currentColor"
-                      aria-hidden="true"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
-                      />
-                    </svg>
-                    <span>{formError}</span>
-                  </div>
-                )}
-
-                {formSuccess && (
-                  <div
-                    id="queue-form-success"
-                    role="status"
-                    className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-3 text-xs font-medium text-emerald-800 flex items-center gap-2"
-                  >
-                    <svg
-                      className="h-4 w-4 text-emerald-600 shrink-0"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      strokeWidth="1.5"
-                      stroke="currentColor"
-                      aria-hidden="true"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
-                      />
-                    </svg>
-                    <span>{formSuccess}</span>
-                  </div>
-                )}
-              </form>
-            </div>
+            <CreateQueueCard
+              serviceId={selectedService.id}
+              serviceName={selectedService.name}
+              isCreating={isCreatingQueue}
+              formError={formError}
+              formSuccess={formSuccess}
+              onCreateQueue={handleCreateQueue}
+              onClearError={() => setFormError(null)}
+              onClearSuccess={() => setFormSuccess(null)}
+            />
           )}
 
           {/* Global Queue Action Feedback Alerts */}
