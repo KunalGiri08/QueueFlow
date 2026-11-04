@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   mockGetCurrentUser,
@@ -477,6 +477,17 @@ describe("PATCH /api/appointments/[id]", () => {
   });
 
   describe("Operating Hours & Exceptional Closures Enforcement", () => {
+    const FROZEN_TIME = new Date("2026-11-01T00:00:00.000Z");
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(FROZEN_TIME);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     const mondayWorkingOrg = {
       id: "svc-1",
       organization: {
