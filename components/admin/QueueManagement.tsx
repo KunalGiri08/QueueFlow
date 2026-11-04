@@ -2,8 +2,6 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { formatCreationDate } from "@/lib/formatters/date";
-
 import type {
   QueueItem,
   ServiceOption,
@@ -17,6 +15,8 @@ import {
   normalizeQueueItem,
   parseQueueApiError,
 } from "./queues/validation";
+import { QueueCard } from "./queues/QueueCard";
+import { ServiceSelectorCard } from "./queues/ServiceSelectorCard";
 
 // Re-export types for backward compatibility with external callers and tests
 export type { QueueItem, ServiceOption, QueueManagementProps };
@@ -40,18 +40,6 @@ function QueuesSkeleton() {
           <div className="h-3 w-24 rounded bg-gray-100 pt-2" />
         </div>
       ))}
-    </div>
-  );
-}
-
-function ServicesSkeleton() {
-  return (
-    <div
-      aria-label="Loading service categories for queue management"
-      className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm animate-pulse space-y-3"
-    >
-      <div className="h-4 w-40 rounded bg-gray-200" />
-      <div className="h-9 w-full sm:w-80 rounded-lg bg-gray-100" />
     </div>
   );
 }
@@ -863,92 +851,19 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
       </div>
 
       {/* Service Category Selector / Prerequisites */}
-      {isServicesLoading ? (
-        <ServicesSkeleton />
-      ) : servicesError ? (
-        <div
-          role="alert"
-          className="rounded-xl border border-red-200 bg-red-50/70 p-6 text-center text-red-800 shadow-sm"
-        >
-          <p className="text-sm font-medium">{servicesError}</p>
-          <button
-            type="button"
-            onClick={handleRetryServices}
-            className="mt-3 inline-flex items-center justify-center rounded-lg bg-gray-900 px-3.5 py-1.5 text-xs font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
-          >
-            Retry Loading Service Categories
-          </button>
-        </div>
-      ) : services.length === 0 ? (
-        /* Empty State: No services exist yet */
-        <div className="rounded-xl border border-dashed border-gray-300 bg-white p-8 text-center shadow-sm">
-          <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-gray-500">
-            <svg
-              className="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth="1.5"
-              stroke="currentColor"
-              aria-hidden="true"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 0 1 0 3.75H5.625a1.875 1.875 0 0 1 0-3.75Z"
-              />
-            </svg>
-          </div>
-          <h4 className="mt-3 text-sm font-semibold text-gray-900">
-            No Service Categories Configured
-          </h4>
-          <p className="mt-1 text-xs text-gray-500 max-w-md mx-auto">
-            Queues belong to service categories. Add at least one service category in the Service Categories section above before creating queues.
-          </p>
-        </div>
-      ) : (
-        /* Active Services Selector & Queue Operations */
+      <ServiceSelectorCard
+        services={services}
+        selectedServiceId={selectedServiceId}
+        isLoading={isServicesLoading}
+        error={servicesError}
+        isDisabled={isCreatingQueue}
+        onSelectService={handleSelectService}
+        onRetry={handleRetryServices}
+      />
+
+      {/* Active Services Operations */}
+      {!isServicesLoading && !servicesError && services.length > 0 && (
         <div className="space-y-6">
-          {/* Service Selector Card */}
-          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <label
-                  htmlFor="queue-service-select"
-                  className="block text-xs font-semibold uppercase tracking-wider text-gray-700"
-                >
-                  Select Service Category
-                </label>
-                <p className="mt-0.5 text-xs text-gray-500">
-                  Choose a service to manage its active customer queues.
-                </p>
-              </div>
-
-              <div className="w-full sm:w-72">
-                <select
-                  id="queue-service-select"
-                  value={selectedServiceId || ""}
-                  onChange={(e) => handleSelectService(e.target.value)}
-                  disabled={isCreatingQueue}
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
-                >
-                  {services.map((service) => (
-                    <option key={service.id} value={service.id}>
-                      {service.name}{service.isActive === false ? " (Inactive)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {selectedService?.description && (
-              <div className="mt-3 border-t border-gray-100 pt-3">
-                <p className="text-xs text-gray-500 italic">
-                  &ldquo;{selectedService.description}&rdquo;
-                </p>
-              </div>
-            )}
-          </div>
-
           {/* Create Queue Card */}
           {selectedService && (
             <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
@@ -1248,141 +1163,22 @@ export function QueueManagement({ organizationId }: QueueManagementProps) {
                 {displayedQueues.map((queue) => {
                   const isQueueUpdating = updatingQueueId === queue.id;
                   const isAnyQueueUpdating = Boolean(updatingQueueId);
+                  const isCardDisabled =
+                    isAnyQueueUpdating ||
+                    isQueuesLoading ||
+                    isServicesLoading ||
+                    isCreatingQueue ||
+                    isSavingEdit;
 
                   return (
-                    <div
+                    <QueueCard
                       key={queue.id}
-                      className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-gray-300 flex flex-col justify-between gap-4"
-                    >
-                      <div className="space-y-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="space-y-1">
-                            <h4 className="text-base font-semibold text-gray-900">
-                              {queue.name}
-                            </h4>
-                            <span className="block font-mono text-xs text-gray-400">
-                              ID: {queue.id}
-                            </span>
-                          </div>
-                          {queue.isActive ? (
-                            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200/80">
-                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                              Active
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-600 border border-gray-200">
-                              <span className="h-1.5 w-1.5 rounded-full bg-gray-400" />
-                              Inactive
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
-                            <span className="font-medium text-gray-500">
-                              Next Ticket Number
-                            </span>
-                            <span className="font-mono font-bold text-gray-900">
-                              #{queue.nextTicketNumber}
-                            </span>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2 text-xs">
-                            <div className="rounded-lg bg-gray-50/80 px-2.5 py-1.5 border border-gray-100">
-                              <span className="block text-[11px] font-medium text-gray-500">
-                                Waiting Limit
-                              </span>
-                              <span className="font-semibold text-gray-800">
-                                {queue.maxWaitingTickets != null
-                                  ? `${queue.maxWaitingTickets} tickets`
-                                  : "Unlimited"}
-                              </span>
-                            </div>
-                            <div className="rounded-lg bg-gray-50/80 px-2.5 py-1.5 border border-gray-100">
-                              <span className="block text-[11px] font-medium text-gray-500">
-                                Daily Limit
-                              </span>
-                              <span className="font-semibold text-gray-800">
-                                {queue.maxDailyTickets != null
-                                  ? `${queue.maxDailyTickets} tickets`
-                                  : "Unlimited"}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2 border-t border-gray-100 pt-3 text-xs text-gray-400">
-                        <span>{formatCreationDate(queue.createdAt)}</span>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEdit(queue)}
-                            disabled={
-                              isAnyQueueUpdating ||
-                              isQueuesLoading ||
-                              isServicesLoading ||
-                              isCreatingQueue ||
-                              isSavingEdit
-                            }
-                            aria-label={`Edit ${queue.name}`}
-                            className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleToggleQueueStatus(queue)}
-                            disabled={
-                              isAnyQueueUpdating ||
-                              isQueuesLoading ||
-                              isServicesLoading ||
-                              isCreatingQueue ||
-                              isSavingEdit
-                            }
-                            aria-label={`${
-                              queue.isActive ? "Deactivate" : "Activate"
-                            } ${queue.name}`}
-                            className={`inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none ${
-                              queue.isActive
-                                ? "border-gray-300 bg-white text-gray-700 hover:bg-gray-50 hover:text-red-700 hover:border-red-200"
-                                : "border-gray-300 bg-white text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300"
-                            }`}
-                          >
-                            {isQueueUpdating ? (
-                              <>
-                                <svg
-                                  className="mr-1.5 h-3.5 w-3.5 animate-spin text-gray-500"
-                                  fill="none"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <circle
-                                    className="opacity-25"
-                                    cx="12"
-                                    cy="12"
-                                    r="10"
-                                    stroke="currentColor"
-                                    strokeWidth="4"
-                                  />
-                                  <path
-                                    className="opacity-75"
-                                    fill="currentColor"
-                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                  />
-                                </svg>
-                                {queue.isActive
-                                  ? "Deactivating..."
-                                  : "Activating..."}
-                              </>
-                            ) : queue.isActive ? (
-                              "Deactivate"
-                            ) : (
-                              "Activate"
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
+                      queue={queue}
+                      isUpdating={isQueueUpdating}
+                      isDisabled={isCardDisabled}
+                      onEdit={handleOpenEdit}
+                      onToggleStatus={handleToggleQueueStatus}
+                    />
                   );
                 })}
               </div>
