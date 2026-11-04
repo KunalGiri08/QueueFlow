@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from "@testing-library/react";
 import { ServiceManagement } from "./ServiceManagement";
 
 const mockPush = vi.fn();
@@ -1065,6 +1065,568 @@ describe("components/admin/ServiceManagement", () => {
           `/sign-in?redirect_url=${encodeURIComponent("/admin")}`,
         );
       });
+    });
+  });
+
+  describe("Edit Service and Admission Cutoff feature", () => {
+    const servicesWithCutoff = [
+      {
+        id: "srv-1",
+        name: "Consultation",
+        description: "Walk-in general consultations",
+        organizationId: "org-1",
+        isActive: true,
+        createdAt: "2026-03-01T10:00:00.000Z",
+        updatedAt: "2026-03-01T10:00:00.000Z",
+        admissionCutoffMinutes: 30,
+      },
+      {
+        id: "srv-2",
+        name: "Pharmacy",
+        description: null,
+        organizationId: "org-1",
+        isActive: true,
+        createdAt: "2026-03-02T10:00:00.000Z",
+        updatedAt: "2026-03-02T10:00:00.000Z",
+        admissionCutoffMinutes: null,
+      },
+    ];
+
+    it("renders Edit action and displays cutoff information on service cards", async () => {
+      fetchMock.mockResolvedValue(jsonResponse(servicesWithCutoff));
+
+      render(<ServiceManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Consultation")).toBeDefined();
+      expect(screen.getByText("30 min before closing")).toBeDefined();
+      expect(screen.getByText("Unlimited")).toBeDefined();
+
+      expect(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      ).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /edit pharmacy/i }),
+      ).toBeDefined();
+    });
+
+    it("opens edit dialog and pre-populates existing values", async () => {
+      fetchMock.mockResolvedValue(jsonResponse(servicesWithCutoff));
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      const editBtn = screen.getByRole("button", {
+        name: /edit consultation/i,
+      });
+      fireEvent.click(editBtn);
+
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toBeDefined();
+      expect(
+        screen.getByRole("heading", { name: "Edit Service" }),
+      ).toBeDefined();
+
+      const nameInput = within(dialog).getByLabelText(/service name/i) as HTMLInputElement;
+      const descInput = within(dialog).getByLabelText(/description/i) as HTMLInputElement;
+      const cutoffInput = within(dialog).getByLabelText(/admission cutoff/i) as HTMLInputElement;
+
+      expect(nameInput.value).toBe("Consultation");
+      expect(descInput.value).toBe("Walk-in general consultations");
+      expect(cutoffInput.value).toBe("30");
+
+      // Can cancel dialog
+      const cancelBtn = within(dialog).getByRole("button", { name: /cancel/i });
+      fireEvent.click(cancelBtn);
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("closes dialog on close button click, Escape key, and backdrop click", async () => {
+      fetchMock.mockResolvedValue(jsonResponse(servicesWithCutoff));
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      // 1. Close icon button
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      expect(screen.getByRole("dialog")).toBeDefined();
+
+      const closeIconBtn = screen.getByRole("button", {
+        name: /close edit service dialog/i,
+      });
+      fireEvent.click(closeIconBtn);
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      // 2. Escape key
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      expect(screen.getByRole("dialog")).toBeDefined();
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      // 3. Backdrop overlay click
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+      const backdrop = dialog.parentElement as HTMLElement;
+      fireEvent.click(backdrop);
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("updates service name, description, and cutoff, sending PATCH request and updating UI", async () => {
+      let patchBody: unknown;
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH" && url.includes("/services/srv-1")) {
+          patchBody = JSON.parse(init.body as string);
+          return jsonResponse({
+            id: "srv-1",
+            name: "Specialist Consultation",
+            description: "Advanced specialty consultations",
+            organizationId: "org-1",
+            isActive: true,
+            createdAt: "2026-03-01T10:00:00.000Z",
+            updatedAt: "2026-03-01T12:00:00.000Z",
+            admissionCutoffMinutes: 45,
+          });
+        }
+        return jsonResponse(servicesWithCutoff);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+
+      const nameInput = within(dialog).getByLabelText(/service name/i);
+      const descInput = within(dialog).getByLabelText(/description/i);
+      const cutoffInput = within(dialog).getByLabelText(/admission cutoff/i);
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      fireEvent.change(nameInput, { target: { value: "Specialist Consultation" } });
+      fireEvent.change(descInput, { target: { value: "Advanced specialty consultations" } });
+      fireEvent.change(cutoffInput, { target: { value: "45" } });
+      fireEvent.click(saveBtn);
+
+      expect(
+        await screen.findByText('Service "Specialist Consultation" updated successfully.'),
+      ).toBeDefined();
+
+      expect(patchBody).toEqual({
+        name: "Specialist Consultation",
+        description: "Advanced specialty consultations",
+        admissionCutoffMinutes: 45,
+      });
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByText("Specialist Consultation")).toBeDefined();
+      expect(screen.getByText("Advanced specialty consultations")).toBeDefined();
+      expect(screen.getByText("45 min before closing")).toBeDefined();
+    });
+
+    it("clears cutoff when input is empty, sending admissionCutoffMinutes: null", async () => {
+      let patchBody: unknown;
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH" && url.includes("/services/srv-1")) {
+          patchBody = JSON.parse(init.body as string);
+          return jsonResponse({
+            id: "srv-1",
+            name: "Consultation",
+            description: "Walk-in general consultations",
+            organizationId: "org-1",
+            isActive: true,
+            createdAt: "2026-03-01T10:00:00.000Z",
+            updatedAt: "2026-03-01T12:00:00.000Z",
+            admissionCutoffMinutes: null,
+          });
+        }
+        return jsonResponse(servicesWithCutoff);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+      const cutoffInput = within(dialog).getByLabelText(/admission cutoff/i);
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      fireEvent.change(cutoffInput, { target: { value: "" } });
+      fireEvent.click(saveBtn);
+
+      expect(
+        await screen.findByText('Service "Consultation" updated successfully.'),
+      ).toBeDefined();
+
+      expect(patchBody).toEqual({
+        name: "Consultation",
+        description: "Walk-in general consultations",
+        admissionCutoffMinutes: null,
+      });
+    });
+
+    it("validates client-side constraints on service name and cutoff", async () => {
+      fetchMock.mockResolvedValue(jsonResponse(servicesWithCutoff));
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+      const nameInput = within(dialog).getByLabelText(/service name/i);
+      const cutoffInput = within(dialog).getByLabelText(/admission cutoff/i);
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      // Negative cutoff
+      fireEvent.change(cutoffInput, { target: { value: "-10" } });
+      fireEvent.click(saveBtn);
+      expect(
+        within(dialog).getByText("Admission cutoff minutes cannot be negative."),
+      ).toBeDefined();
+
+      // Cutoff exceeding 480
+      fireEvent.change(cutoffInput, { target: { value: "500" } });
+      fireEvent.click(saveBtn);
+      expect(
+        within(dialog).getByText(
+          "Admission cutoff minutes cannot exceed 480 (8 hours).",
+        ),
+      ).toBeDefined();
+
+      // Cutoff non-integer
+      fireEvent.change(cutoffInput, { target: { value: "15.5" } });
+      fireEvent.click(saveBtn);
+      expect(
+        within(dialog).getByText("Admission cutoff minutes must be an integer."),
+      ).toBeDefined();
+
+      // Empty service name (spaces)
+      fireEvent.change(cutoffInput, { target: { value: "30" } });
+      fireEvent.change(nameInput, { target: { value: "   " } });
+      // Since button is disabled when !editName.trim(), submit via form
+      const form = dialog.querySelector("form") as HTMLFormElement;
+      fireEvent.submit(form);
+      expect(within(dialog).getByText("Service name is required.")).toBeDefined();
+    });
+
+    it("displays error message on 400 validation failure from backend", async () => {
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return jsonResponse(
+            {
+              error: "Invalid request body",
+              details: {
+                fieldErrors: {
+                  admissionCutoffMinutes: [
+                    "Admission cutoff minutes cannot exceed 480 (8 hours)",
+                  ],
+                },
+              },
+            },
+            400,
+          );
+        }
+        return jsonResponse(servicesWithCutoff);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      fireEvent.click(saveBtn);
+
+      expect(
+        await within(dialog).findByText(
+          "Admission cutoff minutes cannot exceed 480 (8 hours)",
+        ),
+      ).toBeDefined();
+      expect(screen.getByRole("dialog")).toBeDefined();
+    });
+
+    it("displays error message on 409 name conflict", async () => {
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return jsonResponse(
+            {
+              error: "A service with this name already exists in this organization.",
+            },
+            409,
+          );
+        }
+        return jsonResponse(servicesWithCutoff);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      fireEvent.click(saveBtn);
+
+      expect(
+        await within(dialog).findByText(
+          "A service with this name already exists in this organization.",
+        ),
+      ).toBeDefined();
+    });
+
+    it("displays error message on 403 forbidden", async () => {
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return jsonResponse(
+            { error: "Only organization admins can update services" },
+            403,
+          );
+        }
+        return jsonResponse(servicesWithCutoff);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      fireEvent.click(saveBtn);
+
+      expect(
+        await within(dialog).findByText("Only organization admins can update services"),
+      ).toBeDefined();
+    });
+
+    it("displays error message on 404 not found", async () => {
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return jsonResponse(
+            { error: "Service not found in this organization" },
+            404,
+          );
+        }
+        return jsonResponse(servicesWithCutoff);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      fireEvent.click(saveBtn);
+
+      expect(
+        await within(dialog).findByText("Service not found in this organization"),
+      ).toBeDefined();
+    });
+
+    it("displays error on network failure during save", async () => {
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          throw new Error("Network error");
+        }
+        return jsonResponse(servicesWithCutoff);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      fireEvent.click(saveBtn);
+
+      expect(
+        await within(dialog).findByText(
+          "Failed to update service due to a network error. Please try again.",
+        ),
+      ).toBeDefined();
+    });
+
+    it("redirects to /sign-in on 401 response during save", async () => {
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return jsonResponse({ error: "Unauthorized" }, 401);
+        }
+        return jsonResponse(servicesWithCutoff);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      fireEvent.click(saveBtn);
+
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith(
+          `/sign-in?redirect_url=${encodeURIComponent("/admin")}`,
+        );
+      });
+    });
+
+    it("shows saving spinner and disables buttons while save request is in-flight", async () => {
+      const deferredPatch = createDeferred<Response>();
+
+      fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          return deferredPatch.promise;
+        }
+        return jsonResponse(servicesWithCutoff);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      expect(await screen.findByText("Consultation")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit consultation/i }),
+      );
+      const dialog = screen.getByRole("dialog");
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+      const cancelBtn = within(dialog).getByRole("button", { name: /cancel/i });
+
+      fireEvent.click(saveBtn);
+
+      expect(within(dialog).getByText("Saving...")).toBeDefined();
+      expect((cancelBtn as HTMLButtonElement).disabled).toBe(true);
+
+      // Escape key does not close while saving
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.getByRole("dialog")).toBeDefined();
+
+      // Backdrop click does not close while saving
+      const backdrop = dialog.parentElement as HTMLElement;
+      fireEvent.click(backdrop);
+      expect(screen.getByRole("dialog")).toBeDefined();
+
+      // Complete save
+      deferredPatch.resolve(
+        jsonResponse({
+          id: "srv-1",
+          name: "Consultation",
+          description: "Walk-in general consultations",
+          organizationId: "org-1",
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-01T12:00:00.000Z",
+          admissionCutoffMinutes: 30,
+        }),
+      );
+
+      expect(
+        await screen.findByText('Service "Consultation" updated successfully.'),
+      ).toBeDefined();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("prevents race condition when organization is switched while save is in-flight", async () => {
+      const deferredPatch = createDeferred<Response>();
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (init?.method === "PATCH") {
+          return deferredPatch.promise;
+        }
+        if (url.includes("/organizations/org-A/services")) {
+          return jsonResponse([
+            {
+              id: "srv-a",
+              name: "Service A",
+              description: null,
+              organizationId: "org-A",
+              isActive: true,
+              createdAt: "2026-03-01T10:00:00.000Z",
+              updatedAt: "2026-03-01T10:00:00.000Z",
+              admissionCutoffMinutes: null,
+            },
+          ]);
+        }
+        if (url.includes("/organizations/org-B/services")) {
+          return jsonResponse([
+            {
+              id: "srv-b",
+              name: "Service B",
+              description: null,
+              organizationId: "org-B",
+              isActive: true,
+              createdAt: "2026-03-01T10:00:00.000Z",
+              updatedAt: "2026-03-01T10:00:00.000Z",
+              admissionCutoffMinutes: null,
+            },
+          ]);
+        }
+        return jsonResponse([]);
+      });
+
+      const { rerender } = render(<ServiceManagement organizationId="org-A" />);
+      expect(await screen.findByText("Service A")).toBeDefined();
+
+      fireEvent.click(screen.getByRole("button", { name: /edit service a/i }));
+      const dialog = screen.getByRole("dialog");
+      const saveBtn = within(dialog).getByRole("button", { name: /save changes/i });
+
+      fireEvent.click(saveBtn);
+      expect(within(dialog).getByText("Saving...")).toBeDefined();
+
+      // Switch organization
+      rerender(<ServiceManagement organizationId="org-B" />);
+      expect(await screen.findByText("Service B")).toBeDefined();
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      // Resolve delayed response
+      deferredPatch.resolve(
+        jsonResponse({
+          id: "srv-a",
+          name: "Updated Service A",
+          description: null,
+          organizationId: "org-A",
+          isActive: true,
+          createdAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-01T12:00:00.000Z",
+          admissionCutoffMinutes: 20,
+        }),
+      );
+
+      // Verify no pollution in org-B
+      expect(
+        screen.queryByText('Service "Updated Service A" updated successfully.'),
+      ).toBeNull();
+      expect(screen.getByText("Service B")).toBeDefined();
     });
   });
 });

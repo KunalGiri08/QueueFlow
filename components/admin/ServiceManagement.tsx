@@ -2,17 +2,13 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { formatCreationDate } from "@/lib/formatters/date";
+import type { ServiceItem } from "./services/types";
+import { ServiceCard } from "./services/ServiceCard";
+import { CreateServiceCard } from "./services/CreateServiceCard";
+import { EditServiceDialog } from "./services/EditServiceDialog";
 
-export interface ServiceItem {
-  id: string;
-  name: string;
-  description: string | null;
-  organizationId: string;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
+// Re-export types for backward compatibility with external callers and tests
+export type { ServiceItem };
 
 export interface ServiceManagementProps {
   organizationId: string;
@@ -43,56 +39,45 @@ function ServicesSkeleton() {
 
 /**
  * Service Management module for organization administrators.
- * Handles listing existing service categories and creating new services.
+ * Handles listing existing service categories, toggling active status,
+ * and coordinating creation and editing workflows.
  */
 export function ServiceManagement({ organizationId }: ServiceManagementProps) {
   const router = useRouter();
 
-  // Service management states
+  // Service management listing state
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [servicesOrgId, setServicesOrgId] = useState<string | null>(null);
   const [servicesError, setServicesError] = useState<string | null>(null);
   const [servicesRetryTrigger, setServicesRetryTrigger] = useState(0);
-
-  // Service creation form states
-  const [newServiceName, setNewServiceName] = useState("");
-  const [newServiceDescription, setNewServiceDescription] = useState("");
-  const [isCreatingService, setIsCreatingService] = useState(false);
-  const [serviceFormError, setServiceFormError] = useState<string | null>(null);
-  const [serviceFormSuccess, setServiceFormSuccess] = useState<string | null>(null);
 
   // Service activation/deactivation operational states
   const [updatingServiceId, setUpdatingServiceId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
+  // Service editing modal state
+  const [editingService, setEditingService] = useState<ServiceItem | null>(null);
+
   // Concurrency & lifecycle refs
   const activeServiceControllerRef = useRef<AbortController | null>(null);
   const serviceFetchGenerationRef = useRef<number>(0);
-  const activeServiceCreationRequestIdRef = useRef<number>(0);
   const activeActionRequestIdRef = useRef<number>(0);
   const currentOrgIdRef = useRef<string>(organizationId);
-  const isCreatingServiceRef = useRef<boolean>(false);
 
   // Reset form inputs and errors when switching organizations
   const [prevOrgId, setPrevOrgId] = useState(organizationId);
   if (organizationId !== prevOrgId) {
     setPrevOrgId(organizationId);
-    setNewServiceName("");
-    setNewServiceDescription("");
-    setServiceFormError(null);
-    setServiceFormSuccess(null);
-    setIsCreatingService(false);
     setUpdatingServiceId(null);
     setActionError(null);
     setActionSuccess(null);
+    setEditingService(null);
   }
 
   // Synchronize refs with organizationId prop
   useEffect(() => {
-    isCreatingServiceRef.current = false;
     currentOrgIdRef.current = organizationId;
-    activeServiceCreationRequestIdRef.current += 1;
     activeActionRequestIdRef.current += 1;
   }, [organizationId]);
 
@@ -152,6 +137,12 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
                   : true,
               createdAt: (s as { createdAt: string }).createdAt,
               updatedAt: (s as { updatedAt: string }).updatedAt,
+              admissionCutoffMinutes:
+                typeof (s as { admissionCutoffMinutes?: unknown })
+                  .admissionCutoffMinutes === "number"
+                  ? (s as { admissionCutoffMinutes: number })
+                      .admissionCutoffMinutes
+                  : null,
             });
           }
         }
@@ -199,7 +190,7 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
   };
 
   const handleToggleServiceStatus = async (service: ServiceItem) => {
-    if (updatingServiceId || isServicesLoading) return;
+    if (updatingServiceId || isServicesLoading || Boolean(editingService)) return;
 
     setActionError(null);
     setActionSuccess(null);
@@ -296,162 +287,39 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
     }
   };
 
-  const handleCreateService = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isCreatingServiceRef.current) return;
-
-    const trimmedName = newServiceName.trim();
-    if (!trimmedName) {
-      setServiceFormError("Service name is required.");
-      return;
+  const handleServiceCreated = (newService: ServiceItem) => {
+    // Cancel any in-flight GET requests and bump fetch generation so older GET responses cannot overwrite this creation
+    serviceFetchGenerationRef.current += 1;
+    if (activeServiceControllerRef.current) {
+      activeServiceControllerRef.current.abort();
+      activeServiceControllerRef.current = null;
     }
 
-    isCreatingServiceRef.current = true;
-    const trimmedDesc = newServiceDescription.trim();
-    const creationRequestId = ++activeServiceCreationRequestIdRef.current;
-    setIsCreatingService(true);
-    setServiceFormError(null);
-    setServiceFormSuccess(null);
-
-    const targetOrgId = organizationId;
-
-    const payload: { name: string; description?: string } = {
-      name: trimmedName,
-    };
-    if (trimmedDesc) {
-      payload.description = trimmedDesc;
-    }
-
-    try {
-      const res = await fetch(
-        `/api/organizations/${encodeURIComponent(targetOrgId)}/services`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        },
+    setServices((prev) => {
+      const updated = [...prev, newService];
+      updated.sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { numeric: true }),
       );
+      return updated;
+    });
+  };
 
-      // Verify the user is still on the same organization and this is still the active request
-      if (
-        currentOrgIdRef.current !== targetOrgId ||
-        activeServiceCreationRequestIdRef.current !== creationRequestId
-      ) {
-        return;
-      }
+  const handleCreationFallback = () => {
+    handleRetryServices();
+  };
 
-      if (res.status === 401) {
-        router.push(`/sign-in?redirect_url=${encodeURIComponent("/admin")}`);
-        return;
-      }
-
-      if (res.status === 409) {
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        setServiceFormError(
-          data.error || "A service with this name already exists in this organization.",
-        );
-        return;
-      }
-
-      if (res.status === 400) {
-        const data = (await res.json().catch(() => ({}))) as {
-          error?: string;
-          details?: { fieldErrors?: { name?: string[]; description?: string[] } };
-        };
-        const message =
-          data.details?.fieldErrors?.name?.[0] ||
-          data.details?.fieldErrors?.description?.[0] ||
-          data.error ||
-          "Invalid service data.";
-        setServiceFormError(message);
-        return;
-      }
-
-      if (res.status === 403) {
-        setServiceFormError("Only organization admins can create services.");
-        return;
-      }
-
-      if (!res.ok) {
-        throw new Error(`Server returned status ${res.status}`);
-      }
-
-      const newService: unknown = await res.json();
-
-      if (
-        currentOrgIdRef.current !== targetOrgId ||
-        activeServiceCreationRequestIdRef.current !== creationRequestId
-      ) {
-        return;
-      }
-
-      // Cancel any in-flight GET requests and bump fetch generation so older GET responses cannot overwrite this creation
-      serviceFetchGenerationRef.current += 1;
-      if (activeServiceControllerRef.current) {
-        activeServiceControllerRef.current.abort();
-        activeServiceControllerRef.current = null;
-      }
-
-      if (
-        typeof newService === "object" &&
-        newService !== null &&
-        typeof (newService as { id?: unknown }).id === "string" &&
-        typeof (newService as { name?: unknown }).name === "string" &&
-        ((newService as { description?: unknown }).description === null ||
-          typeof (newService as { description?: unknown }).description === "string") &&
-        typeof (newService as { organizationId?: unknown }).organizationId === "string" &&
-        typeof (newService as { createdAt?: unknown }).createdAt === "string" &&
-        typeof (newService as { updatedAt?: unknown }).updatedAt === "string"
-      ) {
-        const validService: ServiceItem = {
-          id: (newService as { id: string }).id,
-          name: (newService as { name: string }).name,
-          description:
-            (newService as { description: string | null }).description ?? null,
-          organizationId: (newService as { organizationId: string }).organizationId,
-          isActive:
-            typeof (newService as { isActive?: unknown }).isActive === "boolean"
-              ? (newService as { isActive: boolean }).isActive
-              : true,
-          createdAt: (newService as { createdAt: string }).createdAt,
-          updatedAt: (newService as { updatedAt: string }).updatedAt,
-        };
-        setServices((prev) => {
-          const updated = [...prev, validService];
-          updated.sort((a, b) =>
-            a.name.localeCompare(b.name, undefined, { numeric: true }),
-          );
-          return updated;
-        });
-        setNewServiceName("");
-        setNewServiceDescription("");
-        setServiceFormSuccess(`Service "${validService.name}" created successfully.`);
-      } else {
-        handleRetryServices();
-        setNewServiceName("");
-        setNewServiceDescription("");
-        setServiceFormSuccess(`Service "${trimmedName}" created successfully.`);
-      }
-    } catch {
-      if (
-        currentOrgIdRef.current === targetOrgId &&
-        activeServiceCreationRequestIdRef.current === creationRequestId
-      ) {
-        setServiceFormError(
-          "Failed to create service due to a network error. Please try again.",
-        );
-      }
-    } finally {
-      if (
-        currentOrgIdRef.current === targetOrgId &&
-        activeServiceCreationRequestIdRef.current === creationRequestId
-      ) {
-        isCreatingServiceRef.current = false;
-        setIsCreatingService(false);
-      }
-    }
+  const handleEditSuccess = (updatedService: ServiceItem) => {
+    setServices((prev) => {
+      const updated = prev.map((s) =>
+        s.id === updatedService.id ? updatedService : s,
+      );
+      updated.sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { numeric: true }),
+      );
+      return updated;
+    });
+    setEditingService(null);
+    setActionSuccess(`Service "${updatedService.name}" updated successfully.`);
   };
 
   const isServicesLoading = Boolean(servicesOrgId !== organizationId);
@@ -483,7 +351,7 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
         <button
           type="button"
           onClick={handleRetryServices}
-          disabled={isServicesLoading || isCreatingService}
+          disabled={isServicesLoading || Boolean(editingService)}
           className="inline-flex items-center gap-1.5 self-start sm:self-auto rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 disabled:opacity-50"
           aria-label="Refresh service categories"
         >
@@ -507,155 +375,12 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
       </div>
 
       {/* Create Service Card */}
-      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-        <div className="mb-4">
-          <h3 className="text-sm font-semibold text-gray-900">
-            Add Service Category
-          </h3>
-          <p className="mt-0.5 text-xs text-gray-500">
-            Create a new service offering (e.g., &ldquo;General Inquiries&rdquo;, &ldquo;Technical Support&rdquo;, &ldquo;Consultation&rdquo;).
-          </p>
-        </div>
-
-        <form onSubmit={handleCreateService} className="space-y-4">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div>
-              <label
-                htmlFor="new-service-name"
-                className="block text-xs font-medium text-gray-700 mb-1"
-              >
-                Service Name <span className="text-red-500">*</span>
-              </label>
-              <input
-                id="new-service-name"
-                type="text"
-                value={newServiceName}
-                onChange={(e) => {
-                  setNewServiceName(e.target.value);
-                  if (serviceFormError) setServiceFormError(null);
-                  if (serviceFormSuccess) setServiceFormSuccess(null);
-                }}
-                placeholder="e.g., Account Services"
-                disabled={isCreatingService}
-                aria-invalid={Boolean(serviceFormError)}
-                aria-describedby={
-                  serviceFormError
-                    ? "service-form-error"
-                    : serviceFormSuccess
-                    ? "service-form-success"
-                    : undefined
-                }
-                className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
-              />
-            </div>
-
-            <div>
-              <label
-                htmlFor="new-service-description"
-                className="block text-xs font-medium text-gray-700 mb-1"
-              >
-                Description <span className="text-gray-400">(Optional)</span>
-              </label>
-              <input
-                id="new-service-description"
-                type="text"
-                value={newServiceDescription}
-                onChange={(e) => {
-                  setNewServiceDescription(e.target.value);
-                  if (serviceFormError) setServiceFormError(null);
-                  if (serviceFormSuccess) setServiceFormSuccess(null);
-                }}
-                placeholder="e.g., Assistance with account verification"
-                disabled={isCreatingService}
-                className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-end">
-            <button
-              type="submit"
-              disabled={isCreatingService || !newServiceName.trim()}
-              className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
-            >
-              {isCreatingService ? (
-                <>
-                  <svg
-                    className="mr-2 h-4 w-4 animate-spin text-white"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    />
-                  </svg>
-                  Creating...
-                </>
-              ) : (
-                "Create Service"
-              )}
-            </button>
-          </div>
-
-          {serviceFormError && (
-            <div
-              id="service-form-error"
-              role="alert"
-              className="rounded-lg border border-red-200 bg-red-50/80 p-3 text-xs font-medium text-red-800 flex items-center gap-2"
-            >
-              <svg
-                className="h-4 w-4 text-red-600 shrink-0"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth="1.5"
-                stroke="currentColor"
-                aria-hidden="true"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
-                />
-              </svg>
-              <span>{serviceFormError}</span>
-            </div>
-          )}
-
-          {serviceFormSuccess && (
-            <div
-              id="service-form-success"
-              role="status"
-              className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-3 text-xs font-medium text-emerald-800 flex items-center gap-2"
-            >
-              <svg
-                className="h-4 w-4 text-emerald-600 shrink-0"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth="1.5"
-                stroke="currentColor"
-                aria-hidden="true"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
-                />
-              </svg>
-              <span>{serviceFormSuccess}</span>
-            </div>
-          )}
-        </form>
-      </div>
+      <CreateServiceCard
+        organizationId={organizationId}
+        isDisabled={isServicesLoading || Boolean(editingService)}
+        onServiceCreated={handleServiceCreated}
+        onCreationFallback={handleCreationFallback}
+      />
 
       {/* Global Service Action Feedback Alerts */}
       {actionError && (
@@ -769,103 +494,29 @@ export function ServiceManagement({ organizationId }: ServiceManagementProps) {
         ) : (
           /* Populated State: Grid of Services */
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {displayedServices.map((service) => {
-              const isServiceUpdating = updatingServiceId === service.id;
-              const isAnyServiceUpdating = Boolean(updatingServiceId);
-
-              return (
-                <div
-                  key={service.id}
-                  className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-gray-300 flex flex-col justify-between gap-4"
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <h4 className="text-base font-semibold text-gray-900">
-                        {service.name}
-                      </h4>
-                      {service.isActive ? (
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200/80">
-                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                          Active
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-600 border border-gray-200">
-                          <span className="h-1.5 w-1.5 rounded-full bg-gray-400" />
-                          Inactive
-                        </span>
-                      )}
-                    </div>
-                    {service.description ? (
-                      <p className="text-xs text-gray-600 line-clamp-2">
-                        {service.description}
-                      </p>
-                    ) : (
-                      <p className="text-xs text-gray-400 italic">
-                        No description provided
-                      </p>
-                    )}
-                    <span className="block font-mono text-xs text-gray-400">
-                      ID: {service.id}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-2 border-t border-gray-100 pt-3 text-xs text-gray-400">
-                    <span>{formatCreationDate(service.createdAt)}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleToggleServiceStatus(service)}
-                      disabled={
-                        isAnyServiceUpdating ||
-                        isServicesLoading ||
-                        isCreatingService
-                      }
-                      aria-label={`${
-                        service.isActive ? "Deactivate" : "Activate"
-                      } ${service.name}`}
-                      className={`inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none ${
-                        service.isActive
-                          ? "border-gray-300 bg-white text-gray-700 hover:bg-gray-50 hover:text-red-700 hover:border-red-200"
-                          : "border-gray-300 bg-white text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300"
-                      }`}
-                    >
-                      {isServiceUpdating ? (
-                        <>
-                          <svg
-                            className="mr-1.5 h-3.5 w-3.5 animate-spin text-gray-500"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                          >
-                            <circle
-                              className="opacity-25"
-                              cx="12"
-                              cy="12"
-                              r="10"
-                              stroke="currentColor"
-                              strokeWidth="4"
-                            />
-                            <path
-                              className="opacity-75"
-                              fill="currentColor"
-                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                            />
-                          </svg>
-                          {service.isActive
-                            ? "Deactivating..."
-                            : "Activating..."}
-                        </>
-                      ) : service.isActive ? (
-                        "Deactivate"
-                      ) : (
-                        "Activate"
-                      )}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+            {displayedServices.map((service) => (
+              <ServiceCard
+                key={service.id}
+                service={service}
+                isUpdating={updatingServiceId === service.id}
+                isAnyUpdating={Boolean(updatingServiceId)}
+                isDisabled={isServicesLoading || Boolean(editingService)}
+                onEdit={(s) => setEditingService(s)}
+                onToggleStatus={handleToggleServiceStatus}
+              />
+            ))}
           </div>
         )}
       </div>
+
+      {/* Edit Service Modal Dialog */}
+      <EditServiceDialog
+        service={editingService}
+        organizationId={organizationId}
+        isOpen={Boolean(editingService)}
+        onClose={() => setEditingService(null)}
+        onSuccess={handleEditSuccess}
+      />
     </div>
   );
 }
