@@ -25,7 +25,16 @@
  */
 
 import { broker as defaultBroker, RealtimeBroker } from "./broker";
-import type { RealtimeEnvelope } from "./types";
+import {
+  customerTicketChannel,
+  createRealtimeEnvelope,
+  type RealtimeEnvelope,
+  type CustomerTicketCalledPayload,
+  type CustomerTicketServingPayload,
+  type CustomerTicketCompletedPayload,
+  type CustomerTicketSkippedPayload,
+  type CustomerTicketCancelledPayload,
+} from "./types";
 
 export class PostCommitCollector {
   private stagedEvents: RealtimeEnvelope<unknown>[] = [];
@@ -66,7 +75,9 @@ export class PostCommitCollector {
    * Dispatches all staged events to the broker and clears the internal queue.
    * Call this STRICTLY after the Prisma transaction has resolved.
    */
-  dispatch(targetBroker: RealtimeBroker = defaultBroker): RealtimeEnvelope<unknown>[] {
+  dispatch(
+    targetBroker: RealtimeBroker = defaultBroker,
+  ): RealtimeEnvelope<unknown>[] {
     const toDispatch = [...this.stagedEvents];
     this.stagedEvents = [];
 
@@ -106,3 +117,114 @@ export async function executeWithPostCommit<T>(
   return result;
 }
 
+// ============================================================================
+// Customer Event Staging Helpers
+// Enforces payload sanitization and customer channel scoping
+// ============================================================================
+
+/**
+ * Stages a customer TICKET_CALLED event.
+ */
+export function stageCustomerTicketCalled(
+  collector: PostCommitCollector,
+  trackingToken: string | null | undefined,
+  data: { ticketNumber: number; counterName: string },
+): void {
+  if (!trackingToken) return;
+  collector.stage(
+    createRealtimeEnvelope<CustomerTicketCalledPayload>(
+      "TICKET_CALLED",
+      customerTicketChannel(trackingToken),
+      {
+        ticketNumber: data.ticketNumber,
+        status: "CALLED",
+        counterName: data.counterName,
+      },
+    ),
+  );
+}
+
+/**
+ * Stages a customer TICKET_SERVING event.
+ */
+export function stageCustomerTicketServing(
+  collector: PostCommitCollector,
+  trackingToken: string | null | undefined,
+  data: { ticketNumber: number; counterName: string },
+): void {
+  if (!trackingToken) return;
+  collector.stage(
+    createRealtimeEnvelope<CustomerTicketServingPayload>(
+      "TICKET_SERVING",
+      customerTicketChannel(trackingToken),
+      {
+        ticketNumber: data.ticketNumber,
+        status: "SERVING",
+        counterName: data.counterName,
+      },
+    ),
+  );
+}
+
+/**
+ * Stages a customer TICKET_COMPLETED event.
+ */
+export function stageCustomerTicketCompleted(
+  collector: PostCommitCollector,
+  trackingToken: string | null | undefined,
+  data: { ticketNumber: number },
+): void {
+  if (!trackingToken) return;
+  collector.stage(
+    createRealtimeEnvelope<CustomerTicketCompletedPayload>(
+      "TICKET_COMPLETED",
+      customerTicketChannel(trackingToken),
+      {
+        ticketNumber: data.ticketNumber,
+        status: "COMPLETED",
+      },
+    ),
+  );
+}
+
+/**
+ * Stages a customer TICKET_SKIPPED event.
+ */
+export function stageCustomerTicketSkipped(
+  collector: PostCommitCollector,
+  trackingToken: string | null | undefined,
+  data: { ticketNumber: number },
+): void {
+  if (!trackingToken) return;
+  collector.stage(
+    createRealtimeEnvelope<CustomerTicketSkippedPayload>(
+      "TICKET_SKIPPED",
+      customerTicketChannel(trackingToken),
+      {
+        ticketNumber: data.ticketNumber,
+        status: "SKIPPED",
+      },
+    ),
+  );
+}
+
+/**
+ * Stages a customer TICKET_CANCELLED event.
+ */
+export function stageCustomerTicketCancelled(
+  collector: PostCommitCollector,
+  trackingToken: string | null | undefined,
+  data: { ticketNumber: number },
+): void {
+  if (!trackingToken) return;
+  collector.stage(
+    createRealtimeEnvelope<CustomerTicketCancelledPayload>(
+      "TICKET_CANCELLED",
+      customerTicketChannel(trackingToken),
+      {
+        ticketNumber: data.ticketNumber,
+        status: "CANCELLED",
+      },
+    ),
+  );
+}

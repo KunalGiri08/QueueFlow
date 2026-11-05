@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/current-user";
+import {
+  executeWithPostCommit,
+  stageCustomerTicketCancelled,
+} from "@/lib/realtime/post-commit";
 
 export async function PATCH(
   request: Request,
@@ -14,50 +18,58 @@ export async function PATCH(
   const { id } = await params;
 
   try {
-    const updatedTicket = await prisma.$transaction(async (tx) => {
-      // Serialize concurrent updates to this ticket.
-      const tickets = await tx.$queryRaw<{ id: string }[]>`
-        SELECT "id"
-        FROM "Ticket"
-        WHERE "id" = ${id}
-        FOR UPDATE
-      `;
+    const updatedTicket = await executeWithPostCommit(async (collector) => {
+      const resultTicket = await prisma.$transaction(async (tx) => {
+        // Serialize concurrent updates to this ticket.
+        const tickets = await tx.$queryRaw<{ id: string }[]>`
+          SELECT "id"
+          FROM "Ticket"
+          WHERE "id" = ${id}
+          FOR UPDATE
+        `;
 
-      if (tickets.length === 0) {
-        throw new Error("TICKET_NOT_FOUND");
-      }
+        if (tickets.length === 0) {
+          throw new Error("TICKET_NOT_FOUND");
+        }
 
-      const ticket = await tx.ticket.findUniqueOrThrow({
-        where: { id },
+        const ticket = await tx.ticket.findUniqueOrThrow({
+          where: { id },
+        });
+
+        if (ticket.userId !== currentUser.id) {
+          throw new Error("TICKET_FORBIDDEN");
+        }
+
+        if (ticket.status !== "WAITING") {
+          throw new Error("TICKET_NOT_WAITING");
+        }
+
+        const result = await tx.ticket.updateMany({
+          where: {
+            id,
+            userId: currentUser.id,
+            status: "WAITING",
+          },
+          data: {
+            status: "CANCELLED",
+            cancelledAt: new Date(),
+          },
+        });
+
+        if (result.count !== 1) {
+          throw new Error("TICKET_NOT_WAITING");
+        }
+
+        return tx.ticket.findUniqueOrThrow({
+          where: { id },
+        });
       });
 
-      if (ticket.userId !== currentUser.id) {
-        throw new Error("TICKET_FORBIDDEN");
-      }
-
-      if (ticket.status !== "WAITING") {
-        throw new Error("TICKET_NOT_WAITING");
-      }
-
-      const result = await tx.ticket.updateMany({
-        where: {
-          id,
-          userId: currentUser.id,
-          status: "WAITING",
-        },
-        data: {
-          status: "CANCELLED",
-          cancelledAt: new Date(),
-        },
+      stageCustomerTicketCancelled(collector, resultTicket.trackingToken, {
+        ticketNumber: resultTicket.number,
       });
 
-      if (result.count !== 1) {
-        throw new Error("TICKET_NOT_WAITING");
-      }
-
-      return tx.ticket.findUniqueOrThrow({
-        where: { id },
-      });
+      return resultTicket;
     });
 
     return Response.json(updatedTicket);

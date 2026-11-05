@@ -10,6 +10,7 @@ import { TrackingDetailsCard } from "@/components/tickets/track/TrackingDetailsC
 import { TurnNotificationBanner } from "@/components/tickets/track/TurnNotificationBanner";
 import { CancelTicketDialog } from "@/components/tickets/track/CancelTicketDialog";
 import { playTurnChime } from "@/lib/audio/notification-sound";
+import { useCustomerRealtime } from "@/hooks/useCustomerRealtime";
 import {
   getTicketStatusBadgeConfig,
   isTicketActive,
@@ -318,7 +319,29 @@ function TicketTrackingView({
 
   const isDataActive = Boolean(data && isTicketActive(data.status));
 
-  // Automatic background polling every 10 seconds while the ticket is active and tab is visible
+  const handleRealtimeTicketUpdate = useCallback(() => {
+    void fetchTicket(true);
+  }, [fetchTicket]);
+
+  const handleRealtimeTerminalStatus = useCallback(() => {
+    clearPollTimer();
+  }, [clearPollTimer]);
+
+  const { isConnected: isSseConnected, isError: isSseError } =
+    useCustomerRealtime({
+      trackingToken,
+      enabled: isDataActive && !isNotFound && !error,
+      onTicketUpdate: handleRealtimeTicketUpdate,
+      onTerminalStatus: handleRealtimeTerminalStatus,
+      onReconnect: handleRealtimeTicketUpdate,
+    });
+
+  // Automatic background polling every 10 seconds:
+  // - WAITING tickets: Always poll every 10s to keep queue position (peopleAhead)
+  //   accurate, even when SSE is connected (since single-ticket SSE channels do not
+  //   receive updates about other tickets).
+  // - CALLED or SERVING tickets: Polling is safely paused while SSE is connected,
+  //   resuming as a fallback only if SSE disconnects or errors.
   useEffect(() => {
     if (!trackingToken || isNotFound || error || !isDataActive) {
       clearPollTimer();
@@ -330,6 +353,19 @@ function TicketTrackingView({
     const schedulePoll = () => {
       if (isCancelled) return;
       clearPollTimer();
+
+      // Avoid redundant polling requests while real-time SSE stream is healthy and connected.
+      // NOTE: Queue-level invalidation is not yet implemented. Single-ticket SSE channels do NOT
+      // receive events when OTHER tickets are served/skipped/cancelled. Therefore, WAITING tickets
+      // MUST continue authoritative 10s polling so `peopleAhead` and `estimatedWaitMinutes` stay current.
+      // Once a ticket is CALLED or SERVING, changes to its own status are delivered via SSE, so polling
+      // can be safely paused while SSE is healthy.
+      const isDirectlyTrackedStatus =
+        data?.status === "CALLED" || data?.status === "SERVING";
+      if (isSseConnected && !isSseError && isDirectlyTrackedStatus) {
+        return;
+      }
+
       pollTimerRef.current = setTimeout(async () => {
         if (isCancelled) return;
         await runPoll();
@@ -444,8 +480,11 @@ function TicketTrackingView({
   }, [
     trackingToken,
     isDataActive,
+    data?.status,
     isNotFound,
     error,
+    isSseConnected,
+    isSseError,
     clearPollTimer,
     pollKey,
     processTicketData,

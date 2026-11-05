@@ -148,8 +148,5 @@ const globalForBroker = globalThis as unknown as {
 };
 
 export const broker: RealtimeBroker =
-  globalForBroker.realtimeBroker ?? new RealtimeBroker();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForBroker.realtimeBroker = broker;
-}
+  globalForBroker.realtimeBroker ??
+  (globalForBroker.realtimeBroker = new RealtimeBroker());

@@ -4,6 +4,10 @@ import {
   resolveStaleStaffActiveTickets,
   getLocalCalendarDayBounds,
 } from "@/lib/services/ticket.service";
+import {
+  executeWithPostCommit,
+  stageCustomerTicketCalled,
+} from "@/lib/realtime/post-commit";
 
 export async function PATCH(
   request: Request,
@@ -131,58 +135,67 @@ export async function PATCH(
   }
 
   try {
-    const updatedTicket = await prisma.$transaction(async (tx) => {
-      // Use the same lock as the Call Next endpoint.
-      // Both endpoints must acquire this lock before checking availability.
-      await tx.$queryRaw`
+    const updatedTicket = await executeWithPostCommit(async (collector) => {
+      const ticket = await prisma.$transaction(async (tx) => {
+        // Use the same lock as the Call Next endpoint.
+        // Both endpoints must acquire this lock before checking availability.
+        await tx.$queryRaw`
         SELECT "id"
         FROM "User"
         WHERE "id" = ${staffId}
         FOR UPDATE
       `;
 
-      // Resolve any stale active ticket from previous operating days for this staff member
-      await resolveStaleStaffActiveTickets({
-        tx,
-        staffId,
-        organizationId,
-        timezone,
-        instant: new Date(),
+        // Resolve any stale active ticket from previous operating days for this staff member
+        await resolveStaleStaffActiveTickets({
+          tx,
+          staffId,
+          organizationId,
+          timezone,
+          instant: new Date(),
+        });
+
+        const activeTicket = await tx.ticket.findFirst({
+          where: {
+            servedById: staffId,
+            status: { in: ["CALLED", "SERVING"] },
+          },
+          select: { id: true },
+        });
+
+        if (activeTicket) {
+          throw new Error("STAFF_HAS_ACTIVE_TICKET");
+        }
+
+        // Claim only if the ticket is still waiting.
+        const result = await tx.ticket.updateMany({
+          where: {
+            id,
+            status: "WAITING",
+          },
+          data: {
+            status: "CALLED",
+            servedById: staffId,
+            counterId,
+            calledAt: new Date(),
+          },
+        });
+
+        if (result.count !== 1) {
+          throw new Error("TICKET_CLAIM_CONFLICT");
+        }
+
+        return tx.ticket.findUniqueOrThrow({
+          where: { id },
+        });
       });
 
-      const activeTicket = await tx.ticket.findFirst({
-        where: {
-          servedById: staffId,
-          status: { in: ["CALLED", "SERVING"] },
-        },
-        select: { id: true },
+      stageCustomerTicketCalled(collector, ticket.trackingToken, {
+        ticketNumber: ticket.number,
+        counterName: counter.name,
       });
 
-      if (activeTicket) {
-        throw new Error("STAFF_HAS_ACTIVE_TICKET");
-      }
-
-      // Claim only if the ticket is still waiting.
-      const result = await tx.ticket.updateMany({
-        where: {
-          id,
-          status: "WAITING",
-        },
-        data: {
-          status: "CALLED",
-          servedById: staffId,
-          counterId,
-          calledAt: new Date(),
-        },
-      });
-
-      if (result.count !== 1) {
-        throw new Error("TICKET_CLAIM_CONFLICT");
-      }
-
-      return tx.ticket.findUniqueOrThrow({
-        where: { id },
-      });
+      return ticket;
     });
 
     return Response.json(updatedTicket, { status: 200 });

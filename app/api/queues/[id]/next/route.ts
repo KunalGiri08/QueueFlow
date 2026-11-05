@@ -6,6 +6,10 @@ import {
   resolveStaleStaffActiveTickets,
   getLocalCalendarDayBounds,
 } from "@/lib/services/ticket.service";
+import {
+  executeWithPostCommit,
+  stageCustomerTicketCalled,
+} from "@/lib/realtime/post-commit";
 
 export async function PATCH(
   request: Request,
@@ -130,95 +134,104 @@ export async function PATCH(
 
   // 7. Atomically check staff availability and claim the next waiting ticket.
   try {
-    const updatedTicket = await prisma.$transaction(async (tx) => {
-      // Serialize ticket-calling transactions for this staff member,
-      // including requests targeting different counters.
-      await tx.$queryRaw`
+    const updatedTicket = await executeWithPostCommit(async (collector) => {
+      const ticket = await prisma.$transaction(async (tx) => {
+        // Serialize ticket-calling transactions for this staff member,
+        // including requests targeting different counters.
+        await tx.$queryRaw`
   SELECT "id"
   FROM "User"
   WHERE "id" = ${staffId}
   FOR UPDATE
 `;
 
-      const now = new Date();
+        const now = new Date();
 
-      // Resolve stale active tickets from previous operating days for this queue
-      await resolveStaleQueueTickets({
-        tx,
-        queueId,
-        timezone,
-        instant: now,
+        // Resolve stale active tickets from previous operating days for this queue
+        await resolveStaleQueueTickets({
+          tx,
+          queueId,
+          timezone,
+          instant: now,
+        });
+
+        // Resolve any stale active ticket from previous operating days for this staff member
+        await resolveStaleStaffActiveTickets({
+          tx,
+          staffId,
+          organizationId,
+          timezone,
+          instant: now,
+        });
+
+        const activeTicket = await tx.ticket.findFirst({
+          where: {
+            servedById: staffId,
+            status: { in: ["CALLED", "SERVING"] },
+          },
+          select: { id: true },
+        });
+
+        if (activeTicket) {
+          throw new Error("STAFF_HAS_ACTIVE_TICKET");
+        }
+
+        const bounds = getLocalCalendarDayBounds(now, timezone);
+
+        const nextTicket = bounds
+          ? await tx.$queryRaw<{ id: string }[]>`
+          SELECT "id"
+          FROM "Ticket"
+          WHERE "queueId" = ${queueId}
+            AND "status" = 'WAITING'
+            AND "createdAt" >= ${bounds.start}
+          ORDER BY "number" ASC, "createdAt" ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+        `
+          : await tx.$queryRaw<{ id: string }[]>`
+          SELECT "id"
+          FROM "Ticket"
+          WHERE "queueId" = ${queueId}
+            AND "status" = 'WAITING'
+          ORDER BY "number" ASC, "createdAt" ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+        `;
+
+        if (nextTicket.length === 0) {
+          throw new Error("NO_WAITING_TICKETS");
+        }
+
+        // Conditional update protects against unexpected state changes.
+        const result = await tx.ticket.updateMany({
+          where: {
+            id: nextTicket[0].id,
+            status: "WAITING",
+          },
+          data: {
+            status: "CALLED",
+            servedById: staffId,
+            counterId,
+            calledAt: new Date(),
+          },
+        });
+
+        if (result.count !== 1) {
+          throw new Error("TICKET_CLAIM_CONFLICT");
+        }
+
+        return tx.ticket.findUniqueOrThrow({
+          where: { id: nextTicket[0].id },
+        });
       });
 
-      // Resolve any stale active ticket from previous operating days for this staff member
-      await resolveStaleStaffActiveTickets({
-        tx,
-        staffId,
-        organizationId,
-        timezone,
-        instant: now,
+      stageCustomerTicketCalled(collector, ticket.trackingToken, {
+        ticketNumber: ticket.number,
+        counterName: counter.name,
       });
 
-      const activeTicket = await tx.ticket.findFirst({
-        where: {
-          servedById: staffId,
-          status: { in: ["CALLED", "SERVING"] },
-        },
-        select: { id: true },
-      });
-
-      if (activeTicket) {
-        throw new Error("STAFF_HAS_ACTIVE_TICKET");
-      }
-
-      const bounds = getLocalCalendarDayBounds(now, timezone);
-
-      const nextTicket = bounds
-        ? await tx.$queryRaw<{ id: string }[]>`
-        SELECT "id"
-        FROM "Ticket"
-        WHERE "queueId" = ${queueId}
-          AND "status" = 'WAITING'
-          AND "createdAt" >= ${bounds.start}
-        ORDER BY "number" ASC, "createdAt" ASC
-        LIMIT 1
-        FOR UPDATE SKIP LOCKED
-      `
-        : await tx.$queryRaw<{ id: string }[]>`
-        SELECT "id"
-        FROM "Ticket"
-        WHERE "queueId" = ${queueId}
-          AND "status" = 'WAITING'
-        ORDER BY "number" ASC, "createdAt" ASC
-        LIMIT 1
-        FOR UPDATE SKIP LOCKED
-      `;
-
-      if (nextTicket.length === 0) {
-        throw new Error("NO_WAITING_TICKETS");
-      }
-
-      // Conditional update protects against unexpected state changes.
-      const result = await tx.ticket.updateMany({
-        where: {
-          id: nextTicket[0].id,
-          status: "WAITING",
-        },
-        data: {
-          status: "CALLED",
-          servedById: staffId,
-          counterId,
-          calledAt: new Date(),
-        },
-      });
-
-      if (result.count !== 1) {
-        throw new Error("TICKET_CLAIM_CONFLICT");
-      }
-
-      return tx.ticket.findUniqueOrThrow({
-        where: { id: nextTicket[0].id },
-      });
+      return ticket;
     });
 
     return Response.json(updatedTicket, { status: 200 });

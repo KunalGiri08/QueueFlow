@@ -1291,5 +1291,318 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       expect(mockPlayTurnChime).not.toHaveBeenCalled();
     });
   });
+
+  describe("Real-Time SSE Integration & Polling Fallback", () => {
+    let originalEventSource: typeof window.EventSource;
+    let mockEsInstance: {
+      url: string;
+      readyState: number;
+      listeners: Record<string, EventListener[]>;
+      close: ReturnType<typeof vi.fn>;
+      simulateOpen: () => void;
+      simulateError: () => void;
+      simulateEvent: (type: string, data: unknown) => void;
+    } | null = null;
+
+    function registerMockEs(inst: TestEventSource) {
+      mockEsInstance = inst;
+    }
+
+    class TestEventSource {
+      url: string;
+      readyState = 0;
+      listeners: Record<string, EventListener[]> = {};
+      close = vi.fn(() => {
+        this.readyState = 2;
+      });
+
+      constructor(url: string) {
+        this.url = url;
+        registerMockEs(this);
+      }
+
+      addEventListener(type: string, listener: EventListener) {
+        if (!this.listeners[type]) this.listeners[type] = [];
+        this.listeners[type].push(listener);
+      }
+
+      removeEventListener(type: string, listener: EventListener) {
+        if (this.listeners[type]) {
+          this.listeners[type] = this.listeners[type].filter((l) => l !== listener);
+        }
+      }
+
+      simulateOpen() {
+        this.readyState = 1;
+        for (const listener of this.listeners["open"] || []) {
+          listener(new Event("open"));
+        }
+      }
+
+      simulateError() {
+        for (const listener of this.listeners["error"] || []) {
+          listener(new Event("error"));
+        }
+      }
+
+      simulateEvent(type: string, data: unknown) {
+        const event = new MessageEvent(type, { data: JSON.stringify(data) });
+        for (const listener of this.listeners[type] || []) {
+          listener(event);
+        }
+      }
+    }
+
+    beforeEach(() => {
+      mockEsInstance = null;
+      originalEventSource = window.EventSource;
+      window.EventSource = TestEventSource as unknown as typeof window.EventSource;
+      mockTrackingToken = "token-test-123";
+    });
+
+    afterEach(() => {
+      window.EventSource = originalEventSource;
+    });
+
+    it("connects to SSE endpoint and pauses 10s polling while SSE is healthy for CALLED tickets", async () => {
+      vi.useFakeTimers();
+      let fetchCallCount = 0;
+      global.fetch = vi.fn().mockImplementation(async () => {
+        fetchCallCount++;
+        return jsonResponse(mockCalledTicket);
+      });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "token-test-123" })}
+          />,
+        );
+      });
+
+      // Initial load fetch
+      expect(fetchCallCount).toBe(1);
+      expect(mockEsInstance).not.toBeNull();
+      expect(mockEsInstance!.url).toBe("/api/realtime/tickets/token-test-123");
+
+      // Simulate SSE connection open
+      await act(async () => {
+        mockEsInstance!.simulateOpen();
+      });
+
+      // Advance by 15 seconds: while SSE is connected, 10s polling must NOT execute for CALLED tickets
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+
+      expect(fetchCallCount).toBe(1); // Still 1! Polling paused!
+      vi.useRealTimers();
+    });
+
+    it("continues 10s polling even when SSE is healthy for WAITING tickets", async () => {
+      vi.useFakeTimers();
+      let fetchCallCount = 0;
+      global.fetch = vi.fn().mockImplementation(async () => {
+        fetchCallCount++;
+        return jsonResponse(mockWaitingTicket);
+      });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "token-test-123" })}
+          />,
+        );
+      });
+
+      expect(fetchCallCount).toBe(1);
+      expect(mockEsInstance).not.toBeNull();
+
+      // Simulate SSE connection open
+      await act(async () => {
+        mockEsInstance!.simulateOpen();
+      });
+
+      // Advance by 15 seconds: for WAITING tickets, 10s polling continues
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+
+      expect(fetchCallCount).toBe(2);
+
+      // Advance another 10 seconds: another poll runs
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(fetchCallCount).toBe(3);
+      vi.useRealTimers();
+    });
+
+    it("triggers REST re-fetch, plays chime, and updates UI on TICKET_CALLED event", async () => {
+      let isFirstFetch = true;
+      global.fetch = vi.fn().mockImplementation(async () => {
+        if (isFirstFetch) {
+          isFirstFetch = false;
+          return jsonResponse(mockWaitingTicket);
+        }
+        return jsonResponse(mockCalledTicket);
+      });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "token-test-123" })}
+          />,
+        );
+      });
+
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
+
+      // Simulate SSE event arriving
+      await act(async () => {
+        mockEsInstance!.simulateOpen();
+        mockEsInstance!.simulateEvent("TICKET_CALLED", {
+          ticketNumber: 42,
+          status: "CALLED",
+          counterName: "Window 2",
+        });
+      });
+
+      // REST fetch completed, turn chime played, status banner updated
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("alert")).toBeDefined();
+      expect(
+        screen.getByText(/Your turn! Please proceed to Window 2/i),
+      ).toBeDefined();
+    });
+
+    it("resumes 10s fallback polling when SSE encounters an error for CALLED tickets", async () => {
+      vi.useFakeTimers();
+      let fetchCallCount = 0;
+      global.fetch = vi.fn().mockImplementation(async () => {
+        fetchCallCount++;
+        return jsonResponse(mockCalledTicket);
+      });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "token-test-123" })}
+          />,
+        );
+      });
+
+      expect(fetchCallCount).toBe(1);
+
+      // Connect SSE
+      await act(async () => {
+        mockEsInstance!.simulateOpen();
+      });
+
+      // Advance 15s - polling is paused while SSE is connected
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      expect(fetchCallCount).toBe(1);
+
+      // Simulate SSE error / disconnection
+      await act(async () => {
+        mockEsInstance!.simulateError();
+      });
+
+      // Advance timers by 10s: polling fallback should now execute
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(fetchCallCount).toBe(2); // Fallback polling resumed!
+      vi.useRealTimers();
+    });
+
+    it("performs authoritative REST reconciliation on SSE reconnect", async () => {
+      let fetchCallCount = 0;
+      global.fetch = vi.fn().mockImplementation(async () => {
+        fetchCallCount++;
+        return jsonResponse(mockWaitingTicket);
+      });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "token-test-123" })}
+          />,
+        );
+      });
+
+      expect(fetchCallCount).toBe(1);
+
+      // Initial SSE open
+      await act(async () => {
+        mockEsInstance!.simulateOpen();
+      });
+      expect(fetchCallCount).toBe(1);
+
+      // Simulate connection drop
+      await act(async () => {
+        mockEsInstance!.simulateError();
+      });
+      expect(fetchCallCount).toBe(1);
+
+      // Simulate connection reconnect
+      await act(async () => {
+        mockEsInstance!.simulateOpen();
+      });
+
+      // Authoritative REST reconciliation was triggered upon reconnect
+      expect(fetchCallCount).toBe(2);
+    });
+
+    it("stops polling and closes SSE on terminal status", async () => {
+      vi.useFakeTimers();
+      let fetchCallCount = 0;
+      global.fetch = vi.fn().mockImplementation(async () => {
+        fetchCallCount++;
+        if (fetchCallCount === 1) return jsonResponse(mockWaitingTicket);
+        return jsonResponse(mockCompletedTicket);
+      });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "token-test-123" })}
+          />,
+        );
+      });
+
+      expect(fetchCallCount).toBe(1);
+      expect(mockEsInstance).not.toBeNull();
+
+      // Open SSE
+      await act(async () => {
+        mockEsInstance!.simulateOpen();
+      });
+
+      // Terminal event arrives
+      await act(async () => {
+        mockEsInstance!.simulateEvent("TICKET_COMPLETED", {
+          ticketNumber: 42,
+          status: "COMPLETED",
+        });
+      });
+
+      // REST fetch completed for terminal state
+      expect(fetchCallCount).toBe(2);
+      expect(mockEsInstance!.readyState).toBe(2); // SSE closed
+
+      // Advance timers by 30 seconds: no more polling should occur
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+
+      expect(fetchCallCount).toBe(2); // Did not poll again!
+      vi.useRealTimers();
+    });
+  });
 });
 

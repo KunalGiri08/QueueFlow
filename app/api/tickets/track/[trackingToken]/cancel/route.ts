@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { isValidTrackingTokenFormat } from "@/lib/validations/ticket";
+import {
+  executeWithPostCommit,
+  stageCustomerTicketCancelled,
+} from "@/lib/realtime/post-commit";
 
 export async function PATCH(
   request: Request,
@@ -14,52 +18,60 @@ export async function PATCH(
   }
 
   try {
-    const updatedTicket = await prisma.$transaction(async (tx) => {
-      // 2. Preserve PostgreSQL transaction and row-locking guarantees.
-      // Serialize concurrent updates to this ticket by its unique tracking token.
-      const tickets = await tx.$queryRaw<{ id: string; status: string }[]>`
-        SELECT "id", "status"
-        FROM "Ticket"
-        WHERE "trackingToken" = ${token}
-        FOR UPDATE
-      `;
+    const updatedTicket = await executeWithPostCommit(async (collector) => {
+      const resultTicket = await prisma.$transaction(async (tx) => {
+        // 2. Preserve PostgreSQL transaction and row-locking guarantees.
+        // Serialize concurrent updates to this ticket by its unique tracking token.
+        const tickets = await tx.$queryRaw<{ id: string; status: string }[]>`
+          SELECT "id", "status"
+          FROM "Ticket"
+          WHERE "trackingToken" = ${token}
+          FOR UPDATE
+        `;
 
-      if (tickets.length === 0) {
-        throw new Error("TICKET_NOT_FOUND");
-      }
+        if (tickets.length === 0) {
+          throw new Error("TICKET_NOT_FOUND");
+        }
 
-      const ticket = tickets[0];
+        const ticket = tickets[0];
 
-      // 3. Permit cancellation only when the current status is WAITING.
-      if (ticket.status !== "WAITING") {
-        throw new Error("TICKET_NOT_WAITING");
-      }
+        // 3. Permit cancellation only when the current status is WAITING.
+        if (ticket.status !== "WAITING") {
+          throw new Error("TICKET_NOT_WAITING");
+        }
 
-      // 4. Use a conditional update and verify the affected row count.
-      const result = await tx.ticket.updateMany({
-        where: {
-          trackingToken: token,
-          status: "WAITING",
-        },
-        data: {
-          status: "CANCELLED",
-          cancelledAt: new Date(),
-        },
+        // 4. Use a conditional update and verify the affected row count.
+        const result = await tx.ticket.updateMany({
+          where: {
+            trackingToken: token,
+            status: "WAITING",
+          },
+          data: {
+            status: "CANCELLED",
+            cancelledAt: new Date(),
+          },
+        });
+
+        if (result.count !== 1) {
+          throw new Error("TICKET_NOT_WAITING");
+        }
+
+        // 5. Select only the necessary public fields.
+        return tx.ticket.findUniqueOrThrow({
+          where: { trackingToken: token },
+          select: {
+            number: true,
+            status: true,
+            cancelledAt: true,
+          },
+        });
       });
 
-      if (result.count !== 1) {
-        throw new Error("TICKET_NOT_WAITING");
-      }
-
-      // 5. Select only the necessary public fields.
-      return tx.ticket.findUniqueOrThrow({
-        where: { trackingToken: token },
-        select: {
-          number: true,
-          status: true,
-          cancelledAt: true,
-        },
+      stageCustomerTicketCancelled(collector, token, {
+        ticketNumber: resultTicket.number,
       });
+
+      return resultTicket;
     });
 
     // 6. Return only the minimum public response fields needed by the UI.

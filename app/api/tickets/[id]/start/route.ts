@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/current-user";
+import {
+  executeWithPostCommit,
+  stageCustomerTicketServing,
+} from "@/lib/realtime/post-commit";
 
 export async function PATCH(
   request: Request,
@@ -19,6 +23,11 @@ export async function PATCH(
       queue: {
         include: {
           service: true,
+        },
+      },
+      counter: {
+        select: {
+          name: true,
         },
       },
     },
@@ -87,47 +96,56 @@ export async function PATCH(
   }
 
   try {
-    const updatedTicket = await prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`
-        SELECT "id"
-        FROM "Ticket"
-        WHERE "id" = ${id}
-        FOR UPDATE
-      `;
+    const updatedTicket = await executeWithPostCommit(async (collector) => {
+      const resultTicket = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          SELECT "id"
+          FROM "Ticket"
+          WHERE "id" = ${id}
+          FOR UPDATE
+        `;
 
-      const currentTicket = await tx.ticket.findUnique({
-        where: { id },
+        const currentTicket = await tx.ticket.findUnique({
+          where: { id },
+        });
+
+        if (
+          !currentTicket ||
+          currentTicket.status !== "CALLED" ||
+          currentTicket.servedById !== currentUser.id ||
+          currentTicket.counterId !== ticket.counterId
+        ) {
+          throw new Error("TICKET_STATE_CONFLICT");
+        }
+
+        const result = await tx.ticket.updateMany({
+          where: {
+            id,
+            status: "CALLED",
+            servedById: currentUser.id,
+            counterId: ticket.counterId,
+          },
+          data: {
+            status: "SERVING",
+            startedAt: new Date(),
+          },
+        });
+
+        if (result.count !== 1) {
+          throw new Error("TICKET_STATE_CONFLICT");
+        }
+
+        return tx.ticket.findUniqueOrThrow({
+          where: { id },
+        });
       });
 
-      if (
-        !currentTicket ||
-        currentTicket.status !== "CALLED" ||
-        currentTicket.servedById !== currentUser.id ||
-        currentTicket.counterId !== ticket.counterId
-      ) {
-        throw new Error("TICKET_STATE_CONFLICT");
-      }
-
-      const result = await tx.ticket.updateMany({
-        where: {
-          id,
-          status: "CALLED",
-          servedById: currentUser.id,
-          counterId: ticket.counterId,
-        },
-        data: {
-          status: "SERVING",
-          startedAt: new Date(),
-        },
+      stageCustomerTicketServing(collector, resultTicket.trackingToken, {
+        ticketNumber: resultTicket.number,
+        counterName: ticket.counter?.name ?? "",
       });
 
-      if (result.count !== 1) {
-        throw new Error("TICKET_STATE_CONFLICT");
-      }
-
-      return tx.ticket.findUniqueOrThrow({
-        where: { id },
-      });
+      return resultTicket;
     });
 
     return Response.json(updatedTicket);
