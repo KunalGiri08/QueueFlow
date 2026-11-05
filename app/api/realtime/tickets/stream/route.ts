@@ -72,13 +72,43 @@ function maskTrackingToken(token: string): string {
   return `${token.slice(0, 4)}...${token.slice(-4)}`;
 }
 
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ trackingToken: string }> },
-) {
-  const { trackingToken } = await params;
-  const token = typeof trackingToken === "string" ? trackingToken.trim() : "";
+export async function POST(request: Request) {
+  // Reject requests attempting to pass trackingToken in URL query parameters
+  try {
+    const url = new URL(request.url);
+    if (url.searchParams.has("trackingToken")) {
+      return Response.json(
+        { error: "Tracking token must not be passed in the URL" },
+        { status: 400 },
+      );
+    }
+  } catch {
+    // If URL parsing fails, proceed to body validation
+  }
 
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json(
+      { error: "A valid tracking token is required" },
+      { status: 400 },
+    );
+  }
+
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !("trackingToken" in body) ||
+    typeof (body as { trackingToken: unknown }).trackingToken !== "string"
+  ) {
+    return Response.json(
+      { error: "A valid tracking token is required" },
+      { status: 400 },
+    );
+  }
+
+  const token = (body as { trackingToken: string }).trackingToken.trim();
   if (!token) {
     return Response.json(
       { error: "A valid tracking token is required" },
@@ -110,8 +140,8 @@ export async function GET(
 
   if (!ticket) {
     return Response.json(
-      { error: "Ticket not found" },
-      { status: 404 },
+      { error: "Invalid tracking token" },
+      { status: 401 },
     );
   }
 
@@ -236,5 +266,15 @@ export async function GET(
       "X-Accel-Buffering": "no",
     },
   });
+}
+
+export async function GET() {
+  return Response.json(
+    { error: "Method not allowed. Use POST /api/realtime/tickets/stream with a JSON body." },
+    {
+      status: 405,
+      headers: { Allow: "POST" },
+    },
+  );
 }
 

@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  cleanup,
+  act,
+} from "@testing-library/react";
 import TicketTrackingPage from "./page";
 
 // 1. Mock Next.js navigation with stable params
@@ -114,9 +120,77 @@ function renderPageSync(token = "token-test-123") {
   return render(<TicketTrackingPage params={paramsPromise} />);
 }
 
+interface MockRealtimeStream {
+  url: string;
+  body: Record<string, unknown>;
+  readyState: number; // 1: open, 2: closed
+  simulateOpen: () => void;
+  simulateError: () => void;
+  simulateEvent: (type: string, data: unknown) => void;
+}
+
+let activeRealtimeStream: MockRealtimeStream | null = null;
+
+function createMockRealtimeStream(url: string, bodyText: string) {
+  let controllerRef!: ReadableStreamDefaultController<Uint8Array>;
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controllerRef = c;
+    },
+    cancel() {
+      if (activeRealtimeStream) {
+        activeRealtimeStream.readyState = 2;
+      }
+    },
+  });
+
+  const response = new Response(stream, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream; charset=utf-8" },
+  });
+
+  let parsedBody: Record<string, unknown> = {};
+  try {
+    parsedBody = JSON.parse(bodyText);
+  } catch {
+    // ignore
+  }
+
+  const streamHandle: MockRealtimeStream = {
+    url,
+    body: parsedBody,
+    readyState: 0,
+    simulateOpen: () => {
+      streamHandle.readyState = 1;
+      controllerRef.enqueue(encoder.encode(": connected\n\n"));
+    },
+    simulateError: () => {
+      streamHandle.readyState = 2;
+      try {
+        controllerRef.error(new Error("Network connection dropped"));
+      } catch {
+        // ignore
+      }
+    },
+    simulateEvent: (type: string, data: unknown) => {
+      controllerRef.enqueue(
+        encoder.encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`),
+      );
+    },
+  };
+
+  activeRealtimeStream = streamHandle;
+  return response;
+}
+
 describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
-  let activeFetchHandler: (url: string, init?: RequestInit) => Promise<Response> | Response;
+  let activeFetchHandler: (
+    url: string,
+    init?: RequestInit,
+  ) => Promise<Response> | Response;
 
   beforeEach(() => {
     mockTrackingToken = "token-test-123";
@@ -131,15 +205,30 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
     mockPlayTurnChime.mockResolvedValue(true);
 
     activeFetchHandler = async (url: string) => {
-      if (url.includes(`/api/tickets/track/${encodeURIComponent(mockTrackingToken)}`)) {
+      if (
+        url.includes(
+          `/api/tickets/track/${encodeURIComponent(mockTrackingToken)}`,
+        )
+      ) {
         return jsonResponse(mockWaitingTicket);
       }
       return jsonResponse({ error: "Ticket not found" }, 404);
     };
 
-    fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-      return activeFetchHandler(url, init);
-    });
+    fetchMock = vi
+      .fn()
+      .mockImplementation((url: string, init?: RequestInit) => {
+        if (
+          typeof url === "string" &&
+          url.includes("/api/realtime/tickets/stream")
+        ) {
+          return createMockRealtimeStream(
+            url,
+            typeof init?.body === "string" ? init.body : "{}",
+          );
+        }
+        return activeFetchHandler(url, init);
+      });
 
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -173,13 +262,17 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       await renderPage();
 
       // Hero ticket card
-      expect(await screen.findByRole("heading", { name: "#42", level: 1 })).toBeDefined();
+      expect(
+        await screen.findByRole("heading", { name: "#42", level: 1 }),
+      ).toBeDefined();
       expect(screen.getByText(/Apex Healthcare • Consultation/i)).toBeDefined();
       const statusBadge = screen.getByText("Waiting in Line");
       expect(statusBadge.className).toContain("px-3 py-1 text-xs");
       expect(statusBadge.className).toContain("bg-amber-50 text-amber-800");
       expect(
-        screen.getByText("You are currently in line. Please keep this page open to watch your position.")
+        screen.getByText(
+          "You are currently in line. Please keep this page open to watch your position.",
+        ),
       ).toBeDefined();
 
       // Counter callout
@@ -200,37 +293,60 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       expect(screen.getByText("Estimated time, not a guarantee")).toBeDefined();
 
       // Queue details section
-      expect(screen.getByRole("heading", { name: /queue details/i, level: 2 })).toBeDefined();
+      expect(
+        screen.getByRole("heading", { name: /queue details/i, level: 2 }),
+      ).toBeDefined();
       expect(screen.getByText("Standard Line")).toBeDefined();
 
       // Actions
-      expect(screen.getByRole("button", { name: /refresh status/i })).toBeDefined();
-      expect(screen.getByRole("link", { name: /explore other organizations/i })).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /refresh status/i }),
+      ).toBeDefined();
+      expect(
+        screen.getByRole("link", { name: /explore other organizations/i }),
+      ).toBeDefined();
     });
   });
 
   describe("Not found state", () => {
     it("displays ticket not found UI with explore link when tracking token returns 404", async () => {
-      activeFetchHandler = async () => jsonResponse({ error: "Ticket not found" }, 404);
+      activeFetchHandler = async () =>
+        jsonResponse({ error: "Ticket not found" }, 404);
 
       await renderPage("non-existent-token");
 
-      expect(await screen.findByRole("heading", { name: /ticket not found/i, level: 2 })).toBeDefined();
       expect(
-        screen.getByText(/We couldn't find an active ticket matching this tracking link/i)
+        await screen.findByRole("heading", {
+          name: /ticket not found/i,
+          level: 2,
+        }),
+      ).toBeDefined();
+      expect(
+        screen.getByText(
+          /We couldn't find an active ticket matching this tracking link/i,
+        ),
       ).toBeDefined();
 
-      const exploreBtn = screen.getByRole("link", { name: /explore organizations/i });
+      const exploreBtn = screen.getByRole("link", {
+        name: /explore organizations/i,
+      });
       expect(exploreBtn).toBeDefined();
       expect(exploreBtn.getAttribute("href")).toBe("/organizations");
-      expect(screen.queryByRole("heading", { name: "#42", level: 1 })).toBeNull();
+      expect(
+        screen.queryByRole("heading", { name: "#42", level: 1 }),
+      ).toBeNull();
     });
 
     it("displays ticket not found UI immediately without network fetch when tracking token is empty", async () => {
       await renderPage("");
 
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(await screen.findByRole("heading", { name: /ticket not found/i, level: 2 })).toBeDefined();
+      expect(
+        await screen.findByRole("heading", {
+          name: /ticket not found/i,
+          level: 2,
+        }),
+      ).toBeDefined();
       expect(screen.queryByLabelText("Loading ticket details")).toBeNull();
     });
 
@@ -238,7 +354,12 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       await renderPage("   ");
 
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(await screen.findByRole("heading", { name: /ticket not found/i, level: 2 })).toBeDefined();
+      expect(
+        await screen.findByRole("heading", {
+          name: /ticket not found/i,
+          level: 2,
+        }),
+      ).toBeDefined();
       expect(screen.queryByLabelText("Loading ticket details")).toBeNull();
     });
   });
@@ -249,10 +370,14 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       await renderPage();
 
-      expect(await screen.findByRole("heading", { name: "#42", level: 1 })).toBeDefined();
+      expect(
+        await screen.findByRole("heading", { name: "#42", level: 1 }),
+      ).toBeDefined();
       expect(screen.getByText("Ticket Called")).toBeDefined();
       expect(
-        screen.getByText("Your ticket has been called! Please head to the counter.")
+        screen.getByText(
+          "Your ticket has been called! Please head to the counter.",
+        ),
       ).toBeDefined();
       expect(screen.getByText("You are next in line!")).toBeDefined();
     });
@@ -310,12 +435,14 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       await renderPage();
 
-      expect(await screen.findByRole("heading", { name: "#42", level: 1 })).toBeDefined();
+      expect(
+        await screen.findByRole("heading", { name: "#42", level: 1 }),
+      ).toBeDefined();
       const badge = screen.getByText("Completed");
       expect(badge.className).toContain("px-3 py-1 text-xs");
       expect(badge.className).toContain("bg-gray-100 text-gray-800");
       expect(
-        screen.getByText("This service session has been completed. Thank you!")
+        screen.getByText("This service session has been completed. Thank you!"),
       ).toBeDefined();
 
       // Position metrics and assigned counter must be hidden when counter is null
@@ -334,7 +461,9 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       await renderPage();
 
-      expect(await screen.findByRole("heading", { name: "#42", level: 1 })).toBeDefined();
+      expect(
+        await screen.findByRole("heading", { name: "#42", level: 1 }),
+      ).toBeDefined();
       const badge = screen.getByText("Now Serving");
       expect(badge.className).toContain("px-3 py-1 text-xs");
       expect(badge.className).toContain("bg-green-50 text-green-800");
@@ -355,7 +484,9 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       await renderPage();
 
-      expect(await screen.findByRole("heading", { name: "#42", level: 1 })).toBeDefined();
+      expect(
+        await screen.findByRole("heading", { name: "#42", level: 1 }),
+      ).toBeDefined();
       const badge = screen.getByText("Cancelled");
       expect(badge.className).toContain("px-3 py-1 text-xs");
       expect(badge.className).toContain("bg-red-50 text-red-800");
@@ -368,12 +499,15 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
   describe("Error handling and recovery", () => {
     it("displays error alert with retry button when initial fetch returns 500", async () => {
-      activeFetchHandler = async () => jsonResponse({ error: "Server error" }, 500);
+      activeFetchHandler = async () =>
+        jsonResponse({ error: "Server error" }, 500);
 
       await renderPage();
 
       const alert = await screen.findByRole("alert");
-      expect(alert.textContent).toContain("Unable to load ticket details at this time. Please try again.");
+      expect(alert.textContent).toContain(
+        "Unable to load ticket details at this time. Please try again.",
+      );
 
       const retryBtn = screen.getByRole("button", { name: /retry/i });
       expect(retryBtn).toBeDefined();
@@ -394,7 +528,9 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       const retryBtn = await screen.findByRole("button", { name: /retry/i });
       fireEvent.click(retryBtn);
 
-      expect(await screen.findByRole("heading", { name: "#42", level: 1 })).toBeDefined();
+      expect(
+        await screen.findByRole("heading", { name: "#42", level: 1 }),
+      ).toBeDefined();
       expect(screen.queryByRole("alert")).toBeNull();
       expect(callCount).toBe(2);
     });
@@ -415,23 +551,29 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       await renderPage();
 
-      const refreshBtn = await screen.findByRole("button", { name: /refresh status/i });
+      const refreshBtn = await screen.findByRole("button", {
+        name: /refresh status/i,
+      });
       expect(refreshBtn).toBeDefined();
 
       fireEvent.click(refreshBtn);
 
       // Verify button shows updating spinner text while refresh is in flight
-      expect(screen.getByRole("button", { name: /updating\.\.\./i })).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /updating\.\.\./i }),
+      ).toBeDefined();
 
       deferredRefresh.resolve(
         jsonResponse({
           ...mockWaitingTicket,
           peopleAhead: 2,
-        })
+        }),
       );
 
       // Verify button returns to normal and updated data is displayed
-      expect(await screen.findByRole("button", { name: /refresh status/i })).toBeDefined();
+      expect(
+        await screen.findByRole("button", { name: /refresh status/i }),
+      ).toBeDefined();
       expect(screen.getByText("2")).toBeDefined();
       expect(screen.getByText("2 people ahead of you")).toBeDefined();
     });
@@ -463,7 +605,11 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       // Verify UI updated to CALLED without full page skeleton flash
       expect(screen.getByText("Ticket Called")).toBeDefined();
-      expect(screen.getByText("Your ticket has been called! Please head to the counter.")).toBeDefined();
+      expect(
+        screen.getByText(
+          "Your ticket has been called! Please head to the counter.",
+        ),
+      ).toBeDefined();
       expect(pollCount).toBe(2);
     });
 
@@ -678,7 +824,9 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       expect(callCount).toBe(2);
 
       // User manually clicks Refresh Status before background poll resolves
-      const refreshBtn = screen.getByRole("button", { name: /refresh status/i });
+      const refreshBtn = screen.getByRole("button", {
+        name: /refresh status/i,
+      });
       await act(async () => {
         fireEvent.click(refreshBtn);
       });
@@ -712,7 +860,7 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       expect(liveRegion.getAttribute("aria-atomic")).toBe("true");
       expect(liveRegion.className).toContain("sr-only");
       expect(liveRegion.textContent).toBe(
-        "Ticket #42 status: Waiting in Line. 3 people ahead of you. Assigned to counter Window 2."
+        "Ticket #42 status: Waiting in Line. 3 people ahead of you. Assigned to counter Window 2.",
       );
     });
 
@@ -723,7 +871,7 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       const liveRegion = screen.getByRole("status");
       expect(liveRegion.textContent).toBe(
-        "Ticket #42 status: Ticket Called. You are next in line. Assigned to counter Window 2."
+        "Ticket #42 status: Ticket Called. You are next in line. Assigned to counter Window 2.",
       );
     });
 
@@ -832,7 +980,9 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       expect(mockPlayTurnChime).not.toHaveBeenCalled();
 
       // User clicks Refresh Status
-      const refreshBtn = screen.getByRole("button", { name: /refresh status/i });
+      const refreshBtn = screen.getByRole("button", {
+        name: /refresh status/i,
+      });
       await act(async () => {
         fireEvent.click(refreshBtn);
       });
@@ -1293,84 +1443,29 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
   });
 
   describe("Real-Time SSE Integration & Polling Fallback", () => {
-    let originalEventSource: typeof window.EventSource;
-    let mockEsInstance: {
-      url: string;
-      readyState: number;
-      listeners: Record<string, EventListener[]>;
-      close: ReturnType<typeof vi.fn>;
-      simulateOpen: () => void;
-      simulateError: () => void;
-      simulateEvent: (type: string, data: unknown) => void;
-    } | null = null;
-
-    function registerMockEs(inst: TestEventSource) {
-      mockEsInstance = inst;
-    }
-
-    class TestEventSource {
-      url: string;
-      readyState = 0;
-      listeners: Record<string, EventListener[]> = {};
-      close = vi.fn(() => {
-        this.readyState = 2;
-      });
-
-      constructor(url: string) {
-        this.url = url;
-        registerMockEs(this);
-      }
-
-      addEventListener(type: string, listener: EventListener) {
-        if (!this.listeners[type]) this.listeners[type] = [];
-        this.listeners[type].push(listener);
-      }
-
-      removeEventListener(type: string, listener: EventListener) {
-        if (this.listeners[type]) {
-          this.listeners[type] = this.listeners[type].filter((l) => l !== listener);
-        }
-      }
-
-      simulateOpen() {
-        this.readyState = 1;
-        for (const listener of this.listeners["open"] || []) {
-          listener(new Event("open"));
-        }
-      }
-
-      simulateError() {
-        for (const listener of this.listeners["error"] || []) {
-          listener(new Event("error"));
-        }
-      }
-
-      simulateEvent(type: string, data: unknown) {
-        const event = new MessageEvent(type, { data: JSON.stringify(data) });
-        for (const listener of this.listeners[type] || []) {
-          listener(event);
-        }
-      }
-    }
-
     beforeEach(() => {
-      mockEsInstance = null;
-      originalEventSource = window.EventSource;
-      window.EventSource = TestEventSource as unknown as typeof window.EventSource;
+      activeRealtimeStream = null;
       mockTrackingToken = "token-test-123";
-    });
-
-    afterEach(() => {
-      window.EventSource = originalEventSource;
     });
 
     it("connects to SSE endpoint and pauses 10s polling while SSE is healthy for CALLED tickets", async () => {
       vi.useFakeTimers();
       let fetchCallCount = 0;
-      global.fetch = vi.fn().mockImplementation(async () => {
-        fetchCallCount++;
-        return jsonResponse(mockCalledTicket);
-      });
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          fetchCallCount++;
+          return jsonResponse(mockCalledTicket);
+        });
 
       await act(async () => {
         render(
@@ -1382,12 +1477,17 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       // Initial load fetch
       expect(fetchCallCount).toBe(1);
-      expect(mockEsInstance).not.toBeNull();
-      expect(mockEsInstance!.url).toBe("/api/realtime/tickets/token-test-123");
+      expect(activeRealtimeStream).not.toBeNull();
+      // Security: verify URL contains zero tracking tokens
+      expect(activeRealtimeStream!.url).toBe("/api/realtime/tickets/stream");
+      expect(activeRealtimeStream!.url).not.toContain("token-test-123");
+      expect(activeRealtimeStream!.body).toEqual({
+        trackingToken: "token-test-123",
+      });
 
       // Simulate SSE connection open
       await act(async () => {
-        mockEsInstance!.simulateOpen();
+        activeRealtimeStream!.simulateOpen();
       });
 
       // Advance by 15 seconds: while SSE is connected, 10s polling must NOT execute for CALLED tickets
@@ -1402,10 +1502,21 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
     it("continues 10s polling even when SSE is healthy for WAITING tickets", async () => {
       vi.useFakeTimers();
       let fetchCallCount = 0;
-      global.fetch = vi.fn().mockImplementation(async () => {
-        fetchCallCount++;
-        return jsonResponse(mockWaitingTicket);
-      });
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          fetchCallCount++;
+          return jsonResponse(mockWaitingTicket);
+        });
 
       await act(async () => {
         render(
@@ -1416,11 +1527,11 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       });
 
       expect(fetchCallCount).toBe(1);
-      expect(mockEsInstance).not.toBeNull();
+      expect(activeRealtimeStream).not.toBeNull();
 
       // Simulate SSE connection open
       await act(async () => {
-        mockEsInstance!.simulateOpen();
+        activeRealtimeStream!.simulateOpen();
       });
 
       // Advance by 15 seconds: for WAITING tickets, 10s polling continues
@@ -1441,13 +1552,24 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
     it("triggers REST re-fetch, plays chime, and updates UI on TICKET_CALLED event", async () => {
       let isFirstFetch = true;
-      global.fetch = vi.fn().mockImplementation(async () => {
-        if (isFirstFetch) {
-          isFirstFetch = false;
-          return jsonResponse(mockWaitingTicket);
-        }
-        return jsonResponse(mockCalledTicket);
-      });
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          if (isFirstFetch) {
+            isFirstFetch = false;
+            return jsonResponse(mockWaitingTicket);
+          }
+          return jsonResponse(mockCalledTicket);
+        });
 
       await act(async () => {
         render(
@@ -1461,8 +1583,8 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       // Simulate SSE event arriving
       await act(async () => {
-        mockEsInstance!.simulateOpen();
-        mockEsInstance!.simulateEvent("TICKET_CALLED", {
+        activeRealtimeStream!.simulateOpen();
+        activeRealtimeStream!.simulateEvent("TICKET_CALLED", {
           ticketNumber: 42,
           status: "CALLED",
           counterName: "Window 2",
@@ -1480,10 +1602,21 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
     it("resumes 10s fallback polling when SSE encounters an error for CALLED tickets", async () => {
       vi.useFakeTimers();
       let fetchCallCount = 0;
-      global.fetch = vi.fn().mockImplementation(async () => {
-        fetchCallCount++;
-        return jsonResponse(mockCalledTicket);
-      });
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          fetchCallCount++;
+          return jsonResponse(mockCalledTicket);
+        });
 
       await act(async () => {
         render(
@@ -1497,7 +1630,7 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       // Connect SSE
       await act(async () => {
-        mockEsInstance!.simulateOpen();
+        activeRealtimeStream!.simulateOpen();
       });
 
       // Advance 15s - polling is paused while SSE is connected
@@ -1508,7 +1641,7 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       // Simulate SSE error / disconnection
       await act(async () => {
-        mockEsInstance!.simulateError();
+        activeRealtimeStream!.simulateError();
       });
 
       // Advance timers by 10s: polling fallback should now execute
@@ -1521,11 +1654,23 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
     });
 
     it("performs authoritative REST reconciliation on SSE reconnect", async () => {
+      vi.useFakeTimers();
       let fetchCallCount = 0;
-      global.fetch = vi.fn().mockImplementation(async () => {
-        fetchCallCount++;
-        return jsonResponse(mockWaitingTicket);
-      });
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          fetchCallCount++;
+          return jsonResponse(mockWaitingTicket);
+        });
 
       await act(async () => {
         render(
@@ -1539,33 +1684,50 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       // Initial SSE open
       await act(async () => {
-        mockEsInstance!.simulateOpen();
+        activeRealtimeStream!.simulateOpen();
       });
       expect(fetchCallCount).toBe(1);
 
       // Simulate connection drop
       await act(async () => {
-        mockEsInstance!.simulateError();
+        activeRealtimeStream!.simulateError();
       });
       expect(fetchCallCount).toBe(1);
 
-      // Simulate connection reconnect
+      // Advance timers by backoff duration (1500ms) to trigger reconnect
       await act(async () => {
-        mockEsInstance!.simulateOpen();
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      // Simulate connection reconnect open on the new stream
+      await act(async () => {
+        activeRealtimeStream!.simulateOpen();
       });
 
       // Authoritative REST reconciliation was triggered upon reconnect
       expect(fetchCallCount).toBe(2);
+      vi.useRealTimers();
     });
 
     it("stops polling and closes SSE on terminal status", async () => {
       vi.useFakeTimers();
       let fetchCallCount = 0;
-      global.fetch = vi.fn().mockImplementation(async () => {
-        fetchCallCount++;
-        if (fetchCallCount === 1) return jsonResponse(mockWaitingTicket);
-        return jsonResponse(mockCompletedTicket);
-      });
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          fetchCallCount++;
+          if (fetchCallCount === 1) return jsonResponse(mockWaitingTicket);
+          return jsonResponse(mockCompletedTicket);
+        });
 
       await act(async () => {
         render(
@@ -1576,16 +1738,16 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       });
 
       expect(fetchCallCount).toBe(1);
-      expect(mockEsInstance).not.toBeNull();
+      expect(activeRealtimeStream).not.toBeNull();
 
       // Open SSE
       await act(async () => {
-        mockEsInstance!.simulateOpen();
+        activeRealtimeStream!.simulateOpen();
       });
 
       // Terminal event arrives
       await act(async () => {
-        mockEsInstance!.simulateEvent("TICKET_COMPLETED", {
+        activeRealtimeStream!.simulateEvent("TICKET_COMPLETED", {
           ticketNumber: 42,
           status: "COMPLETED",
         });
@@ -1593,7 +1755,7 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       // REST fetch completed for terminal state
       expect(fetchCallCount).toBe(2);
-      expect(mockEsInstance!.readyState).toBe(2); // SSE closed
+      expect(activeRealtimeStream!.readyState).toBe(2); // SSE stream closed
 
       // Advance timers by 30 seconds: no more polling should occur
       await act(async () => {
@@ -1605,4 +1767,3 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
     });
   });
 });
-

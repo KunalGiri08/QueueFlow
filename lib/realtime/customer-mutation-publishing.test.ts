@@ -79,7 +79,7 @@ import { PATCH as completeTicket } from "@/app/api/tickets/[id]/complete/route";
 import { PATCH as skipTicket } from "@/app/api/tickets/[id]/skip/route";
 import { PATCH as cancelTicketAuth } from "@/app/api/tickets/[id]/cancel/route";
 import { PATCH as cancelTicketTrackToken } from "@/app/api/tickets/track/[trackingToken]/cancel/route";
-import { GET as customerSseEndpoint } from "@/app/api/realtime/tickets/[trackingToken]/route";
+import { POST as customerSseEndpoint } from "@/app/api/realtime/tickets/stream/route";
 
 describe("Phase 3A: Post-Commit Customer Event Publishing", () => {
   const trackingToken =
@@ -624,10 +624,13 @@ describe("Phase 3A: Post-Commit Customer Event Publishing", () => {
         },
       });
 
-      // 2. Open SSE stream
+      // 2. Open SSE stream via secure POST body
       const sseResponse = await customerSseEndpoint(
-        new Request("http://localhost"),
-        { params: Promise.resolve({ trackingToken }) },
+        new Request("http://localhost/api/realtime/tickets/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trackingToken }),
+        }),
       );
 
       expect(sseResponse.status).toBe(200);
