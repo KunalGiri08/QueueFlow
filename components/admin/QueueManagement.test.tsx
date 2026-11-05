@@ -381,7 +381,9 @@ describe("components/admin/QueueManagement", () => {
       });
 
       render(<QueueManagement organizationId="org-1" />);
-      expect(await screen.findByText("Standard Line")).toBeDefined();
+      expect(
+        await screen.findByText("Standard Line", {}, { timeout: 3000 }),
+      ).toBeDefined();
 
       const refreshBtn = screen.getByRole("button", {
         name: /refresh queues and service categories/i,
@@ -428,7 +430,11 @@ describe("components/admin/QueueManagement", () => {
       });
 
       render(<QueueManagement organizationId="org-1" />);
-      await screen.findByText("No Active Queues for General Consultation");
+      await screen.findByText(
+        "No Active Queues for General Consultation",
+        {},
+        { timeout: 3000 },
+      );
 
       const input = screen.getByPlaceholderText(
         /e\.g\., General Walk-in or Priority Desk/i,

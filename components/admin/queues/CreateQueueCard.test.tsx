@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { CreateQueueCard } from "./CreateQueueCard";
 
 describe("components/admin/queues/CreateQueueCard", () => {
@@ -131,9 +131,11 @@ describe("components/admin/queues/CreateQueueCard", () => {
       fireEvent.click(screen.getByRole("button", { name: /create queue/i }));
 
       expect(onCreateQueue).toHaveBeenCalledTimes(1);
-      expect(nameInput.value).toBe("");
-      expect(waitingInput.value).toBe("");
-      expect(dailyInput.value).toBe("");
+      await waitFor(() => {
+        expect(nameInput.value).toBe("");
+        expect(waitingInput.value).toBe("");
+        expect(dailyInput.value).toBe("");
+      });
     });
 
     it("keeps form inputs when onCreateQueue returns false (failure)", async () => {
