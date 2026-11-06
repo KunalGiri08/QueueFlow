@@ -81,6 +81,8 @@ export function parseSSEMessages(buffer: string): {
   return { messages, remaining };
 }
 
+const THROTTLE_REFETCH_MS = 250;
+
 export function useCustomerRealtime({
   trackingToken,
   enabled = true,
@@ -96,6 +98,8 @@ export function useCustomerRealtime({
   const abortControllerRef = useRef<AbortController | null>(null);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRefetchTimeRef = useRef<number>(0);
   const hasConnectedOnceRef = useRef(false);
   const retryCountRef = useRef(0);
 
@@ -111,10 +115,49 @@ export function useCustomerRealtime({
     fetchFnRef.current = fetchFn;
   }, [onTicketUpdate, onTerminalStatus, onReconnect, fetchFn]);
 
+  const triggerThrottledRefetch = useCallback(() => {
+    const now = Date.now();
+    const elapsed = now - lastRefetchTimeRef.current;
+
+    if (elapsed >= THROTTLE_REFETCH_MS) {
+      if (pendingRefetchTimerRef.current !== null) {
+        clearTimeout(pendingRefetchTimerRef.current);
+        pendingRefetchTimerRef.current = null;
+      }
+      lastRefetchTimeRef.current = now;
+      try {
+        void onTicketUpdateRef.current();
+      } catch (err) {
+        console.error(
+          "[useCustomerRealtime] Error executing onTicketUpdate:",
+          err,
+        );
+      }
+    } else if (pendingRefetchTimerRef.current === null) {
+      const remaining = THROTTLE_REFETCH_MS - elapsed;
+      pendingRefetchTimerRef.current = setTimeout(() => {
+        pendingRefetchTimerRef.current = null;
+        lastRefetchTimeRef.current = Date.now();
+        try {
+          void onTicketUpdateRef.current();
+        } catch (err) {
+          console.error(
+            "[useCustomerRealtime] Error executing onTicketUpdate:",
+            err,
+          );
+        }
+      }, remaining);
+    }
+  }, []);
+
   const close = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
+    }
+    if (pendingRefetchTimerRef.current !== null) {
+      clearTimeout(pendingRefetchTimerRef.current);
+      pendingRefetchTimerRef.current = null;
     }
     abortControllerRef.current?.abort();
     if (readerRef.current !== null) {
@@ -235,18 +278,23 @@ export function useCustomerRealtime({
           const { messages, remaining } = parseSSEMessages(buffer);
           buffer = remaining;
 
+          let hasQueueInvalidation = false;
+          let hasDirectTicketUpdate = false;
+
           for (const msg of messages) {
-            // Invoke authoritative refetch callback
-            try {
-              void onTicketUpdateRef.current();
-            } catch (err) {
-              console.error(
-                "[useCustomerRealtime] Error executing onTicketUpdate:",
-                err,
-              );
+            if (msg.event === "QUEUE_INVALIDATED") {
+              hasQueueInvalidation = true;
+            } else if (
+              msg.event === "TICKET_CALLED" ||
+              msg.event === "TICKET_SERVING" ||
+              msg.event === "TICKET_COMPLETED" ||
+              msg.event === "TICKET_SKIPPED" ||
+              msg.event === "TICKET_CANCELLED"
+            ) {
+              hasDirectTicketUpdate = true;
             }
 
-            // If terminal event received, close stream and stop retrying
+            // If terminal event received, mark terminal
             if (
               msg.event === "TICKET_COMPLETED" ||
               msg.event === "TICKET_SKIPPED" ||
@@ -262,10 +310,33 @@ export function useCustomerRealtime({
                   err,
                 );
               }
-              setIsConnected(false);
-              await reader.cancel().catch(() => {});
-              return;
             }
+          }
+
+          if (hasDirectTicketUpdate) {
+            // Direct ticket updates bypass queue throttling and fire immediately
+            if (pendingRefetchTimerRef.current !== null) {
+              clearTimeout(pendingRefetchTimerRef.current);
+              pendingRefetchTimerRef.current = null;
+            }
+            lastRefetchTimeRef.current = Date.now();
+            try {
+              void onTicketUpdateRef.current();
+            } catch (err) {
+              console.error(
+                "[useCustomerRealtime] Error executing onTicketUpdate:",
+                err,
+              );
+            }
+          } else if (hasQueueInvalidation) {
+            // Queue invalidations are throttled to prevent duplicate rapid refetches
+            triggerThrottledRefetch();
+          }
+
+          if (isTerminal) {
+            setIsConnected(false);
+            await reader.cancel().catch(() => {});
+            return;
           }
         }
       } catch (err) {
@@ -316,6 +387,10 @@ export function useCustomerRealtime({
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
+      if (pendingRefetchTimerRef.current !== null) {
+        clearTimeout(pendingRefetchTimerRef.current);
+        pendingRefetchTimerRef.current = null;
+      }
       abortControllerRef.current?.abort();
       if (readerRef.current !== null) {
         void readerRef.current.cancel().catch(() => {});
@@ -323,7 +398,7 @@ export function useCustomerRealtime({
       }
       setIsConnected(false);
     };
-  }, [trackingToken, enabled]);
+  }, [trackingToken, enabled, triggerThrottledRefetch]);
 
   return {
     isConnected,

@@ -270,6 +270,83 @@ describe("useCustomerRealtime", () => {
       expect(onTerminalStatus).toHaveBeenCalledWith("TICKET_COMPLETED");
       expect(result.current.isConnected).toBe(false);
     });
+
+    it("triggers onTicketUpdate upon QUEUE_INVALIDATED and remains connected without terminal notification", async () => {
+      const { response, controls } = createMockStreamResponse(200);
+      const mockFetch = vi.fn().mockResolvedValue(response);
+      const onTicketUpdate = vi.fn();
+      const onTerminalStatus = vi.fn();
+
+      const { result } = renderHook(() =>
+        useCustomerRealtime({
+          trackingToken: token,
+          onTicketUpdate,
+          onTerminalStatus,
+          fetchFn: mockFetch,
+        }),
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(result.current.isConnected).toBe(true);
+
+      // Enqueue QUEUE_INVALIDATED event
+      await act(async () => {
+        controls.enqueueText(
+          "event: QUEUE_INVALIDATED\ndata: {\"queueId\":\"q1\",\"reason\":\"TICKET_CALLED\",\"timestamp\":123}\n\n",
+        );
+      });
+
+      expect(onTicketUpdate).toHaveBeenCalledTimes(1);
+      expect(onTerminalStatus).not.toHaveBeenCalled();
+      expect(result.current.isConnected).toBe(true);
+    });
+
+    it("deduplicates and throttles rapid duplicate QUEUE_INVALIDATED bursts", async () => {
+      vi.useFakeTimers();
+      const { response, controls } = createMockStreamResponse(200);
+      const mockFetch = vi.fn().mockResolvedValue(response);
+      const onTicketUpdate = vi.fn();
+
+      renderHook(() =>
+        useCustomerRealtime({
+          trackingToken: token,
+          onTicketUpdate,
+          fetchFn: mockFetch,
+        }),
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // Send 3 rapid QUEUE_INVALIDATED events in quick succession
+      await act(async () => {
+        controls.enqueueText(
+          "event: QUEUE_INVALIDATED\ndata: {\"queueId\":\"q1\",\"reason\":\"TICKET_1\"}\n\n",
+        );
+        controls.enqueueText(
+          "event: QUEUE_INVALIDATED\ndata: {\"queueId\":\"q1\",\"reason\":\"TICKET_2\"}\n\n",
+        );
+        controls.enqueueText(
+          "event: QUEUE_INVALIDATED\ndata: {\"queueId\":\"q1\",\"reason\":\"TICKET_3\"}\n\n",
+        );
+      });
+
+      // Immediate leading-edge call fired, but duplicate calls within 250ms are throttled
+      expect(onTicketUpdate).toHaveBeenCalledTimes(1);
+
+      // Advance timers past the 250ms throttle window
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300);
+      });
+
+      // Trailing-edge call fired once to reconcile final state
+      expect(onTicketUpdate).toHaveBeenCalledTimes(2);
+      vi.useRealTimers();
+    });
   });
 
   describe("Reconnection & Lifecycle", () => {

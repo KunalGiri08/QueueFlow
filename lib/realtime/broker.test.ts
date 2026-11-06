@@ -3,10 +3,12 @@ import { RealtimeBroker, broker } from "./broker";
 import {
   createRealtimeEnvelope,
   customerTicketChannel,
+  customerQueueChannel,
   staffOrgChannel,
   staffQueueChannel,
   type RealtimeEnvelope,
   type CustomerTicketCalledPayload,
+  type CustomerQueueInvalidatedPayload,
   type StaffTicketCreatedPayload,
 } from "./types";
 
@@ -298,6 +300,43 @@ describe("RealtimeBroker", () => {
         // @ts-expect-error Testing invalid runtime input
         testBroker.publish("ch", null);
       }).toThrow("Cannot publish null or non-object event");
+    });
+  });
+
+  describe("Queue-Level Real-Time Invalidation (Phase 4)", () => {
+    it("formats customerQueueChannel correctly and does not collide with staffQueueChannel", () => {
+      const queueId = "queue-xyz";
+      expect(customerQueueChannel(queueId)).toBe("customer:queue:queue-xyz");
+      expect(customerQueueChannel("  queue-xyz  ")).toBe("customer:queue:queue-xyz");
+      expect(staffQueueChannel(queueId)).toBe("queue:queue-xyz");
+      expect(customerQueueChannel(queueId)).not.toBe(staffQueueChannel(queueId));
+    });
+
+    it("publishes and isolates QUEUE_INVALIDATED events between queues", () => {
+      const channelA = customerQueueChannel("queue-A");
+      const channelB = customerQueueChannel("queue-B");
+
+      const listenerA = vi.fn();
+      const listenerB = vi.fn();
+
+      testBroker.subscribe<CustomerQueueInvalidatedPayload>(channelA, listenerA);
+      testBroker.subscribe<CustomerQueueInvalidatedPayload>(channelB, listenerB);
+
+      const eventA = createRealtimeEnvelope<CustomerQueueInvalidatedPayload>(
+        "QUEUE_INVALIDATED",
+        channelA,
+        {
+          queueId: "queue-A",
+          reason: "TICKET_CALLED",
+          timestamp: Date.now(),
+        },
+      );
+
+      testBroker.publish(channelA, eventA);
+
+      expect(listenerA).toHaveBeenCalledTimes(1);
+      expect(listenerA).toHaveBeenCalledWith(eventA);
+      expect(listenerB).not.toHaveBeenCalled();
     });
   });
 

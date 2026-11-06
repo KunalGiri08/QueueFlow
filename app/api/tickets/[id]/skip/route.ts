@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth/current-user";
 import {
   executeWithPostCommit,
   stageCustomerTicketSkipped,
+  stageCustomerQueueInvalidated,
 } from "@/lib/realtime/post-commit";
 
 export async function PATCH(
@@ -146,6 +147,10 @@ export async function PATCH(
 
       stageCustomerTicketSkipped(collector, resultTicket.trackingToken, {
         ticketNumber: resultTicket.number,
+      });
+
+      stageCustomerQueueInvalidated(collector, resultTicket.queueId, {
+        reason: "TICKET_SKIPPED",
       });
 
       return resultTicket;

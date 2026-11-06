@@ -13,6 +13,10 @@ import {
 } from "@/lib/services/schedule.service";
 import { createTicketSchema } from "@/lib/validations/ticket";
 import { randomBytes } from "node:crypto";
+import {
+  executeWithPostCommit,
+  stageCustomerQueueInvalidated,
+} from "@/lib/realtime/post-commit";
 
 export async function GET() {
   const currentUser = await getCurrentUser();
@@ -95,10 +99,11 @@ export async function POST(request: Request) {
   const userId = currentUser.id;
 
   try {
-    const ticket = await prisma.$transaction(async (tx) => {
-      const queue = await tx.queue.findUnique({
-        where: { id: queueId },
-        select: {
+    const ticket = await executeWithPostCommit(async (collector) => {
+      const createdTicket = await prisma.$transaction(async (tx) => {
+        const queue = await tx.queue.findUnique({
+          where: { id: queueId },
+          select: {
           id: true,
           isActive: true,
           maxWaitingTickets: true,
@@ -275,16 +280,23 @@ export async function POST(request: Request) {
         initialEstimatedWaitMinutes = null;
       }
 
-      return tx.ticket.create({
-        data: {
-          number,
-          queueId,
-          userId,
-          createdAt: now,
-          trackingToken: randomBytes(32).toString("hex"),
-          initialEstimatedWaitMinutes,
-        },
+        return tx.ticket.create({
+          data: {
+            number,
+            queueId,
+            userId,
+            createdAt: now,
+            trackingToken: randomBytes(32).toString("hex"),
+            initialEstimatedWaitMinutes,
+          },
+        });
       });
+
+      stageCustomerQueueInvalidated(collector, queueId, {
+        reason: "TICKET_CREATED",
+      });
+
+      return createdTicket;
     });
 
     return Response.json(ticket, { status: 201 });

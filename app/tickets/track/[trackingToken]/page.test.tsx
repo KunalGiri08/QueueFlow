@@ -191,9 +191,11 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
     url: string,
     init?: RequestInit,
   ) => Promise<Response> | Response;
+  let enableRealtimeStream = false;
 
   beforeEach(() => {
     mockTrackingToken = "token-test-123";
+    enableRealtimeStream = false;
 
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
@@ -222,6 +224,9 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
           typeof url === "string" &&
           url.includes("/api/realtime/tickets/stream")
         ) {
+          if (!enableRealtimeStream) {
+            return new Response("Service Unavailable", { status: 503 });
+          }
           return createMockRealtimeStream(
             url,
             typeof init?.body === "string" ? init.body : "{}",
@@ -1499,7 +1504,7 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       vi.useRealTimers();
     });
 
-    it("continues 10s polling even when SSE is healthy for WAITING tickets", async () => {
+    it("retains slower 30s safety reconciliation polling when SSE is healthy for WAITING tickets", async () => {
       vi.useFakeTimers();
       let fetchCallCount = 0;
       global.fetch = vi
@@ -1534,20 +1539,150 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
         activeRealtimeStream!.simulateOpen();
       });
 
-      // Advance by 15 seconds: for WAITING tickets, 10s polling continues
+      // Advance by 15 seconds: with SSE connected, 10s polling must NOT execute for WAITING tickets
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+
+      expect(fetchCallCount).toBe(1);
+
+      // Advance another 15 seconds (total 30s): the 30s safety reconciliation poll executes
       await act(async () => {
         await vi.advanceTimersByTimeAsync(15000);
       });
 
       expect(fetchCallCount).toBe(2);
 
-      // Advance another 10 seconds: another poll runs
+      // Advance another 30 seconds: another safety poll executes
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+
+      expect(fetchCallCount).toBe(3);
+      vi.useRealTimers();
+    });
+
+    it("falls back to 10s polling when SSE disconnects or errors for WAITING tickets", async () => {
+      vi.useFakeTimers();
+      let fetchCallCount = 0;
+      let sseDropped = false;
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            if (sseDropped) {
+              return new Response("Service Unavailable", { status: 503 });
+            }
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          fetchCallCount++;
+          return jsonResponse(mockWaitingTicket);
+        });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "token-test-123" })}
+          />,
+        );
+      });
+
+      expect(fetchCallCount).toBe(1);
+      expect(activeRealtimeStream).not.toBeNull();
+
+      // Simulate initial healthy connection
+      await act(async () => {
+        activeRealtimeStream!.simulateOpen();
+      });
+
+      // Advance by 15s: polling does NOT run at 10s while connected
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      expect(fetchCallCount).toBe(1);
+
+      // Simulate SSE connection error/drop and keep it disconnected
+      await act(async () => {
+        sseDropped = true;
+        activeRealtimeStream!.simulateError();
+      });
+
+      // Advance by 10 seconds: fallback polling fires at 10s interval
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      expect(fetchCallCount).toBe(2);
+
+      // Advance another 10 seconds: another fallback poll executes
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10000);
       });
 
       expect(fetchCallCount).toBe(3);
       vi.useRealTimers();
+    });
+
+    it("triggers REST re-fetch and updates position on QUEUE_INVALIDATED event without playing chime", async () => {
+      let isFirstFetch = true;
+      const updatedWaitingTicket = {
+        ...mockWaitingTicket,
+        peopleAhead: 2,
+        currentlyServing: 40,
+      };
+
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          if (isFirstFetch) {
+            isFirstFetch = false;
+            return jsonResponse(mockWaitingTicket);
+          }
+          return jsonResponse(updatedWaitingTicket);
+        });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "token-test-123" })}
+          />,
+        );
+      });
+
+      expect(screen.getByText("3")).toBeDefined();
+      expect(screen.getByText("#39")).toBeDefined();
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
+
+      // Simulate queue invalidation event from another ticket being called/served
+      await act(async () => {
+        activeRealtimeStream!.simulateOpen();
+        activeRealtimeStream!.simulateEvent("QUEUE_INVALIDATED", {
+          queueId: "queue-1",
+          reason: "TICKET_CALLED",
+          timestamp: Date.now(),
+        });
+      });
+
+      // REST fetch completed, queue position updated to 2, serving to 40
+      expect(screen.getByText("2")).toBeDefined();
+      expect(screen.getByText("#40")).toBeDefined();
+      // Crucial: chime is NEVER played for queue invalidation events
+      expect(mockPlayTurnChime).not.toHaveBeenCalled();
     });
 
     it("triggers REST re-fetch, plays chime, and updates UI on TICKET_CALLED event", async () => {

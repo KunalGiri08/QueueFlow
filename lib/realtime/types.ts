@@ -10,23 +10,36 @@ export type RealtimeEventType =
   | "TICKET_COMPLETED"
   | "TICKET_SKIPPED"
   | "TICKET_CANCELLED"
-  | "QUEUE_STATUS_CHANGED";
+  | "QUEUE_STATUS_CHANGED"
+  | "QUEUE_INVALIDATED";
 
 // ============================================================================
 // Channel Naming Helpers
 // ============================================================================
 
 export function customerTicketChannel(trackingToken: string): string {
-  return `ticket:${trackingToken}`;
+  return `ticket:${trackingToken.trim()}`;
+}
+
+export function customerQueueChannel(queueId: string): string {
+  return `customer:queue:${queueId.trim()}`;
 }
 
 export function staffOrgChannel(organizationId: string): string {
-  return `org:${organizationId}`;
+  return `org:${organizationId.trim()}`;
 }
 
 export function staffQueueChannel(queueId: string): string {
-  return `queue:${queueId}`;
+  return `queue:${queueId.trim()}`;
 }
+
+// ============================================================================
+// Customer Real-Time Polling Intervals (Phase 4)
+// ============================================================================
+
+export const WAITING_CONNECTED_SAFETY_POLL_INTERVAL_MS = 30000;
+export const WAITING_DISCONNECTED_POLL_INTERVAL_MS = 10000;
+export const CALLED_FALLBACK_POLL_INTERVAL_MS = 10000;
 
 // ============================================================================
 // Customer-Safe Payloads (strictly sanitized; zero PII or internal IDs)
@@ -62,6 +75,12 @@ export interface CustomerTicketCancelledPayload {
 export interface CustomerQueueStatusPayload {
   queueId: string;
   isActive: boolean;
+}
+
+export interface CustomerQueueInvalidatedPayload {
+  queueId: string;
+  reason?: string;
+  timestamp: number;
 }
 
 // ============================================================================

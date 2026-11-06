@@ -2,8 +2,10 @@ import { prisma } from "@/lib/prisma";
 import { broker } from "@/lib/realtime/broker";
 import {
   customerTicketChannel,
+  customerQueueChannel,
   type RealtimeEnvelope,
   type RealtimeEventType,
+  type CustomerQueueInvalidatedPayload,
 } from "@/lib/realtime/types";
 import { isTicketActive } from "@/lib/formatters/ticket";
 
@@ -58,6 +60,17 @@ function sanitizeCustomerEventPayload(
         queueId: payload.queueId,
         isActive: Boolean(payload.isActive),
       };
+    case "QUEUE_INVALIDATED": {
+      const qPayload = payload as Partial<CustomerQueueInvalidatedPayload>;
+      return {
+        queueId: typeof qPayload.queueId === "string" ? qPayload.queueId : "",
+        ...(typeof qPayload.reason === "string" ? { reason: qPayload.reason } : {}),
+        timestamp:
+          typeof qPayload.timestamp === "number"
+            ? qPayload.timestamp
+            : Date.now(),
+      };
+    }
     default:
       return {};
   }
@@ -117,7 +130,12 @@ export async function POST(request: Request) {
   }
 
   // 1. Authorize: Verify ticket exists in PostgreSQL
-  let ticket: { id: string; status: string; number: number } | null = null;
+  let ticket: {
+    id: string;
+    status: string;
+    number: number;
+    queueId: string;
+  } | null = null;
   try {
     ticket = await prisma.ticket.findUnique({
       where: { trackingToken: token },
@@ -125,6 +143,7 @@ export async function POST(request: Request) {
         id: true,
         status: true,
         number: true,
+        queueId: true,
       },
     });
   } catch (error) {
@@ -156,13 +175,16 @@ export async function POST(request: Request) {
     );
   }
 
-  // 3. Establish SSE stream scoped strictly to this ticket's customer channel
-  const channel = customerTicketChannel(token);
+  // 3. Establish SSE stream scoped strictly to this ticket's customer channel and its queue channel
+  const ticketChannel = customerTicketChannel(token);
+  const queueChannel = ticket.queueId
+    ? customerQueueChannel(ticket.queueId)
+    : null;
   const encoder = new TextEncoder();
 
   let isClosed = false;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  let unsubscribe: (() => void) | null = null;
+  const unsubscribers: (() => void)[] = [];
 
   const stream = new ReadableStream({
     start(controller) {
@@ -175,9 +197,13 @@ export async function POST(request: Request) {
           heartbeatTimer = null;
         }
 
-        if (unsubscribe !== null) {
-          unsubscribe();
-          unsubscribe = null;
+        while (unsubscribers.length > 0) {
+          const unsub = unsubscribers.pop();
+          try {
+            unsub?.();
+          } catch {
+            // ignore
+          }
         }
 
         try {
@@ -200,29 +226,31 @@ export async function POST(request: Request) {
       // Send initial connection comment
       safeEnqueue(": connected\n\n");
 
-      // Subscribe to customer channel on broker
-      try {
-        unsubscribe = broker.subscribe(
-          channel,
-          (event: RealtimeEnvelope<unknown>) => {
-            if (isClosed) return;
-            const sanitized = sanitizeCustomerEventPayload(
-              event.type,
-              event.payload,
-            );
-            const sseData = `event: ${event.type}\ndata: ${JSON.stringify(sanitized)}\n\n`;
-            safeEnqueue(sseData);
-
-            // If terminal event received, close stream after delivering
-            if (
-              event.type === "TICKET_COMPLETED" ||
-              event.type === "TICKET_SKIPPED" ||
-              event.type === "TICKET_CANCELLED"
-            ) {
-              cleanup();
-            }
-          },
+      const handleEvent = (event: RealtimeEnvelope<unknown>) => {
+        if (isClosed) return;
+        const sanitized = sanitizeCustomerEventPayload(
+          event.type,
+          event.payload,
         );
+        const sseData = `event: ${event.type}\ndata: ${JSON.stringify(sanitized)}\n\n`;
+        safeEnqueue(sseData);
+
+        // If terminal event received, close stream after delivering
+        if (
+          event.type === "TICKET_COMPLETED" ||
+          event.type === "TICKET_SKIPPED" ||
+          event.type === "TICKET_CANCELLED"
+        ) {
+          cleanup();
+        }
+      };
+
+      // Subscribe to both customer ticket channel and customer queue channel on broker
+      try {
+        unsubscribers.push(broker.subscribe(ticketChannel, handleEvent));
+        if (queueChannel) {
+          unsubscribers.push(broker.subscribe(queueChannel, handleEvent));
+        }
       } catch (err) {
         console.error(
           `[Realtime] Failed to subscribe to channel for token ${maskTrackingToken(token)}:`,
@@ -249,9 +277,13 @@ export async function POST(request: Request) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
       }
-      if (unsubscribe !== null) {
-        unsubscribe();
-        unsubscribe = null;
+      while (unsubscribers.length > 0) {
+        const unsub = unsubscribers.pop();
+        try {
+          unsub?.();
+        } catch {
+          // ignore
+        }
       }
       isClosed = true;
     },

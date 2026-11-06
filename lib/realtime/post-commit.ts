@@ -27,6 +27,7 @@
 import { broker as defaultBroker, RealtimeBroker } from "./broker";
 import {
   customerTicketChannel,
+  customerQueueChannel,
   createRealtimeEnvelope,
   type RealtimeEnvelope,
   type CustomerTicketCalledPayload,
@@ -34,6 +35,7 @@ import {
   type CustomerTicketCompletedPayload,
   type CustomerTicketSkippedPayload,
   type CustomerTicketCancelledPayload,
+  type CustomerQueueInvalidatedPayload,
 } from "./types";
 
 export class PostCommitCollector {
@@ -224,6 +226,30 @@ export function stageCustomerTicketCancelled(
       {
         ticketNumber: data.ticketNumber,
         status: "CANCELLED",
+      },
+    ),
+  );
+}
+
+/**
+ * Stages a customer QUEUE_INVALIDATED event for queue-level real-time invalidation.
+ * Zero PII, zero tokens, zero ticket details.
+ */
+export function stageCustomerQueueInvalidated(
+  collector: PostCommitCollector,
+  queueId: string | null | undefined,
+  data?: { reason?: string },
+): void {
+  const trimmedQueueId = queueId?.trim();
+  if (!trimmedQueueId) return;
+  collector.stage(
+    createRealtimeEnvelope<CustomerQueueInvalidatedPayload>(
+      "QUEUE_INVALIDATED",
+      customerQueueChannel(trimmedQueueId),
+      {
+        queueId: trimmedQueueId,
+        reason: data?.reason,
+        timestamp: Date.now(),
       },
     ),
   );

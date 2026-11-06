@@ -17,6 +17,12 @@ import {
   type TicketStatus,
 } from "@/lib/formatters/ticket";
 
+import {
+  WAITING_CONNECTED_SAFETY_POLL_INTERVAL_MS,
+  WAITING_DISCONNECTED_POLL_INTERVAL_MS,
+  CALLED_FALLBACK_POLL_INTERVAL_MS,
+} from "@/lib/realtime/types";
+
 export type { TicketStatus };
 
 interface PublicTicketTrackingData {
@@ -354,22 +360,40 @@ function TicketTrackingView({
       if (isCancelled) return;
       clearPollTimer();
 
-      // Avoid redundant polling requests while real-time SSE stream is healthy and connected.
-      // NOTE: Queue-level invalidation is not yet implemented. Single-ticket SSE channels do NOT
-      // receive events when OTHER tickets are served/skipped/cancelled. Therefore, WAITING tickets
-      // MUST continue authoritative 10s polling so `peopleAhead` and `estimatedWaitMinutes` stay current.
-      // Once a ticket is CALLED or SERVING, changes to its own status are delivered via SSE, so polling
-      // can be safely paused while SSE is healthy.
-      const isDirectlyTrackedStatus =
-        data?.status === "CALLED" || data?.status === "SERVING";
-      if (isSseConnected && !isSseError && isDirectlyTrackedStatus) {
+      // Real-time polling strategy:
+      // 1. WAITING tickets: Real-time queue invalidation delivers live position updates via SSE.
+      //    When SSE is healthy, retain a 30s safety reconciliation poll as a broker safeguard.
+      //    When SSE drops or encounters errors, fall back to authoritative 10s polling.
+      // 2. CALLED / SERVING tickets: Changes to ticket status are pushed via customer ticket SSE channel.
+      //    Polling is paused while SSE is connected, falling back to 10s polling if SSE drops.
+      // 3. Terminal states: Polling stopped and stream closed.
+      if (data?.status === "WAITING") {
+        const interval =
+          isSseConnected && !isSseError
+            ? WAITING_CONNECTED_SAFETY_POLL_INTERVAL_MS
+            : WAITING_DISCONNECTED_POLL_INTERVAL_MS;
+
+        pollTimerRef.current = setTimeout(async () => {
+          if (isCancelled) return;
+          await runPoll();
+        }, interval);
         return;
       }
 
-      pollTimerRef.current = setTimeout(async () => {
-        if (isCancelled) return;
-        await runPoll();
-      }, 10000);
+      if (data?.status === "CALLED" || data?.status === "SERVING") {
+        if (isSseConnected && !isSseError) {
+          // Paused while SSE is healthy
+          return;
+        }
+
+        pollTimerRef.current = setTimeout(async () => {
+          if (isCancelled) return;
+          await runPoll();
+        }, CALLED_FALLBACK_POLL_INTERVAL_MS);
+        return;
+      }
+
+      // Inactive or terminal states: no polling timer scheduled
     };
 
     const runPoll = async () => {

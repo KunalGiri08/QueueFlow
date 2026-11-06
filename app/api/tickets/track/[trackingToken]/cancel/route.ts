@@ -3,6 +3,7 @@ import { isValidTrackingTokenFormat } from "@/lib/validations/ticket";
 import {
   executeWithPostCommit,
   stageCustomerTicketCancelled,
+  stageCustomerQueueInvalidated,
 } from "@/lib/realtime/post-commit";
 
 export async function PATCH(
@@ -22,8 +23,10 @@ export async function PATCH(
       const resultTicket = await prisma.$transaction(async (tx) => {
         // 2. Preserve PostgreSQL transaction and row-locking guarantees.
         // Serialize concurrent updates to this ticket by its unique tracking token.
-        const tickets = await tx.$queryRaw<{ id: string; status: string }[]>`
-          SELECT "id", "status"
+        const tickets = await tx.$queryRaw<
+          { id: string; status: string; queueId?: string }[]
+        >`
+          SELECT "id", "status", "queueId"
           FROM "Ticket"
           WHERE "trackingToken" = ${token}
           FOR UPDATE
@@ -57,7 +60,7 @@ export async function PATCH(
         }
 
         // 5. Select only the necessary public fields.
-        return tx.ticket.findUniqueOrThrow({
+        const publicFields = await tx.ticket.findUniqueOrThrow({
           where: { trackingToken: token },
           select: {
             number: true,
@@ -65,10 +68,21 @@ export async function PATCH(
             cancelledAt: true,
           },
         });
+
+        return {
+          ...publicFields,
+          queueId:
+            ticket.queueId ||
+            (publicFields as unknown as { queueId?: string }).queueId,
+        };
       });
 
       stageCustomerTicketCancelled(collector, token, {
         ticketNumber: resultTicket.number,
+      });
+
+      stageCustomerQueueInvalidated(collector, resultTicket.queueId, {
+        reason: "TICKET_CANCELLED",
       });
 
       return resultTicket;

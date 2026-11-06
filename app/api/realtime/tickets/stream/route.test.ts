@@ -3,6 +3,7 @@ import { broker } from "@/lib/realtime/broker";
 import {
   createRealtimeEnvelope,
   customerTicketChannel,
+  customerQueueChannel,
 } from "@/lib/realtime/types";
 
 const { mockTicketFindUnique } = vi.hoisted(() => ({
@@ -97,7 +98,7 @@ describe("POST /api/realtime/tickets/stream", () => {
       expect(json).toEqual({ error: "Invalid tracking token" });
       expect(mockTicketFindUnique).toHaveBeenCalledWith({
         where: { trackingToken: validToken },
-        select: { id: true, status: true, number: true },
+        select: { id: true, status: true, number: true, queueId: true },
       });
     });
 
@@ -285,6 +286,68 @@ describe("POST /api/realtime/tickets/stream", () => {
       // Next read should report stream is closed
       const next = await reader.read();
       expect(next.done).toBe(true);
+    });
+
+    it("subscribes to both ticket and queue channels and receives QUEUE_INVALIDATED", async () => {
+      const queueId = "queue-sub-123";
+      mockTicketFindUnique.mockResolvedValue({
+        id: "ticket-1",
+        status: "WAITING",
+        number: 42,
+        queueId,
+      });
+
+      const abortController = new AbortController();
+      const request = new Request("http://localhost/api/realtime/tickets/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trackingToken: validToken }),
+        signal: abortController.signal,
+      });
+
+      const response = await POST(request);
+      const ticketChannel = customerTicketChannel(validToken);
+      const queueChannel = customerQueueChannel(queueId);
+
+      // Verify active subscriptions on BOTH channels
+      expect(broker.listenerCount(ticketChannel)).toBe(1);
+      expect(broker.listenerCount(queueChannel)).toBe(1);
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+
+      // Read initial connection comment
+      await reader.read();
+
+      // Publish QUEUE_INVALIDATED on queue channel
+      broker.publish(
+        queueChannel,
+        createRealtimeEnvelope("QUEUE_INVALIDATED", queueChannel, {
+          queueId,
+          reason: "TICKET_CALLED",
+          timestamp: 999999,
+        }),
+      );
+
+      // Read invalidation event
+      const { value, done } = await reader.read();
+      expect(done).toBe(false);
+      const text = decoder.decode(value);
+      expect(text).toContain("event: QUEUE_INVALIDATED\n");
+      expect(text).toContain(
+        `data: {"queueId":"${queueId}","reason":"TICKET_CALLED","timestamp":999999}\n\n`,
+      );
+
+      // Queue invalidation is non-terminal: verify stream is STILL OPEN
+      expect(broker.listenerCount(ticketChannel)).toBe(1);
+      expect(broker.listenerCount(queueChannel)).toBe(1);
+
+      // Abort connection
+      abortController.abort();
+
+      // Both subscriptions should be unregistered
+      expect(broker.listenerCount(ticketChannel)).toBe(0);
+      expect(broker.listenerCount(queueChannel)).toBe(0);
     });
   });
 });

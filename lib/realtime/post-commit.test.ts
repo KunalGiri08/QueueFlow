@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { RealtimeBroker } from "./broker";
-import { PostCommitCollector, executeWithPostCommit } from "./post-commit";
+import {
+  PostCommitCollector,
+  executeWithPostCommit,
+  stageCustomerQueueInvalidated,
+} from "./post-commit";
 import {
   createRealtimeEnvelope,
   customerTicketChannel,
+  customerQueueChannel,
   staffOrgChannel,
   type RealtimeEnvelope,
+  type CustomerQueueInvalidatedPayload,
 } from "./types";
 
 describe("Post-Commit Real-Time Dispatcher", () => {
@@ -204,6 +210,39 @@ describe("Post-Commit Real-Time Dispatcher", () => {
         "TICKET_SERVING",
         "TICKET_COMPLETED",
       ]);
+    });
+  });
+
+  describe("stageCustomerQueueInvalidated (Phase 4)", () => {
+    it("stages a QUEUE_INVALIDATED event on the customer queue channel", async () => {
+      const queueId = "queue-123";
+      const channel = customerQueueChannel(queueId);
+      const listener = vi.fn();
+      testBroker.subscribe<CustomerQueueInvalidatedPayload>(channel, listener);
+
+      await executeWithPostCommit(async (collector) => {
+        stageCustomerQueueInvalidated(collector, queueId, {
+          reason: "TICKET_CREATED",
+        });
+      }, testBroker);
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      const event = listener.mock.calls[0][0];
+      expect(event.type).toBe("QUEUE_INVALIDATED");
+      expect(event.channel).toBe(channel);
+      expect(event.payload.queueId).toBe(queueId);
+      expect(event.payload.reason).toBe("TICKET_CREATED");
+      expect(typeof event.payload.timestamp).toBe("number");
+    });
+
+    it("ignores null, undefined, or empty queueId without throwing", async () => {
+      const collector = new PostCommitCollector();
+
+      stageCustomerQueueInvalidated(collector, null);
+      stageCustomerQueueInvalidated(collector, undefined);
+      stageCustomerQueueInvalidated(collector, "   ");
+
+      expect(collector.size).toBe(0);
     });
   });
 });

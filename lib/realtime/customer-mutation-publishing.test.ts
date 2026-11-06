@@ -1,13 +1,16 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { broker } from "@/lib/realtime/broker";
 import {
+  createRealtimeEnvelope,
   customerTicketChannel,
+  customerQueueChannel,
   type RealtimeEnvelope,
   type CustomerTicketCalledPayload,
   type CustomerTicketServingPayload,
   type CustomerTicketCompletedPayload,
   type CustomerTicketSkippedPayload,
   type CustomerTicketCancelledPayload,
+  type CustomerQueueInvalidatedPayload,
 } from "@/lib/realtime/types";
 
 // Hoisted mocks for Prisma
@@ -688,6 +691,164 @@ describe("Phase 3A: Post-Commit Customer Event Publishing", () => {
         'data: {"ticketNumber":77,"status":"CALLED","counterName":"Counter 5"}\n\n',
       );
 
+      await reader.cancel();
+    });
+  });
+
+  describe("Phase 4: Queue-Level Invalidation Event Publishing Across Mutations", () => {
+    it("publishes QUEUE_INVALIDATED to the customer queue channel when next ticket is called", async () => {
+      const queueId = "queue-1";
+      const qChannel = customerQueueChannel(queueId);
+      const queueEvents: RealtimeEnvelope<CustomerQueueInvalidatedPayload>[] = [];
+
+      broker.subscribe<CustomerQueueInvalidatedPayload>(qChannel, (event) => {
+        queueEvents.push(event);
+      });
+
+      mockCounterFindFirst.mockResolvedValue({
+        id: "counter-1",
+        name: "Window 3",
+        organizationId: "org-1",
+        isActive: true,
+      });
+      mockStaffCounterAssignmentFindUnique.mockResolvedValue({
+        userId: "staff-user-1",
+        counterId: "counter-1",
+      });
+      mockOrganizationMembershipFindUnique.mockResolvedValue({
+        userId: "staff-user-1",
+        organizationId: "org-1",
+        role: "STAFF",
+      });
+      mockTicketFindUnique.mockResolvedValue({
+        id: "queue-1",
+        isActive: true,
+        service: {
+          isActive: true,
+          organizationId: "org-1",
+          organization: { id: "org-1", timezone: "UTC" },
+        },
+      });
+      mockTicketFindFirst.mockResolvedValue(null);
+      mockQueryRaw
+        .mockResolvedValueOnce([{ id: "staff-user-1" }])
+        .mockResolvedValueOnce([{ id: "ticket-10" }]);
+      mockTicketFindUniqueOrThrow.mockResolvedValue({
+        id: "ticket-10",
+        number: 10,
+        status: "CALLED",
+        counterId: "counter-1",
+        trackingToken,
+        queueId,
+      });
+
+      const response = await callNextTicket(
+        new Request("http://localhost", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ counterId: "counter-1" }),
+        }),
+        { params: Promise.resolve({ id: "queue-1" }) },
+      );
+
+      expect(response.status).toBe(200);
+
+      // Verify QUEUE_INVALIDATED event publication on the queue channel
+      expect(queueEvents).toHaveLength(1);
+      expect(queueEvents[0].type).toBe("QUEUE_INVALIDATED");
+      expect(queueEvents[0].channel).toBe(qChannel);
+      expect(queueEvents[0].payload.queueId).toBe(queueId);
+      expect(queueEvents[0].payload.reason).toBe("TICKET_CALLED");
+      expect(typeof queueEvents[0].payload.timestamp).toBe("number");
+    });
+
+    it("publishes QUEUE_INVALIDATED when customer cancels via tracking token", async () => {
+      const queueId = "queue-cancel-1";
+      const qChannel = customerQueueChannel(queueId);
+      const queueEvents: RealtimeEnvelope<CustomerQueueInvalidatedPayload>[] = [];
+
+      broker.subscribe<CustomerQueueInvalidatedPayload>(qChannel, (event) => {
+        queueEvents.push(event);
+      });
+
+      mockQueryRaw.mockResolvedValue([
+        { id: "ticket-public", status: "WAITING", queueId },
+      ]);
+      mockTicketUpdateMany.mockResolvedValue({ count: 1 });
+      mockTicketFindUniqueOrThrow.mockResolvedValue({
+        number: 88,
+        status: "CANCELLED",
+        cancelledAt: new Date("2026-11-06T00:00:00Z"),
+        queueId,
+      });
+
+      const response = await cancelTicketTrackToken(
+        new Request("http://localhost", { method: "PATCH" }),
+        { params: Promise.resolve({ trackingToken }) },
+      );
+
+      expect(response.status).toBe(200);
+
+      expect(queueEvents).toHaveLength(1);
+      expect(queueEvents[0].type).toBe("QUEUE_INVALIDATED");
+      expect(queueEvents[0].channel).toBe(qChannel);
+      expect(queueEvents[0].payload.queueId).toBe(queueId);
+      expect(queueEvents[0].payload.reason).toBe("TICKET_CANCELLED");
+    });
+
+    it("delivers QUEUE_INVALIDATED over SSE stream to waiting customers in the same queue", async () => {
+      const queueId = "queue-sse-shared";
+      const waitingToken = "1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff";
+
+      // 1. Mock ticket lookup in stream route
+      mockTicketFindUnique.mockResolvedValue({
+        id: "waiting-ticket-id",
+        status: "WAITING",
+        number: 45,
+        queueId,
+      });
+
+      // 2. Customer opens SSE stream
+      const sseResponse = await customerSseEndpoint(
+        new Request("http://localhost/api/realtime/tickets/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trackingToken: waitingToken }),
+        }),
+      );
+
+      expect(sseResponse.status).toBe(200);
+      const reader = sseResponse.body!.getReader();
+
+      // Read initial connection handshake comment
+      const initialChunk = await reader.read();
+      expect(new TextDecoder().decode(initialChunk.value)).toContain(": connected\n\n");
+
+      // 3. Publish a QUEUE_INVALIDATED event directly to the queue channel
+      broker.publish(
+        customerQueueChannel(queueId),
+        createRealtimeEnvelope<CustomerQueueInvalidatedPayload>(
+          "QUEUE_INVALIDATED",
+          customerQueueChannel(queueId),
+          {
+            queueId,
+            reason: "TICKET_CALLED",
+            timestamp: 1234567890,
+          },
+        ),
+      );
+
+      // 4. Read the SSE message from the waiting customer's stream
+      const sseChunk = await reader.read();
+      expect(sseChunk.done).toBe(false);
+      const sseText = new TextDecoder().decode(sseChunk.value);
+
+      expect(sseText).toContain("event: QUEUE_INVALIDATED\n");
+      expect(sseText).toContain(
+        `data: {"queueId":"${queueId}","reason":"TICKET_CALLED","timestamp":1234567890}\n\n`,
+      );
+
+      // Verify stream is STILL OPEN (queue invalidation is not terminal!)
       await reader.cancel();
     });
   });
