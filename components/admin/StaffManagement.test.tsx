@@ -670,4 +670,203 @@ describe("StaffManagement", () => {
       expect(screen.queryByRole("alert")).toBeNull();
     });
   });
+
+  describe("Multi-Admin and Owner Role Management", () => {
+    const multiRoleStaffData = [
+      {
+        id: "owner-1",
+        name: "Oscar Owner",
+        email: "oscar@example.com",
+        role: "ADMIN",
+        isOwner: true,
+        counters: [],
+      },
+      {
+        id: "admin-2",
+        name: "Amy Admin",
+        email: "amy@example.com",
+        role: "ADMIN",
+        isOwner: false,
+        counters: [],
+      },
+      {
+        id: "staff-3",
+        name: "Sam Staff",
+        email: "sam@example.com",
+        role: "STAFF",
+        isOwner: false,
+        counters: [],
+      },
+    ];
+
+    it("renders Owner, Admin, and Staff badges properly", async () => {
+      global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.startsWith("/api/staff?organizationId=")) {
+          return Promise.resolve(jsonResponse(multiRoleStaffData));
+        }
+        if (url.includes("/counters")) {
+          return Promise.resolve(jsonResponse(mockCountersData));
+        }
+        return Promise.reject(new Error(`Unhandled: ${url}`));
+      });
+
+      render(<StaffManagement organizationId="org-1" />);
+
+      expect(await screen.findByText("Oscar Owner")).toBeDefined();
+      const ownerCard = screen.getByTestId("staff-card-owner-1");
+      expect(ownerCard.textContent).toContain("Owner");
+
+      const adminCard = screen.getByTestId("staff-card-admin-2");
+      expect(adminCard.textContent).toContain("Admin");
+
+      const staffCard = screen.getByTestId("staff-card-staff-3");
+      expect(staffCard.textContent).toContain("Staff");
+    });
+
+    it("disables removal and hides role alteration on the designated owner card", async () => {
+      global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.startsWith("/api/staff?organizationId=")) {
+          return Promise.resolve(jsonResponse(multiRoleStaffData));
+        }
+        if (url.includes("/counters")) {
+          return Promise.resolve(jsonResponse(mockCountersData));
+        }
+        return Promise.reject(new Error(`Unhandled: ${url}`));
+      });
+
+      render(<StaffManagement organizationId="org-1" />);
+
+      await screen.findByText("Oscar Owner");
+      const ownerCard = screen.getByTestId("staff-card-owner-1");
+
+      // Verify remove button is disabled with owner protection label
+      const ownerRemoveBtn = screen.getByRole("button", {
+        name: /organization owner cannot be removed/i,
+      });
+      expect(ownerRemoveBtn.hasAttribute("disabled")).toBe(true);
+
+      // Verify no promote or demote button is rendered on owner card
+      expect(ownerCard.textContent).not.toContain("Promote to Admin");
+      expect(ownerCard.textContent).not.toContain("Demote to Staff");
+    });
+
+    it("promotes a STAFF member to ADMIN via PATCH, updating UI and badge", async () => {
+      let patchPayload: unknown = null;
+      global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.startsWith("/api/staff?organizationId=")) {
+          return Promise.resolve(jsonResponse(multiRoleStaffData));
+        }
+        if (url.includes("/counters")) {
+          return Promise.resolve(jsonResponse(mockCountersData));
+        }
+        if (url === "/api/organizations/org-1/staff/staff-3" && init?.method === "PATCH") {
+          patchPayload = JSON.parse(init.body as string);
+          return Promise.resolve(
+            jsonResponse({
+              id: "staff-3",
+              name: "Sam Staff",
+              email: "sam@example.com",
+              role: "ADMIN",
+              isOwner: false,
+            }),
+          );
+        }
+        return Promise.reject(new Error(`Unhandled: ${url}`));
+      });
+
+      render(<StaffManagement organizationId="org-1" />);
+
+      await screen.findByText("Sam Staff");
+      const staffCard = screen.getByTestId("staff-card-staff-3");
+      expect(staffCard.textContent).toContain("Staff");
+
+      const promoteBtn = screen.getByRole("button", { name: /promote sam staff to admin/i });
+      fireEvent.click(promoteBtn);
+
+      await waitFor(() => {
+        expect(patchPayload).toEqual({ role: "ADMIN" });
+        expect(staffCard.textContent).toContain("Admin");
+      });
+
+      expect(screen.getByRole("status").textContent).toContain("Sam Staff was successfully promoted to Admin.");
+    });
+
+    it("demotes a non-owner ADMIN to STAFF via PATCH, updating UI and badge", async () => {
+      let patchPayload: unknown = null;
+      global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.startsWith("/api/staff?organizationId=")) {
+          return Promise.resolve(jsonResponse(multiRoleStaffData));
+        }
+        if (url.includes("/counters")) {
+          return Promise.resolve(jsonResponse(mockCountersData));
+        }
+        if (url === "/api/organizations/org-1/staff/admin-2" && init?.method === "PATCH") {
+          patchPayload = JSON.parse(init.body as string);
+          return Promise.resolve(
+            jsonResponse({
+              id: "admin-2",
+              name: "Amy Admin",
+              email: "amy@example.com",
+              role: "STAFF",
+              isOwner: false,
+            }),
+          );
+        }
+        return Promise.reject(new Error(`Unhandled: ${url}`));
+      });
+
+      render(<StaffManagement organizationId="org-1" />);
+
+      await screen.findByText("Amy Admin");
+      const adminCard = screen.getByTestId("staff-card-admin-2");
+      expect(adminCard.textContent).toContain("Admin");
+
+      const demoteBtn = screen.getByRole("button", { name: /demote amy admin to staff/i });
+      fireEvent.click(demoteBtn);
+
+      await waitFor(() => {
+        expect(patchPayload).toEqual({ role: "STAFF" });
+        expect(adminCard.textContent).toContain("Staff");
+      });
+
+      expect(screen.getByRole("status").textContent).toContain("Amy Admin was successfully demoted to Staff.");
+    });
+
+    it("displays error alert when demoting fails due to last admin protection (409)", async () => {
+      global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.startsWith("/api/staff?organizationId=")) {
+          return Promise.resolve(jsonResponse(multiRoleStaffData));
+        }
+        if (url.includes("/counters")) {
+          return Promise.resolve(jsonResponse(mockCountersData));
+        }
+        if (url === "/api/organizations/org-1/staff/admin-2" && init?.method === "PATCH") {
+          return Promise.resolve(
+            jsonResponse(
+              { error: "Cannot demote the last administrator of an organization" },
+              409,
+            ),
+          );
+        }
+        return Promise.reject(new Error(`Unhandled: ${url}`));
+      });
+
+      render(<StaffManagement organizationId="org-1" />);
+
+      await screen.findByText("Amy Admin");
+      const adminCard = screen.getByTestId("staff-card-admin-2");
+
+      const demoteBtn = screen.getByRole("button", { name: /demote amy admin to staff/i });
+      fireEvent.click(demoteBtn);
+
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain("Cannot demote the last administrator of an organization");
+      expect(adminCard.textContent).toContain("Admin");
+    });
+  });
 });

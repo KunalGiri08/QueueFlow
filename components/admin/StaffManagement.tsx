@@ -13,6 +13,7 @@ export interface StaffMemberItem {
   name: string | null;
   email: string;
   role: "ADMIN" | "STAFF";
+  isOwner?: boolean;
   counters: StaffCounterItem[];
 }
 
@@ -73,11 +74,12 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
 
-  // Counter assignment / member removal operational states
+  // Counter assignment / member removal / role update operational states
   const [selectedCounterByStaffId, setSelectedCounterByStaffId] = useState<Record<string, string>>({});
   const [assigningStaffId, setAssigningStaffId] = useState<string | null>(null);
   const [unassigningKey, setUnassigningKey] = useState<string | null>(null);
   const [removingStaffId, setRemovingStaffId] = useState<string | null>(null);
+  const [updatingRoleStaffId, setUpdatingRoleStaffId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
@@ -88,6 +90,7 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
   const isOnboardingRef = useRef<boolean>(false);
   const isAssigningRef = useRef<boolean>(false);
   const isRemovingRef = useRef<boolean>(false);
+  const isUpdatingRoleRef = useRef<boolean>(false);
   const activeActionRequestIdRef = useRef<number>(0);
 
   // Reset inputs and feedback when organizationId changes
@@ -107,6 +110,7 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
     setAssigningStaffId(null);
     setUnassigningKey(null);
     setRemovingStaffId(null);
+    setUpdatingRoleStaffId(null);
     setActionError(null);
     setActionSuccess(null);
   }
@@ -115,6 +119,7 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
     isOnboardingRef.current = false;
     isAssigningRef.current = false;
     isRemovingRef.current = false;
+    isUpdatingRoleRef.current = false;
     currentOrgIdRef.current = organizationId;
     activeActionRequestIdRef.current += 1;
   }, [organizationId]);
@@ -155,15 +160,20 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
             throw new Error("Malformed staff response");
           }
 
-          const validatedStaff: StaffMemberItem[] = staffData.filter(
-            (item): item is StaffMemberItem =>
-              typeof item === "object" &&
-              item !== null &&
-              typeof (item as { id?: unknown }).id === "string" &&
-              typeof (item as { email?: unknown }).email === "string" &&
-              ((item as { role?: unknown }).role === "ADMIN" || (item as { role?: unknown }).role === "STAFF") &&
-              Array.isArray((item as { counters?: unknown }).counters),
-          );
+          const validatedStaff: StaffMemberItem[] = staffData
+            .filter(
+              (item): item is StaffMemberItem =>
+                typeof item === "object" &&
+                item !== null &&
+                typeof (item as { id?: unknown }).id === "string" &&
+                typeof (item as { email?: unknown }).email === "string" &&
+                ((item as { role?: unknown }).role === "ADMIN" || (item as { role?: unknown }).role === "STAFF") &&
+                Array.isArray((item as { counters?: unknown }).counters),
+            )
+            .map((item) => ({
+              ...item,
+              isOwner: Boolean((item as { isOwner?: unknown }).isOwner),
+            }));
 
           const validatedCounters: CounterOption[] = Array.isArray(countersData)
             ? countersData.filter(
@@ -297,6 +307,7 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
           name: data.name ?? trimmedName,
           email: data.email ?? trimmedEmail,
           role: data.role === "ADMIN" ? "ADMIN" : "STAFF",
+          isOwner: false,
           counters: [],
         };
 
@@ -512,6 +523,107 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
     }
   };
 
+  // Promote or demote a staff member
+  const handleUpdateRole = async (
+    staffId: string,
+    memberLabel: string,
+    currentRole: "ADMIN" | "STAFF",
+  ) => {
+    const targetRole = currentRole === "ADMIN" ? "STAFF" : "ADMIN";
+    const actionVerb = targetRole === "ADMIN" ? "promote" : "demote";
+
+    if (
+      !window.confirm(
+        `Are you sure you want to ${actionVerb} ${memberLabel} to ${
+          targetRole === "ADMIN" ? "Admin" : "Staff"
+        }?`,
+      )
+    ) {
+      return;
+    }
+
+    setActionError(null);
+    setActionSuccess(null);
+
+    if (isUpdatingRoleRef.current) return;
+    isUpdatingRoleRef.current = true;
+    setUpdatingRoleStaffId(staffId);
+
+    const actionRequestId = ++activeActionRequestIdRef.current;
+    const targetOrgId = organizationId;
+
+    try {
+      const response = await fetch(
+        `/api/organizations/${encodeURIComponent(
+          targetOrgId,
+        )}/staff/${encodeURIComponent(staffId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: targetRole }),
+        },
+      );
+
+      if (
+        currentOrgIdRef.current !== targetOrgId ||
+        activeActionRequestIdRef.current !== actionRequestId
+      ) {
+        return;
+      }
+
+      if (response.status === 401) {
+        router.push(`/sign-in?redirect_url=${encodeURIComponent("/admin")}`);
+        return;
+      }
+
+      const data = await response.json().catch(() => null);
+
+      if (response.status === 409) {
+        setActionError(data?.error || `Cannot ${actionVerb} member.`);
+        return;
+      }
+
+      if (!response.ok) {
+        setActionError(data?.error || `Failed to ${actionVerb} member.`);
+        return;
+      }
+
+      setStaff((prev) =>
+        prev.map((m) =>
+          m.id === staffId
+            ? {
+                ...m,
+                role: data?.role ?? targetRole,
+                isOwner:
+                  typeof data?.isOwner === "boolean" ? data.isOwner : m.isOwner,
+              }
+            : m,
+        ),
+      );
+
+      setActionSuccess(
+        `${memberLabel} was successfully ${
+          targetRole === "ADMIN" ? "promoted to Admin" : "demoted to Staff"
+        }.`,
+      );
+    } catch {
+      if (
+        currentOrgIdRef.current === targetOrgId &&
+        activeActionRequestIdRef.current === actionRequestId
+      ) {
+        setActionError(`Network error. Unable to ${actionVerb} staff member.`);
+      }
+    } finally {
+      if (
+        currentOrgIdRef.current === targetOrgId &&
+        activeActionRequestIdRef.current === actionRequestId
+      ) {
+        isUpdatingRoleRef.current = false;
+        setUpdatingRoleStaffId(null);
+      }
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Section Header */}
@@ -621,6 +733,7 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
             const selectedCounterId = selectedCounterByStaffId[member.id] ?? "";
             const isMemberAssigning = assigningStaffId === member.id;
             const isMemberRemoving = removingStaffId === member.id;
+            const isMemberUpdatingRole = updatingRoleStaffId === member.id;
 
             return (
               <div
@@ -640,38 +753,116 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
                     <div className="flex items-center gap-1.5">
                       <span
                         className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium border ${
-                          member.role === "ADMIN"
+                          member.isOwner
+                            ? "bg-amber-50 text-amber-700 border-amber-200"
+                            : member.role === "ADMIN"
                             ? "bg-purple-50 text-purple-700 border-purple-200"
                             : "bg-blue-50 text-blue-700 border-blue-200"
                         }`}
                       >
-                        {member.role === "ADMIN" ? "Admin" : "Staff"}
+                        {member.isOwner
+                          ? "Owner"
+                          : member.role === "ADMIN"
+                          ? "Admin"
+                          : "Staff"}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveMember(member.id, member.name ?? member.email)}
-                        disabled={isMemberRemoving}
-                        aria-label={`Remove member ${member.name ?? member.email}`}
-                        className="rounded p-1 text-gray-400 hover:text-red-600 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-600 disabled:opacity-50"
-                        title="Remove member"
-                      >
-                        <svg
-                          className="h-4 w-4"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          strokeWidth="1.5"
-                          stroke="currentColor"
-                          aria-hidden="true"
+                      {member.isOwner ? (
+                        <button
+                          type="button"
+                          disabled
+                          aria-label="Organization owner cannot be removed"
+                          className="rounded p-1 text-gray-300 cursor-not-allowed focus-visible:outline-none"
+                          title="Organization owner cannot be removed"
                         >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"
-                          />
-                        </svg>
-                      </button>
+                          <svg
+                            className="h-4 w-4"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            strokeWidth="1.5"
+                            stroke="currentColor"
+                            aria-hidden="true"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"
+                            />
+                          </svg>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveMember(member.id, member.name ?? member.email)}
+                          disabled={isMemberRemoving}
+                          aria-label={`Remove member ${member.name ?? member.email}`}
+                          className="rounded p-1 text-gray-400 hover:text-red-600 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-600 disabled:opacity-50"
+                          title="Remove member"
+                        >
+                          <svg
+                            className="h-4 w-4"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            strokeWidth="1.5"
+                            stroke="currentColor"
+                            aria-hidden="true"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"
+                            />
+                          </svg>
+                        </button>
+                      )}
                     </div>
                   </div>
+
+                  {/* Promote / Demote Action */}
+                  {!member.isOwner && (
+                    <div className="pt-1">
+                      {member.role === "STAFF" ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateRole(
+                              member.id,
+                              member.name ?? member.email,
+                              "STAFF",
+                            )
+                          }
+                          disabled={isMemberUpdatingRole}
+                          aria-label={`Promote ${
+                            member.name ?? member.email
+                          } to Admin`}
+                          className="inline-flex items-center text-xs font-medium text-purple-700 hover:text-purple-900 transition-colors disabled:opacity-50"
+                        >
+                          {isMemberUpdatingRole
+                            ? "Updating role..."
+                            : "Promote to Admin"}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateRole(
+                              member.id,
+                              member.name ?? member.email,
+                              "ADMIN",
+                            )
+                          }
+                          disabled={isMemberUpdatingRole}
+                          aria-label={`Demote ${
+                            member.name ?? member.email
+                          } to Staff`}
+                          className="inline-flex items-center text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors disabled:opacity-50"
+                        >
+                          {isMemberUpdatingRole
+                            ? "Updating role..."
+                            : "Demote to Staff"}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Assigned Counters */}

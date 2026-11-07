@@ -27,6 +27,13 @@ export async function GET(request: Request) {
           organizationId,
         },
       },
+      include: {
+        organization: {
+          select: {
+            ownerId: true,
+          },
+        },
+      },
     });
 
     if (!membership || membership.role !== "ADMIN") {
@@ -35,6 +42,8 @@ export async function GET(request: Request) {
         { status: 403 },
       );
     }
+
+    const ownerId = membership.organization?.ownerId ?? null;
 
     const staff = await prisma.organizationMembership.findMany({
       where: {
@@ -75,6 +84,7 @@ export async function GET(request: Request) {
       name: member.user.name,
       email: member.user.email,
       role: member.role,
+      isOwner: Boolean(ownerId && member.user.id === ownerId),
       counters: member.user.counterAssignments.map((assignment) => ({
         id: assignment.counter.id,
         name: assignment.counter.name,

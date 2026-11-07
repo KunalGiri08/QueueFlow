@@ -320,6 +320,13 @@ describe("POST /api/organizations", () => {
     const response = await POST!(request);
 
     expect(response.status).toBe(201);
+    expect(mockOrgCreate).toHaveBeenCalledWith({
+      data: {
+        name: "Acme Corp",
+        slug: "acme-corp",
+        ownerId: verifiedUserId,
+      },
+    });
     expect(mockMembershipCreate).toHaveBeenCalledWith({
       data: {
         userId: verifiedUserId,
@@ -375,6 +382,7 @@ describe("POST /api/organizations", () => {
       data: {
         name: "QueueFlow Bank",
         slug: "queueflow-bank",
+        ownerId: creatorUser.id,
       },
     });
     expect(mockMembershipCreate).toHaveBeenCalledWith({

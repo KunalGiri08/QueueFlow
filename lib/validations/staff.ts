@@ -9,3 +9,7 @@ export const createStaffSchema = z.object({
 export const assignStaffToCounterSchema = z.object({
   counterId: z.string().min(1, "Counter ID is required"),
 });
+
+export const updateStaffRoleSchema = z.object({
+  role: z.enum(["ADMIN", "STAFF"]),
+});

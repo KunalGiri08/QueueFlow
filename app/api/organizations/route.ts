@@ -66,6 +66,7 @@ export async function POST(request: Request) {
         data: {
           name,
           slug,
+          ownerId: currentUser.id,
         },
       });
 

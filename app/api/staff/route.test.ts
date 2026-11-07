@@ -84,6 +84,9 @@ describe("GET /api/staff", () => {
       userId: "user-admin-1",
       organizationId: "org-1",
       role: "ADMIN",
+      organization: {
+        ownerId: "user-admin-1",
+      },
     });
 
     const mockMembers = [
@@ -130,6 +133,7 @@ describe("GET /api/staff", () => {
         name: "Admin Alice",
         email: "alice@example.com",
         role: "ADMIN",
+        isOwner: true,
         counters: [],
       },
       {
@@ -137,6 +141,7 @@ describe("GET /api/staff", () => {
         name: "Bob Operator",
         email: "bob@example.com",
         role: "STAFF",
+        isOwner: false,
         counters: [{ id: "counter-1", name: "Window 1" }],
       },
     ]);
