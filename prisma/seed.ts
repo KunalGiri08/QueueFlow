@@ -1,7 +1,9 @@
 import "dotenv/config";
+import { randomBytes } from "node:crypto";
 
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../app/generated/prisma/client";
+import { seedDemoOperatingHours } from "../lib/services/seed-schedule.service";
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL,
@@ -24,6 +26,10 @@ async function main() {
       slug: "queueflow-demo-bank",
     },
   });
+
+  // Seed demo default operating hours only when the organization has no schedule intervals configured.
+  // This ensures administrator-configured operating hours are NEVER overwritten or altered on seed runs.
+  await seedDemoOperatingHours(prisma, organization.id);
 
   const customer = await prisma.user.upsert({
     where: {
@@ -132,6 +138,14 @@ async function main() {
         number: 1,
         queueId: queue.id,
         userId: customer.id,
+        trackingToken: randomBytes(32).toString("hex"),
+      },
+    });
+  } else if (!ticket.trackingToken) {
+    ticket = await prisma.ticket.update({
+      where: { id: ticket.id },
+      data: {
+        trackingToken: randomBytes(32).toString("hex"),
       },
     });
   }

@@ -104,6 +104,44 @@ const mockCompletedTicket = {
   counter: null,
 };
 
+const mockServingTicket = {
+  ticketNumber: 42,
+  status: "SERVING",
+  peopleAhead: 0,
+  currentlyServing: 42,
+  estimatedWaitMinutes: 0,
+  queue: {
+    name: "Standard Line",
+  },
+  service: {
+    name: "Consultation",
+  },
+  organization: {
+    name: "Apex Healthcare",
+  },
+  counter: {
+    name: "Window 2",
+  },
+};
+
+const mockCancelledTicket = {
+  ticketNumber: 42,
+  status: "CANCELLED",
+  peopleAhead: 0,
+  currentlyServing: null,
+  estimatedWaitMinutes: null,
+  queue: {
+    name: "Standard Line",
+  },
+  service: {
+    name: "Consultation",
+  },
+  organization: {
+    name: "Apex Healthcare",
+  },
+  counter: null,
+};
+
 async function renderPage(token = "token-test-123") {
   mockTrackingToken = token;
   const paramsPromise = Promise.resolve({ trackingToken: token });
@@ -1899,6 +1937,263 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
 
       expect(fetchCallCount).toBe(2); // Did not poll again!
       vi.useRealTimers();
+    });
+  });
+
+  describe("Critical Active-Ticket SSE Lifecycle & Stream Security", () => {
+    it("initiates POST /api/realtime/tickets/stream with secure body payload for WAITING ticket", async () => {
+      let capturedUrl = "";
+      let capturedInit: RequestInit | undefined;
+      const testToken = "safe-waiting-token-123";
+
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            capturedUrl = url;
+            capturedInit = init;
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          return jsonResponse(mockWaitingTicket);
+        });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: testToken })}
+          />,
+        );
+      });
+
+      expect(screen.getAllByText("#42").length).toBeGreaterThan(0);
+      expect(capturedUrl).toBe("/api/realtime/tickets/stream");
+      // Security: verify URL contains zero tracking tokens or credentials
+      expect(capturedUrl).not.toContain(testToken);
+      expect(capturedInit?.method).toBe("POST");
+      expect(capturedInit?.headers).toEqual({
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      });
+      expect(JSON.parse(capturedInit?.body as string)).toEqual({
+        trackingToken: testToken,
+      });
+      expect(activeRealtimeStream).not.toBeNull();
+    });
+
+    it("initiates POST /api/realtime/tickets/stream with secure body payload for CALLED ticket", async () => {
+      let capturedUrl = "";
+      let capturedInit: RequestInit | undefined;
+      const testToken = "safe-called-token-456";
+
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            capturedUrl = url;
+            capturedInit = init;
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          return jsonResponse(mockCalledTicket);
+        });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: testToken })}
+          />,
+        );
+      });
+
+      expect(screen.getAllByText("#42").length).toBeGreaterThan(0);
+      expect(capturedUrl).toBe("/api/realtime/tickets/stream");
+      expect(capturedUrl).not.toContain(testToken);
+      expect(capturedInit?.method).toBe("POST");
+      expect(capturedInit?.headers).toEqual({
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      });
+      expect(JSON.parse(capturedInit?.body as string)).toEqual({
+        trackingToken: testToken,
+      });
+      expect(activeRealtimeStream).not.toBeNull();
+    });
+
+    it("initiates POST /api/realtime/tickets/stream with secure body payload for SERVING ticket", async () => {
+      let capturedUrl = "";
+      let capturedInit: RequestInit | undefined;
+      const testToken = "safe-serving-token-789";
+
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string, init?: RequestInit) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            capturedUrl = url;
+            capturedInit = init;
+            return createMockRealtimeStream(
+              url,
+              typeof init?.body === "string" ? init.body : "{}",
+            );
+          }
+          return jsonResponse(mockServingTicket);
+        });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: testToken })}
+          />,
+        );
+      });
+
+      expect(screen.getAllByText("#42").length).toBeGreaterThan(0);
+      expect(capturedUrl).toBe("/api/realtime/tickets/stream");
+      expect(capturedUrl).not.toContain(testToken);
+      expect(capturedInit?.method).toBe("POST");
+      expect(capturedInit?.headers).toEqual({
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      });
+      expect(JSON.parse(capturedInit?.body as string)).toEqual({
+        trackingToken: testToken,
+      });
+      expect(activeRealtimeStream).not.toBeNull();
+    });
+
+    it("never initiates POST /api/realtime/tickets/stream for COMPLETED ticket", async () => {
+      let streamInitiated = false;
+      activeRealtimeStream = null;
+
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            streamInitiated = true;
+            return jsonResponse({ error: "Gone" }, 410);
+          }
+          return jsonResponse(mockCompletedTicket);
+        });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "completed-token-123" })}
+          />,
+        );
+      });
+
+      expect(screen.getAllByText("#42").length).toBeGreaterThan(0);
+      expect(streamInitiated).toBe(false);
+      expect(activeRealtimeStream).toBeNull();
+    });
+
+    it("never initiates POST /api/realtime/tickets/stream for CANCELLED ticket", async () => {
+      let streamInitiated = false;
+      activeRealtimeStream = null;
+
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            streamInitiated = true;
+            return jsonResponse({ error: "Gone" }, 410);
+          }
+          return jsonResponse(mockCancelledTicket);
+        });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "cancelled-token-456" })}
+          />,
+        );
+      });
+
+      expect(screen.getAllByText("#42").length).toBeGreaterThan(0);
+      expect(streamInitiated).toBe(false);
+      expect(activeRealtimeStream).toBeNull();
+    });
+
+    it("never initiates POST /api/realtime/tickets/stream when ticket is not found (404)", async () => {
+      let streamInitiated = false;
+      activeRealtimeStream = null;
+
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            streamInitiated = true;
+            return jsonResponse({ error: "Unauthorized" }, 401);
+          }
+          return new Response(JSON.stringify({ error: "Ticket not found" }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          });
+        });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "non-existent-token" })}
+          />,
+        );
+      });
+
+      expect(screen.getByText("Ticket not found")).toBeDefined();
+      expect(streamInitiated).toBe(false);
+      expect(activeRealtimeStream).toBeNull();
+    });
+
+    it("never initiates POST /api/realtime/tickets/stream when tracking token is empty or whitespace", async () => {
+      let streamInitiated = false;
+      activeRealtimeStream = null;
+
+      global.fetch = vi
+        .fn()
+        .mockImplementation(async (url: string) => {
+          if (
+            typeof url === "string" &&
+            url.includes("/api/realtime/tickets/stream")
+          ) {
+            streamInitiated = true;
+            return jsonResponse({ error: "Bad Request" }, 400);
+          }
+          return jsonResponse({ error: "Ticket not found" }, 404);
+        });
+
+      await act(async () => {
+        render(
+          <TicketTrackingPage
+            params={Promise.resolve({ trackingToken: "   " })}
+          />,
+        );
+      });
+
+      expect(streamInitiated).toBe(false);
+      expect(activeRealtimeStream).toBeNull();
     });
   });
 });
