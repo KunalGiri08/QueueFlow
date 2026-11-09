@@ -7,11 +7,11 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?Error: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required at build time. Set it in .env or your environment.}"
-    image: queueflow:latest
+    image: ${IMAGE_REPO:-ghcr.io/kunalgiri08/queueflow}:${IMAGE_TAG:-latest}
     container_name: queueflow-app
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     env_file:
       - .env
     environment:
