@@ -4,6 +4,17 @@
  * Fails closed whenever environment or database safety cannot be explicitly verified.
  */
 
+import dotenv from "dotenv";
+
+/**
+ * Loads .env.local first, then .env, without overriding existing variables.
+ * Preserves existing shell/system environment variables (override: false).
+ */
+export function loadLocalEnvironment(): void {
+  dotenv.config({ path: ".env.local" });
+  dotenv.config();
+}
+
 export interface SafetyCheckOptions {
   argv?: string[];
   databaseUrl?: string;
@@ -308,6 +319,101 @@ export function assertSafeTestDatabaseUrl(
   }
 
   const port = parsed.port ? parseInt(parsed.port, 10) : 5432;
+
+  return {
+    hostname,
+    port,
+    databaseName,
+    sanitizedUrl,
+  };
+}
+
+export interface SafeLocalDatabaseResult {
+  hostname: string;
+  port: number;
+  databaseName: string;
+  sanitizedUrl: string;
+}
+
+/**
+ * Validates that a database URL strictly targets the isolated local development
+ * PostgreSQL container on localhost/127.0.0.1, port 5433, and database queueflow_test.
+ *
+ * Enforces:
+ * 1. Must be defined, non-empty, and valid URL.
+ * 2. Protocol must be postgresql: or postgres:.
+ * 3. Host must be strictly localhost or 127.0.0.1.
+ * 4. Port must be strictly 5433.
+ * 5. Database name must be strictly "queueflow_test".
+ * 6. Rejects Neon or any cloud/remote host.
+ * 7. Rejects production markers in host or database name.
+ *
+ * Throws an explicit, sanitized error if any safety condition fails.
+ */
+export function assertSafeLocalDatabaseTarget(
+  rawUrl: string | undefined = process.env.DATABASE_URL,
+): SafeLocalDatabaseResult {
+  if (!rawUrl || typeof rawUrl !== "string" || rawUrl.trim() === "") {
+    throw new Error(
+      "Safety guard: Execution aborted. DATABASE_URL environment variable is missing or empty.",
+    );
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(
+      "Safety guard: Execution aborted. DATABASE_URL is not a valid URL.",
+    );
+  }
+
+  if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
+    throw new Error(
+      "Safety guard: Execution aborted. DATABASE_URL must use postgresql: or postgres: protocol.",
+    );
+  }
+
+  const hostname = parsed.hostname;
+  const hostLower = hostname.toLowerCase().trim();
+  const databaseName = parsed.pathname.replace(/^\//, "");
+  const sanitizedUrl = sanitizeDatabaseUrl(rawUrl);
+
+  // 1. Host must strictly be localhost or 127.0.0.1
+  if (hostLower !== "localhost" && hostLower !== "127.0.0.1") {
+    throw new Error(
+      `Safety guard: Execution aborted. DATABASE_URL must target localhost or 127.0.0.1. Received host: '${hostname}'.`,
+    );
+  }
+
+  // 2. Reject Neon or cloud markers
+  if (hostLower.endsWith(".neon.tech") || hostLower.includes("neon")) {
+    throw new Error(
+      "Safety guard: Execution aborted. DATABASE_URL cannot target a remote Neon database.",
+    );
+  }
+
+  // 3. Reject production markers
+  if (hostLower.includes("prod") || databaseName.toLowerCase().includes("prod")) {
+    throw new Error(
+      "Safety guard: Execution aborted. DATABASE_URL targets a production name or host.",
+    );
+  }
+
+  // 4. Port must be strictly 5433
+  const port = parsed.port ? parseInt(parsed.port, 10) : 5432;
+  if (port !== 5433) {
+    throw new Error(
+      `Safety guard: Execution aborted. DATABASE_URL must target port 5433. Received port: '${port}'.`,
+    );
+  }
+
+  // 5. Database name must strictly be queueflow_test
+  if (databaseName !== "queueflow_test") {
+    throw new Error(
+      `Safety guard: Execution aborted. DATABASE_URL must target database 'queueflow_test'. Received database name: '${databaseName}'.`,
+    );
+  }
 
   return {
     hostname,

@@ -1,9 +1,19 @@
-import "dotenv/config";
 import { randomBytes } from "node:crypto";
 
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../app/generated/prisma/client";
 import { seedDemoOperatingHours } from "../lib/services/seed-schedule.service";
+import {
+  assertSafeLocalDatabaseTarget,
+  loadLocalEnvironment,
+  sanitizeErrorMessage,
+} from "../scripts/db-safety";
+
+// 1. Load local development environment (.env.local first, then .env, no override)
+loadLocalEnvironment();
+
+// 2. Validate strict local development database target before creating Prisma adapter/client
+assertSafeLocalDatabaseTarget();
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL,
@@ -14,6 +24,7 @@ const prisma = new PrismaClient({
 });
 
 async function main() {
+  assertSafeLocalDatabaseTarget();
   console.log("Starting database seed...");
 
   const organization = await prisma.organization.upsert({
@@ -173,7 +184,7 @@ async function main() {
 
 main()
   .catch((error) => {
-    console.error("Database seed failed:", error);
+    console.error("Database seed failed:", sanitizeErrorMessage(error));
     process.exit(1);
   })
   .finally(async () => {

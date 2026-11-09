@@ -1,14 +1,23 @@
-import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../app/generated/prisma/client";
-import { assertSafeDatabaseTarget, sanitizeErrorMessage } from "./db-safety";
+import {
+  assertSafeLocalDatabaseTarget,
+  isApplyMode,
+  loadLocalEnvironment,
+  sanitizeErrorMessage,
+} from "./db-safety";
+
+// 1. Load local development environment (.env.local first, then .env, no override)
+loadLocalEnvironment();
 
 const TARGET_USER_EMAIL = "girikg178@gmail.com";
 const TARGET_ORG_SLUG = "queueflow-demo-bank";
 const TARGET_ROLE = "ADMIN" as const;
 
 async function main(): Promise<void> {
-  const safety = assertSafeDatabaseTarget();
+  // 2. Validate strict local development database target before any connection or query
+  const target = assertSafeLocalDatabaseTarget();
+  const isApply = isApplyMode();
 
   const adapter = new PrismaPg({
     connectionString: process.env.DATABASE_URL,
@@ -20,8 +29,8 @@ async function main(): Promise<void> {
 
   try {
     console.log(`Checking local admin bootstrap for ${TARGET_USER_EMAIL}...`);
-    console.log(`Target Database: ${safety.hostname} (${safety.isLocal ? "local" : "remote"})`);
-    console.log(`Execution Mode: ${safety.isApply ? "APPLY (mutations enabled)" : "DRY-RUN (read-only preview)"}`);
+    console.log(`Target Database: ${target.hostname}:${target.port}/${target.databaseName}`);
+    console.log(`Execution Mode: ${isApply ? "APPLY (mutations enabled)" : "DRY-RUN (read-only preview)"}`);
 
     // 1. Locate existing user by email. Never create, replace, or update the user itself.
     const user = await prisma.user.findUnique({
@@ -72,7 +81,7 @@ async function main(): Promise<void> {
     }
 
     // 4. In dry-run mode, exit without executing any transaction or mutation.
-    if (!safety.isApply) {
+    if (!isApply) {
       console.log("\n[DRY-RUN COMPLETE] No database records were modified.");
       console.log("Planned action: Upsert ADMIN membership for user in organization.");
       console.log("To apply this change, re-run with: npm run setup:local-admin -- --apply");

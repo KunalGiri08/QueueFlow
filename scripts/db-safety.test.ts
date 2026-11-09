@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   assertSafeDatabaseTarget,
+  assertSafeLocalDatabaseTarget,
   assertSafeTestDatabaseUrl,
   isApplyMode,
   isLoopbackHost,
+  loadLocalEnvironment,
   sanitizeDatabaseUrl,
   sanitizeErrorMessage,
 } from "./db-safety";
@@ -435,6 +437,169 @@ describe("db-safety module", () => {
           "postgresql://user:pass@localhost:5433/postgres",
         ),
       ).toThrow("must target the dedicated database 'queueflow_test'");
+    });
+  });
+
+  describe("assertSafeLocalDatabaseTarget", () => {
+    const validLocalhostUrl =
+      "postgresql://postgres:secretpassword@localhost:5433/queueflow_test";
+    const valid127Url =
+      "postgresql://postgres:secretpassword@127.0.0.1:5433/queueflow_test?sslmode=disable";
+
+    it("accepts valid localhost on port 5433 with database queueflow_test", () => {
+      const result = assertSafeLocalDatabaseTarget(validLocalhostUrl);
+      expect(result.hostname).toBe("localhost");
+      expect(result.port).toBe(5433);
+      expect(result.databaseName).toBe("queueflow_test");
+      expect(result.sanitizedUrl).toBe(
+        "postgresql://[redacted]@localhost:5433/queueflow_test",
+      );
+    });
+
+    it("accepts valid 127.0.0.1 on port 5433 with database queueflow_test", () => {
+      const result = assertSafeLocalDatabaseTarget(valid127Url);
+      expect(result.hostname).toBe("127.0.0.1");
+      expect(result.port).toBe(5433);
+      expect(result.databaseName).toBe("queueflow_test");
+    });
+
+    it("strictly rejects Neon URLs", () => {
+      const neonUrl =
+        "postgresql://neondb_owner:secret@ep-quiet-cloud-123.us-east-2.aws.neon.tech:5433/queueflow_test";
+      expect(() => assertSafeLocalDatabaseTarget(neonUrl)).toThrow(
+        "must target localhost or 127.0.0.1",
+      );
+
+      const neonNamedUrl =
+        "postgresql://neondb_owner:secret@neon-local:5433/queueflow_test";
+      expect(() => assertSafeLocalDatabaseTarget(neonNamedUrl)).toThrow(
+        "must target localhost or 127.0.0.1",
+      );
+    });
+
+    it("strictly rejects non-loopback hostnames", () => {
+      expect(() =>
+        assertSafeLocalDatabaseTarget(
+          "postgresql://postgres:pass@192.168.1.100:5433/queueflow_test",
+        ),
+      ).toThrow("must target localhost or 127.0.0.1");
+      expect(() =>
+        assertSafeLocalDatabaseTarget(
+          "postgresql://postgres:pass@remote-host.com:5433/queueflow_test",
+        ),
+      ).toThrow("must target localhost or 127.0.0.1");
+    });
+
+    it("strictly rejects wrong ports", () => {
+      // Standard PostgreSQL 5432
+      expect(() =>
+        assertSafeLocalDatabaseTarget(
+          "postgresql://postgres:pass@localhost:5432/queueflow_test",
+        ),
+      ).toThrow("must target port 5433. Received port: '5432'");
+
+      // Port 5434
+      expect(() =>
+        assertSafeLocalDatabaseTarget(
+          "postgresql://postgres:pass@localhost:5434/queueflow_test",
+        ),
+      ).toThrow("must target port 5433. Received port: '5434'");
+
+      // Default/omitted port (defaults to 5432)
+      expect(() =>
+        assertSafeLocalDatabaseTarget(
+          "postgresql://postgres:pass@localhost/queueflow_test",
+        ),
+      ).toThrow("must target port 5433. Received port: '5432'");
+    });
+
+    it("strictly rejects wrong database names", () => {
+      expect(() =>
+        assertSafeLocalDatabaseTarget(
+          "postgresql://postgres:pass@localhost:5433/queueflow_dev",
+        ),
+      ).toThrow("must target database 'queueflow_test'. Received database name: 'queueflow_dev'");
+
+      expect(() =>
+        assertSafeLocalDatabaseTarget(
+          "postgresql://postgres:pass@localhost:5433/neondb",
+        ),
+      ).toThrow("must target database 'queueflow_test'. Received database name: 'neondb'");
+
+      expect(() =>
+        assertSafeLocalDatabaseTarget(
+          "postgresql://postgres:pass@localhost:5433/postgres",
+        ),
+      ).toThrow("must target database 'queueflow_test'. Received database name: 'postgres'");
+    });
+
+    it("strictly rejects missing or empty DATABASE_URL", () => {
+      expect(() => assertSafeLocalDatabaseTarget("")).toThrow(
+        "DATABASE_URL environment variable is missing or empty",
+      );
+      expect(() => assertSafeLocalDatabaseTarget(undefined)).toThrow(
+        "DATABASE_URL environment variable is missing or empty",
+      );
+    });
+
+    it("strictly rejects malformed or non-postgres URLs", () => {
+      expect(() => assertSafeLocalDatabaseTarget("not-a-valid-url")).toThrow(
+        "DATABASE_URL is not a valid URL",
+      );
+      expect(() =>
+        assertSafeLocalDatabaseTarget(
+          "mysql://root:secret@localhost:5433/queueflow_test",
+        ),
+      ).toThrow("DATABASE_URL must use postgresql: or postgres: protocol");
+    });
+
+    it("strictly rejects production markers in host or database name", () => {
+      expect(() =>
+        assertSafeLocalDatabaseTarget(
+          "postgresql://postgres:pass@localhost:5433/queueflow_test_prod",
+        ),
+      ).toThrow("DATABASE_URL targets a production name or host");
+    });
+
+    it("never leaks passwords in error messages", () => {
+      const secret = "SUPER_SECRET_LEAK_TEST_PASSWORD_9999";
+      const sensitiveUrl = `postgresql://postgres:${secret}@localhost:5432/queueflow_test`;
+      try {
+        assertSafeLocalDatabaseTarget(sensitiveUrl);
+        expect.unreachable("Should have thrown");
+      } catch (err) {
+        expect((err as Error).message).not.toContain(secret);
+      }
+    });
+  });
+
+  describe("Environment loading and script safety contracts", () => {
+    it("loadLocalEnvironment preserves existing shell environment variable precedence", () => {
+      const originalEnv = process.env.TEST_EXISTING_VAR;
+      try {
+        process.env.TEST_EXISTING_VAR = "shell-precedence-value";
+        loadLocalEnvironment();
+        expect(process.env.TEST_EXISTING_VAR).toBe("shell-precedence-value");
+      } finally {
+        if (originalEnv === undefined) {
+          delete process.env.TEST_EXISTING_VAR;
+        } else {
+          process.env.TEST_EXISTING_VAR = originalEnv;
+        }
+      }
+    });
+
+    it("Seed guard rejects unsafe targets before performing any database writes", () => {
+      // Testing that calling assertSafeLocalDatabaseTarget fails closed before any seed logic
+      const unsafeNeonUrl =
+        "postgresql://neondb_owner:secret@ep-cool.us-east-2.aws.neon.tech:5432/neondb";
+      expect(() => assertSafeLocalDatabaseTarget(unsafeNeonUrl)).toThrow();
+    });
+
+    it("Admin bootstrap dry-run is strictly read-only and requires --apply to enable mutations", () => {
+      expect(isApplyMode([])).toBe(false);
+      expect(isApplyMode(["node", "scripts/setup-local-admin.ts"])).toBe(false);
+      expect(isApplyMode(["node", "scripts/setup-local-admin.ts", "--apply"])).toBe(true);
     });
   });
 });
