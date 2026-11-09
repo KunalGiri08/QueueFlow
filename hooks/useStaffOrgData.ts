@@ -19,7 +19,9 @@ interface AssignedQueueItem {
   };
 }
 
-export function parseActiveTicketResponse(ticketJson: unknown): ActiveTicket | null {
+export function parseActiveTicketResponse(
+  ticketJson: unknown,
+): ActiveTicket | null {
   if (
     !ticketJson ||
     typeof ticketJson !== "object" ||
@@ -71,9 +73,7 @@ export function parseActiveTicketResponse(ticketJson: unknown): ActiveTicket | n
       status: ticketRec.status as "CALLED" | "SERVING",
       queueId: ticketRec.queueId,
       counterId:
-        typeof ticketRec.counterId === "string"
-          ? ticketRec.counterId
-          : null,
+        typeof ticketRec.counterId === "string" ? ticketRec.counterId : null,
       createdAt: ticketRec.createdAt,
       updatedAt: ticketRec.updatedAt,
       queue: {
@@ -144,8 +144,12 @@ export function useStaffOrgData(
   const router = useRouter();
   const { orgId, staffId } = options;
 
-  const [assignedCounters, setAssignedCounters] = useState<AssignedCounterItem[]>([]);
-  const [selectedCounterId, setSelectedCounterId] = useState<string | null>(null);
+  const [assignedCounters, setAssignedCounters] = useState<
+    AssignedCounterItem[]
+  >([]);
+  const [selectedCounterId, setSelectedCounterId] = useState<string | null>(
+    null,
+  );
   const [activeTicket, setActiveTicket] = useState<ActiveTicket | null>(null);
   const [counterWarning, setCounterWarning] = useState<string | null>(null);
   const [isOrgDataLoading, setIsOrgDataLoading] = useState(false);
@@ -247,9 +251,7 @@ export function useStaffOrgData(
             return false;
           }
           const sRec = rec.service as Record<string, unknown>;
-          return (
-            typeof sRec.id === "string" && typeof sRec.name === "string"
-          );
+          return typeof sRec.id === "string" && typeof sRec.name === "string";
         },
       );
 
@@ -291,9 +293,7 @@ export function useStaffOrgData(
             (rec.currentlyServing !== null &&
               typeof rec.currentlyServing !== "number")
           ) {
-            throw new Error(
-              `Invalid queue status fields for ${queue.name}`,
-            );
+            throw new Error(`Invalid queue status fields for ${queue.name}`);
           }
 
           return {
@@ -350,7 +350,11 @@ export function useStaffOrgData(
   );
 
   const fetchOrgOperatorData = useCallback(
-    async (targetOrgId: string, targetStaffId: string, signal?: AbortSignal) => {
+    async (
+      targetOrgId: string,
+      targetStaffId: string,
+      signal?: AbortSignal,
+    ) => {
       const [countersRes, ticketRes, queuesResult] = await Promise.all([
         fetch(
           `/api/organizations/${encodeURIComponent(targetOrgId)}/staff/${encodeURIComponent(targetStaffId)}/counters`,
@@ -395,8 +399,10 @@ export function useStaffOrgData(
         (item): item is AssignedCounterItem => {
           if (typeof item !== "object" || item === null) return false;
           const rec = item as Record<string, unknown>;
-          if (typeof rec.id !== "string" || typeof rec.staffId !== "string") return false;
-          if (typeof rec.counter !== "object" || rec.counter === null) return false;
+          if (typeof rec.id !== "string" || typeof rec.staffId !== "string")
+            return false;
+          if (typeof rec.counter !== "object" || rec.counter === null)
+            return false;
           const counterRec = rec.counter as Record<string, unknown>;
           return (
             typeof counterRec.id === "string" &&
@@ -596,7 +602,13 @@ export function useStaffOrgData(
 
   // Visibility-aware background queue polling every 10 seconds while context is valid
   useEffect(() => {
-    if (!orgId || !staffId || !hasInitialLoaded || isOrgDataLoading || orgDataError) {
+    if (
+      !orgId ||
+      !staffId ||
+      !hasInitialLoaded ||
+      isOrgDataLoading ||
+      orgDataError
+    ) {
       clearPollTimer();
       schedulePollRef.current = null;
       backgroundPollAbortControllerRef.current?.abort();
@@ -894,7 +906,13 @@ export function useStaffOrgData(
         }
       }
     }
-  }, [orgId, staffId, isRefreshingQueues, fetchQueueStatusesOnly, clearPollTimer]);
+  }, [
+    orgId,
+    staffId,
+    isRefreshingQueues,
+    fetchQueueStatusesOnly,
+    clearPollTimer,
+  ]);
 
   const fetchQueueStatuses = useCallback(
     async (
@@ -939,7 +957,11 @@ export function useStaffOrgData(
       }
 
       if (!targetOrgId || !targetStaffId) return null;
-      return fetchActiveTicketRecovery(targetOrgId, targetStaffId, targetSignal);
+      return fetchActiveTicketRecovery(
+        targetOrgId,
+        targetStaffId,
+        targetSignal,
+      );
     },
     [fetchActiveTicketRecovery],
   );
