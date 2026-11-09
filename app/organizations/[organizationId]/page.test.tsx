@@ -918,7 +918,7 @@ describe("app/organizations/[organizationId]/page", () => {
       expect(
         within(dialog).getByRole("heading", { name: "Book Appointment" }),
       ).toBeDefined();
-      expect(within(dialog).getByText("Apex Healthcare")).toBeDefined();
+      expect(within(dialog).getByText(/Apex Healthcare/)).toBeDefined();
       expect(within(dialog).getByText(/General Consultation/)).toBeDefined();
     });
 

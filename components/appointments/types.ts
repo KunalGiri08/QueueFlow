@@ -18,6 +18,7 @@ export interface CustomerAppointment {
     organization: {
       id: string;
       name: string;
+      timezone?: string;
     };
   };
 }
@@ -30,6 +31,7 @@ export interface BookAppointmentService {
 export interface BookAppointmentOrganization {
   id: string;
   name: string;
+  timezone?: string;
 }
 
 export interface BookedAppointmentSuccessData {

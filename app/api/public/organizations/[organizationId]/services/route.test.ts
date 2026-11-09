@@ -88,6 +88,7 @@ describe("GET /api/public/organizations/[organizationId]/services", () => {
         id: true,
         name: true,
         slug: true,
+        timezone: true,
       },
     });
     expect(mockServiceFindMany).not.toHaveBeenCalled();
@@ -143,6 +144,7 @@ describe("GET /api/public/organizations/[organizationId]/services", () => {
         id: true,
         name: true,
         slug: true,
+        timezone: true,
       },
     });
 

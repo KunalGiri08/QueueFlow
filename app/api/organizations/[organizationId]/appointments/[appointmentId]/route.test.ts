@@ -148,7 +148,7 @@ describe("PATCH /api/organizations/[organizationId]/appointments/[appointmentId]
     expect(mockAppointmentUpdateMany).not.toHaveBeenCalled();
   });
 
-  it.each(["COMPLETED", "NO_SHOW"] as const)(
+  it.each(["COMPLETED", "NO_SHOW", "CANCELLED"] as const)(
     "successfully changes a booked appointment to %s",
     async (status) => {
       mockGetCurrentUser.mockResolvedValue({ id: "user-123" });

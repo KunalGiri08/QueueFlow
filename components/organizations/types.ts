@@ -16,6 +16,7 @@ export interface OrganizationServicesData {
     id: string;
     name: string;
     slug: string;
+    timezone?: string;
   };
   services: PublicService[];
 }

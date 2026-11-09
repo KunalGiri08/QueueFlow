@@ -224,29 +224,33 @@ describe("StaffAppointmentsManagement", () => {
     expect(screen.getByText("Bob Smith")).toBeDefined();
   });
 
-  it("allows only BOOKED appointments to be marked COMPLETED or NO_SHOW", async () => {
+  it("allows only BOOKED appointments to be marked COMPLETED, NO_SHOW or CANCELLED", async () => {
     render(<StaffAppointmentsManagement organizationId="org-1" />);
 
     await waitFor(() => {
       expect(screen.getByText("Alice Johnson")).toBeDefined();
     });
 
-    // BOOKED row (app-1) has Complete and No Show buttons
+    // BOOKED row (app-1) has Complete, No Show, and Cancel buttons
     const completeBtn = screen.getByRole("button", {
       name: "Mark appointment for Alice Johnson as completed",
     });
     const noShowBtn = screen.getByRole("button", {
       name: "Mark appointment for Alice Johnson as no show",
     });
+    const cancelBtn = screen.getByRole("button", {
+      name: "Cancel appointment for Alice Johnson",
+    });
     expect(completeBtn).toBeDefined();
     expect(noShowBtn).toBeDefined();
+    expect(cancelBtn).toBeDefined();
 
     // COMPLETED row (app-2) and NO_SHOW row (app-3) have "No actions available"
     const noActionLabels = screen.getAllByText("No actions available");
     expect(noActionLabels).toHaveLength(2);
   });
 
-  it("successfully marks a booked appointment as COMPLETED", async () => {
+  it("successfully marks a booked appointment as COMPLETED after confirmation", async () => {
     render(<StaffAppointmentsManagement organizationId="org-1" />);
 
     await waitFor(() => {
@@ -265,6 +269,15 @@ describe("StaffAppointmentsManagement", () => {
     });
 
     fireEvent.click(completeBtn);
+
+    // Confirmation dialog appears
+    expect(screen.getByRole("dialog")).toBeDefined();
+    expect(screen.getByText("Complete Appointment")).toBeDefined();
+
+    const confirmBtn = screen.getByRole("button", {
+      name: "Yes, Mark Completed",
+    });
+    fireEvent.click(confirmBtn);
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -286,7 +299,7 @@ describe("StaffAppointmentsManagement", () => {
     });
   });
 
-  it("successfully marks a booked appointment as NO_SHOW", async () => {
+  it("successfully marks a booked appointment as NO_SHOW after confirmation", async () => {
     render(<StaffAppointmentsManagement organizationId="org-1" />);
 
     await waitFor(() => {
@@ -305,6 +318,15 @@ describe("StaffAppointmentsManagement", () => {
     });
 
     fireEvent.click(noShowBtn);
+
+    // Confirmation dialog appears
+    expect(screen.getByRole("dialog")).toBeDefined();
+    expect(screen.getByText("Mark as No Show")).toBeDefined();
+
+    const confirmBtn = screen.getByRole("button", {
+      name: "Yes, Mark No Show",
+    });
+    fireEvent.click(confirmBtn);
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -325,7 +347,79 @@ describe("StaffAppointmentsManagement", () => {
     });
   });
 
-  it("handles 409 conflict during status update by notifying user and refetching", async () => {
+  it("successfully cancels a booked appointment via staff cancel confirmation", async () => {
+    render(<StaffAppointmentsManagement organizationId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Alice Johnson")).toBeDefined();
+    });
+
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/api/appointments/app-1/cancel") && init?.method === "PATCH") {
+        return Promise.resolve(jsonResponse({ id: "app-1", status: "CANCELLED" }));
+      }
+      return Promise.resolve(jsonResponse(mockAppointments));
+    });
+
+    const cancelBtn = screen.getByRole("button", {
+      name: "Cancel appointment for Alice Johnson",
+    });
+
+    fireEvent.click(cancelBtn);
+
+    // Confirmation dialog appears
+    expect(screen.getByRole("dialog")).toBeDefined();
+    expect(screen.getByText("Cancel Appointment")).toBeDefined();
+
+    const confirmBtn = screen.getByRole("button", {
+      name: "Yes, Cancel Appointment",
+    });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/appointments/app-1/cancel",
+        expect.objectContaining({
+          method: "PATCH",
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", {
+          name: "Cancel appointment for Alice Johnson",
+        }),
+      ).toBeNull();
+    });
+  });
+
+  it("dismisses the confirmation dialog without submitting when clicking Keep Appointment", async () => {
+    render(<StaffAppointmentsManagement organizationId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Alice Johnson")).toBeDefined();
+    });
+
+    const completeBtn = screen.getByRole("button", {
+      name: "Mark appointment for Alice Johnson as completed",
+    });
+
+    fireEvent.click(completeBtn);
+    expect(screen.getByRole("dialog")).toBeDefined();
+
+    const keepBtn = screen.getByRole("button", { name: "Keep Appointment" });
+    fireEvent.click(keepBtn);
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // No patch request sent
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("/app-1"),
+      expect.objectContaining({ method: "PATCH" }),
+    );
+  });
+
+  it("handles 409 conflict during status update by notifying user in dialog", async () => {
     render(<StaffAppointmentsManagement organizationId="org-1" />);
 
     await waitFor(() => {
@@ -337,7 +431,6 @@ describe("StaffAppointmentsManagement", () => {
         return Promise.resolve(jsonResponse({ error: "Status changed" }, 409));
       }
       if (url.includes("/api/organizations/org-1/appointments")) {
-        // Return updated list where app-1 is already COMPLETED
         return Promise.resolve(
           jsonResponse([
             { ...mockAppointments[0], status: "COMPLETED" },
@@ -354,20 +447,15 @@ describe("StaffAppointmentsManagement", () => {
     });
 
     fireEvent.click(completeBtn);
+    const confirmBtn = screen.getByRole("button", {
+      name: "Yes, Mark Completed",
+    });
+    fireEvent.click(confirmBtn);
 
     await waitFor(() => {
       expect(
         screen.getByText("Appointment status changed or conflict occurred; refreshed list."),
       ).toBeDefined();
-    });
-
-    // Fresh fetch confirmed app-1 is completed
-    await waitFor(() => {
-      expect(
-        screen.queryByRole("button", {
-          name: "Mark appointment for Alice Johnson as completed",
-        }),
-      ).toBeNull();
     });
   });
 
@@ -392,9 +480,14 @@ describe("StaffAppointmentsManagement", () => {
       name: "Mark appointment for Alice Johnson as completed",
     });
 
-    // Rapid double click
     fireEvent.click(completeBtn);
-    fireEvent.click(completeBtn);
+    const confirmBtn = screen.getByRole("button", {
+      name: "Yes, Mark Completed",
+    });
+
+    // Rapid double click on confirm
+    fireEvent.click(confirmBtn);
+    fireEvent.click(confirmBtn);
 
     expect(patchCount).toBe(1);
 

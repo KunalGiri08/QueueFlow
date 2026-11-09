@@ -41,6 +41,13 @@ export function StaffAppointmentsManagement({
   const [actionError, setActionError] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<FilterOption>("ALL");
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [confirmingAction, setConfirmingAction] = useState<{
+    appointment: StaffOrganizationAppointment;
+    action: "COMPLETED" | "NO_SHOW" | "CANCELLED";
+  } | null>(null);
+  const [confirmDialogError, setConfirmDialogError] = useState<string | null>(
+    null,
+  );
   const [prevOrgId, setPrevOrgId] = useState(organizationId);
 
   const [fetchRetryTrigger, setFetchRetryTrigger] = useState(0);
@@ -142,25 +149,57 @@ export function StaffAppointmentsManagement({
     setFetchRetryTrigger((prev) => prev + 1);
   }, []);
 
-  const handleUpdateStatus = async (
-    appointmentId: string,
-    nextStatus: "COMPLETED" | "NO_SHOW",
+  const handleOpenConfirm = (
+    appointment: StaffOrganizationAppointment,
+    action: "COMPLETED" | "NO_SHOW" | "CANCELLED",
   ) => {
-    if (isActionLockedRef.current || updatingId) return;
+    setConfirmDialogError(null);
+    setActionError(null);
+    setConfirmingAction({ appointment, action });
+  };
 
+  const handleCloseConfirm = () => {
+    if (Boolean(updatingId)) return;
+    setConfirmingAction(null);
+    setConfirmDialogError(null);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && confirmingAction && !updatingId) {
+        setConfirmingAction(null);
+        setConfirmDialogError(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [confirmingAction, updatingId]);
+
+  const handleConfirmAction = async () => {
+    if (!confirmingAction || isActionLockedRef.current || updatingId) return;
+
+    const { appointment, action: targetStatus } = confirmingAction;
     isActionLockedRef.current = true;
-    setUpdatingId(appointmentId);
+    setUpdatingId(appointment.id);
+    setConfirmDialogError(null);
     setActionError(null);
 
     try {
-      const response = await fetch(
-        `/api/organizations/${encodeURIComponent(organizationId)}/appointments/${encodeURIComponent(appointmentId)}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: nextStatus }),
-        },
-      );
+      const url =
+        targetStatus === "CANCELLED"
+          ? `/api/appointments/${encodeURIComponent(appointment.id)}/cancel`
+          : `/api/organizations/${encodeURIComponent(organizationId)}/appointments/${encodeURIComponent(appointment.id)}`;
+
+      const options: RequestInit =
+        targetStatus === "CANCELLED"
+          ? { method: "PATCH" }
+          : {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status: targetStatus }),
+            };
+
+      const response = await fetch(url, options);
 
       if (response.status === 401) {
         router.push(`/sign-in?redirect_url=${encodeURIComponent("/staff")}`);
@@ -168,13 +207,17 @@ export function StaffAppointmentsManagement({
       }
 
       if (response.status === 409) {
-        setActionError("Appointment status changed or conflict occurred; refreshed list.");
+        const errorMsg =
+          "Appointment status changed or conflict occurred; refreshed list.";
+        setConfirmDialogError(errorMsg);
         setFetchRetryTrigger((prev) => prev + 1);
         return;
       }
 
       if (response.status === 403) {
-        setActionError("You do not have permission to manage appointments.");
+        setConfirmDialogError(
+          "You do not have permission to manage appointments.",
+        );
         return;
       }
 
@@ -182,21 +225,25 @@ export function StaffAppointmentsManagement({
         const errorJson = (await response.json().catch(() => null)) as {
           error?: string;
         } | null;
-        throw new Error(errorJson?.error || `Update failed (status ${response.status})`);
+        throw new Error(
+          errorJson?.error || `Update failed (status ${response.status})`,
+        );
       }
 
-      // Optimistically / locally update the appointment status
+      // Optimistically update status
       setAppointments((prev) =>
         prev.map((app) =>
-          app.id === appointmentId ? { ...app, status: nextStatus } : app,
+          app.id === appointment.id ? { ...app, status: targetStatus } : app,
         ),
       );
+      setConfirmingAction(null);
+      setConfirmDialogError(null);
     } catch (err: unknown) {
       const msg =
         err instanceof Error
           ? err.message
           : "Failed to update appointment status. Please try again.";
-      setActionError(msg);
+      setConfirmDialogError(msg);
     } finally {
       isActionLockedRef.current = false;
       setUpdatingId(null);
@@ -383,7 +430,6 @@ export function StaffAppointmentsManagement({
             <div className="divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-200 bg-white">
               {filteredAppointments.map((app) => {
                 const isBooked = app.status === "BOOKED";
-                const isItemUpdating = updatingId === app.id;
 
                 return (
                   <div
@@ -446,40 +492,32 @@ export function StaffAppointmentsManagement({
                       <div className="flex items-center gap-2 self-start sm:self-auto">
                         <button
                           type="button"
-                          onClick={() => handleUpdateStatus(app.id, "COMPLETED")}
+                          onClick={() => handleOpenConfirm(app, "COMPLETED")}
                           disabled={Boolean(updatingId)}
                           aria-label={`Mark appointment for ${app.user.name || app.user.email} as completed`}
                           className="inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 disabled:opacity-50"
                         >
-                          {isItemUpdating ? (
-                            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                          ) : (
-                            <svg
-                              className="h-3.5 w-3.5"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              strokeWidth="2.5"
-                              stroke="currentColor"
-                              aria-hidden="true"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="m4.5 12.75 6 6 9-13.5"
-                              />
-                            </svg>
-                          )}
                           Complete
                         </button>
 
                         <button
                           type="button"
-                          onClick={() => handleUpdateStatus(app.id, "NO_SHOW")}
+                          onClick={() => handleOpenConfirm(app, "NO_SHOW")}
                           disabled={Boolean(updatingId)}
                           aria-label={`Mark appointment for ${app.user.name || app.user.email} as no show`}
                           className="inline-flex items-center justify-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 shadow-sm transition-all hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 disabled:opacity-50"
                         >
                           No Show
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleOpenConfirm(app, "CANCELLED")}
+                          disabled={Boolean(updatingId)}
+                          aria-label={`Cancel appointment for ${app.user.name || app.user.email}`}
+                          className="inline-flex items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 shadow-sm transition-all hover:bg-red-50 hover:border-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 disabled:opacity-50"
+                        >
+                          Cancel
                         </button>
                       </div>
                     ) : (
@@ -492,6 +530,193 @@ export function StaffAppointmentsManagement({
               })}
             </div>
           )}
+        </div>
+      )}
+      {confirmingAction && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm transition-opacity animate-in fade-in duration-150"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !updatingId) {
+              handleCloseConfirm();
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-action-title"
+            aria-describedby="confirm-action-description"
+            className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-xl transition-all"
+          >
+            <div className="flex items-center gap-3">
+              <div
+                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
+                  confirmingAction.action === "COMPLETED"
+                    ? "bg-emerald-100 text-emerald-600"
+                    : confirmingAction.action === "NO_SHOW"
+                      ? "bg-amber-100 text-amber-600"
+                      : "bg-red-100 text-red-600"
+                }`}
+              >
+                {confirmingAction.action === "COMPLETED" ? (
+                  <svg
+                    className="h-5 w-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    strokeWidth="2.5"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="m4.5 12.75 6 6 9-13.5"
+                    />
+                  </svg>
+                ) : (
+                  <svg
+                    className="h-5 w-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    strokeWidth="2"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"
+                    />
+                  </svg>
+                )}
+              </div>
+              <div>
+                <h2
+                  id="confirm-action-title"
+                  className="text-lg font-semibold text-gray-900"
+                >
+                  {confirmingAction.action === "COMPLETED"
+                    ? "Complete Appointment"
+                    : confirmingAction.action === "NO_SHOW"
+                      ? "Mark as No Show"
+                      : "Cancel Appointment"}
+                </h2>
+                <p className="text-xs text-gray-500">
+                  {confirmingAction.appointment.service.name}
+                </p>
+              </div>
+            </div>
+
+            <div
+              id="confirm-action-description"
+              className="mt-4 text-sm text-gray-600"
+            >
+              {confirmingAction.action === "COMPLETED" && (
+                <p>
+                  Are you sure you want to mark the appointment for{" "}
+                  <span className="font-semibold text-gray-900">
+                    {confirmingAction.appointment.user.name ||
+                      confirmingAction.appointment.user.email}
+                  </span>{" "}
+                  scheduled for{" "}
+                  <span className="font-semibold text-gray-900">
+                    {formatDateTime(confirmingAction.appointment.scheduledAt)}
+                  </span>{" "}
+                  as completed? This action cannot be undone.
+                </p>
+              )}
+              {confirmingAction.action === "NO_SHOW" && (
+                <p>
+                  Are you sure you want to mark the appointment for{" "}
+                  <span className="font-semibold text-gray-900">
+                    {confirmingAction.appointment.user.name ||
+                      confirmingAction.appointment.user.email}
+                  </span>{" "}
+                  scheduled for{" "}
+                  <span className="font-semibold text-gray-900">
+                    {formatDateTime(confirmingAction.appointment.scheduledAt)}
+                  </span>{" "}
+                  as a no show? This action cannot be undone.
+                </p>
+              )}
+              {confirmingAction.action === "CANCELLED" && (
+                <p>
+                  Are you sure you want to cancel the appointment for{" "}
+                  <span className="font-semibold text-gray-900">
+                    {confirmingAction.appointment.user.name ||
+                      confirmingAction.appointment.user.email}
+                  </span>{" "}
+                  scheduled for{" "}
+                  <span className="font-semibold text-gray-900">
+                    {formatDateTime(confirmingAction.appointment.scheduledAt)}
+                  </span>
+                  ? This will cancel the booking and free up the time slot. This
+                  action cannot be undone.
+                </p>
+              )}
+            </div>
+
+            {confirmDialogError && (
+              <div
+                role="alert"
+                className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-xs font-medium text-red-800"
+              >
+                {confirmDialogError}
+              </div>
+            )}
+
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={handleCloseConfirm}
+                disabled={Boolean(updatingId)}
+                className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Keep Appointment
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmAction}
+                disabled={Boolean(updatingId)}
+                className={`inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium text-white shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed ${
+                  confirmingAction.action === "COMPLETED"
+                    ? "bg-emerald-600 hover:bg-emerald-700 focus-visible:ring-emerald-600"
+                    : confirmingAction.action === "NO_SHOW"
+                      ? "bg-amber-600 hover:bg-amber-700 focus-visible:ring-amber-600"
+                      : "bg-red-600 hover:bg-red-700 focus-visible:ring-red-600"
+                }`}
+              >
+                {updatingId ? (
+                  <>
+                    <svg
+                      className="mr-2 h-4 w-4 animate-spin text-white"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      />
+                    </svg>
+                    Updating...
+                  </>
+                ) : confirmingAction.action === "COMPLETED" ? (
+                  "Yes, Mark Completed"
+                ) : confirmingAction.action === "NO_SHOW" ? (
+                  "Yes, Mark No Show"
+                ) : (
+                  "Yes, Cancel Appointment"
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

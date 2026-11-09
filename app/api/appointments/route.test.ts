@@ -703,6 +703,7 @@ describe("GET /api/appointments", () => {
               select: {
                 id: true,
                 name: true,
+                timezone: true,
               },
             },
           },

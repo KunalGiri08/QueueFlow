@@ -162,4 +162,90 @@ describe("RescheduleAppointmentDialog", () => {
       "This appointment time slot is already booked.",
     );
   });
+
+  it("displays organization timezone and converts facility-local time to UTC ISO string on reschedule", () => {
+    const handleConfirm = vi.fn();
+    const nyAppointment: CustomerAppointment = {
+      ...mockAppointment,
+      service: {
+        ...mockAppointment.service,
+        organization: {
+          id: "org-ny",
+          name: "New York Clinic",
+          timezone: "America/New_York",
+        },
+      },
+    };
+
+    render(
+      <RescheduleAppointmentDialog
+        isOpen={true}
+        appointment={nyAppointment}
+        isSubmitting={false}
+        error={null}
+        onConfirm={handleConfirm}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Appointment time: America\/New_York/),
+    ).toBeDefined();
+
+    const input = screen.getByLabelText(/new appointment date and time/i);
+    // 2026-11-20 11:30 EST (UTC-5) -> 16:30 UTC
+    fireEvent.change(input, { target: { value: "2026-11-20T11:30" } });
+
+    const submitBtn = screen.getByRole("button", {
+      name: /confirm reschedule/i,
+    });
+    fireEvent.click(submitBtn);
+
+    expect(handleConfirm).toHaveBeenCalledWith("2026-11-20T16:30:00.000Z");
+  });
+
+  it("shows validation error and prevents submission for ambiguous DST fall-back time", () => {
+    const handleConfirm = vi.fn();
+    const nyAppointment: CustomerAppointment = {
+      ...mockAppointment,
+      service: {
+        ...mockAppointment.service,
+        organization: {
+          id: "org-ny",
+          name: "New York Clinic",
+          timezone: "America/New_York",
+        },
+      },
+    };
+
+    render(
+      <RescheduleAppointmentDialog
+        isOpen={true}
+        appointment={nyAppointment}
+        isSubmitting={false}
+        error={null}
+        onConfirm={handleConfirm}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const input = screen.getByLabelText(/new appointment date and time/i);
+    // 2027-11-07 01:30 is ambiguous in America/New_York (clocks fall back 02:00 -> 01:00)
+    fireEvent.change(input, { target: { value: "2027-11-07T01:30" } });
+
+    const submitBtn = screen.getByRole("button", {
+      name: /confirm reschedule/i,
+    });
+    fireEvent.click(submitBtn);
+
+    expect(handleConfirm).not.toHaveBeenCalled();
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe(
+      "The selected time is invalid or ambiguous in the organization's timezone. Please select another time.",
+    );
+
+    // Clears error when selecting a valid time
+    fireEvent.change(input, { target: { value: "2027-11-07T02:30" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });

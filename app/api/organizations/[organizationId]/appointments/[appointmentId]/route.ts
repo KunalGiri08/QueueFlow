@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/auth/current-user";
 import { z } from "zod";
 
 const updateAppointmentStatusSchema = z.object({
-  status: z.enum(["COMPLETED", "NO_SHOW"]),
+  status: z.enum(["COMPLETED", "NO_SHOW", "CANCELLED"]),
 });
 
 export async function PATCH(
@@ -86,7 +86,7 @@ export async function PATCH(
   if (appointment.status !== "BOOKED") {
     return Response.json(
       {
-        error: "Only booked appointments can be completed or marked as no-show",
+        error: "Only booked appointments can be updated",
       },
       { status: 409 },
     );

@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { formatDateTime } from "@/lib/formatters/date";
+import {
+  formatDateTime,
+  toZonedDatetimeString,
+  zonedDatetimeToUtc,
+} from "@/lib/formatters/date";
 import type { CustomerAppointment } from "./types";
 
 export interface RescheduleAppointmentDialogProps {
@@ -14,16 +18,6 @@ export interface RescheduleAppointmentDialogProps {
 const MAX_DAYS = 365;
 const MAX_MS = MAX_DAYS * 24 * 60 * 60 * 1000;
 
-function toLocalDatetimeString(date: Date): string {
-  const pad = (num: number) => String(num).padStart(2, "0");
-  const year = date.getFullYear();
-  const month = pad(date.getMonth() + 1);
-  const day = pad(date.getDate());
-  const hours = pad(date.getHours());
-  const minutes = pad(date.getMinutes());
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
-}
-
 export function RescheduleAppointmentDialog({
   isOpen,
   appointment,
@@ -35,6 +29,9 @@ export function RescheduleAppointmentDialog({
   const [selectedDatetime, setSelectedDatetime] = useState<string>("");
   const [validationError, setValidationError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const orgTimezone =
+    appointment?.service.organization.timezone || "Asia/Kolkata";
 
   const [prevAppointmentId, setPrevAppointmentId] = useState<string | null>(null);
   const activeId = isOpen && appointment ? appointment.id : null;
@@ -48,7 +45,7 @@ export function RescheduleAppointmentDialog({
         current.getTime() > now.getTime()
           ? new Date(current.getTime() + 60 * 60 * 1000)
           : new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      setSelectedDatetime(toLocalDatetimeString(defaultDate));
+      setSelectedDatetime(toZonedDatetimeString(defaultDate, orgTimezone));
     } else {
       setSelectedDatetime("");
     }
@@ -76,8 +73,14 @@ export function RescheduleAppointmentDialog({
   }
 
   const now = new Date();
-  const minLocal = toLocalDatetimeString(new Date(now.getTime() + 60 * 1000));
-  const maxLocal = toLocalDatetimeString(new Date(now.getTime() + MAX_MS));
+  const minLocal = toZonedDatetimeString(
+    new Date(now.getTime() + 60 * 1000),
+    orgTimezone,
+  );
+  const maxLocal = toZonedDatetimeString(
+    new Date(now.getTime() + MAX_MS),
+    orgTimezone,
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -88,9 +91,11 @@ export function RescheduleAppointmentDialog({
       return;
     }
 
-    const parsedDate = new Date(selectedDatetime);
-    if (Number.isNaN(parsedDate.getTime())) {
-      setValidationError("Please enter a valid date and time.");
+    const parsedDate = zonedDatetimeToUtc(selectedDatetime, orgTimezone);
+    if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
+      setValidationError(
+        "The selected time is invalid or ambiguous in the organization's timezone. Please select another time.",
+      );
       return;
     }
 
@@ -151,7 +156,7 @@ export function RescheduleAppointmentDialog({
               Reschedule Appointment
             </h2>
             <p className="text-xs text-gray-500">
-              {appointment.service.organization.name}
+              {appointment.service.organization.name} • Appointment time: {orgTimezone}
             </p>
           </div>
         </div>
@@ -166,7 +171,7 @@ export function RescheduleAppointmentDialog({
 
         <div className="mt-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-600">
           <span className="font-medium text-gray-700">Currently scheduled:</span>{" "}
-          {formatDateTime(appointment.scheduledAt)}
+          {formatDateTime(appointment.scheduledAt, { timeZone: orgTimezone })}
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">

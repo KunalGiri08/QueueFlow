@@ -21,6 +21,7 @@ export function AppointmentCard({
   actionError = null,
 }: AppointmentCardProps) {
   const isBooked = appointment.status === "BOOKED";
+  const orgTimezone = appointment.service.organization.timezone;
 
   return (
     <article className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
@@ -53,7 +54,15 @@ export function AppointmentCard({
               />
             </svg>
             <span className="font-medium text-gray-900">
-              {formatDateTime(appointment.scheduledAt)}
+              {formatDateTime(
+                appointment.scheduledAt,
+                orgTimezone ? { timeZone: orgTimezone } : {},
+              )}
+              {orgTimezone && (
+                <span className="ml-1.5 text-xs font-normal text-gray-500">
+                  ({orgTimezone})
+                </span>
+              )}
             </span>
           </div>
 

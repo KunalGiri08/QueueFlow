@@ -29,9 +29,45 @@ export async function PATCH(
 
       const appointment = await tx.appointment.findUniqueOrThrow({
         where: { id },
+        include: {
+          service: {
+            select: {
+              organizationId: true,
+            },
+          },
+        },
       });
 
-      if (appointment.userId !== currentUser.id) {
+      const isOwner = Boolean(
+        appointment.userId && appointment.userId === currentUser.id,
+      );
+      let isAuthorizedStaffOrAdmin = false;
+
+      if (!isOwner) {
+        const organizationId = appointment.service?.organizationId;
+        if (organizationId) {
+          const membership = await tx.organizationMembership.findUnique({
+            where: {
+              userId_organizationId: {
+                userId: currentUser.id,
+                organizationId,
+              },
+            },
+            select: {
+              role: true,
+            },
+          });
+
+          if (
+            membership &&
+            (membership.role === "ADMIN" || membership.role === "STAFF")
+          ) {
+            isAuthorizedStaffOrAdmin = true;
+          }
+        }
+      }
+
+      if (!isOwner && !isAuthorizedStaffOrAdmin) {
         throw new Error("APPOINTMENT_FORBIDDEN");
       }
 
@@ -42,7 +78,6 @@ export async function PATCH(
       const result = await tx.appointment.updateMany({
         where: {
           id,
-          userId: currentUser.id,
           status: "BOOKED",
         },
         data: {

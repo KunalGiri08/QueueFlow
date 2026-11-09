@@ -51,8 +51,9 @@ describe("BookAppointmentDialog", () => {
 
     expect(screen.getByRole("dialog")).toBeDefined();
     expect(screen.getByText("Book Appointment")).toBeDefined();
-    expect(screen.getByText("Apex Healthcare")).toBeDefined();
+    expect(screen.getByText(/Apex Healthcare/)).toBeDefined();
     expect(screen.getByText(/General Consultation/)).toBeDefined();
+    expect(screen.getByText(/Appointment time: Asia\/Kolkata/)).toBeDefined();
     expect(
       screen.getByLabelText(/appointment date and time/i),
     ).toBeDefined();
@@ -268,5 +269,79 @@ describe("BookAppointmentDialog", () => {
     const doneBtn = screen.getByRole("button", { name: /done/i });
     fireEvent.click(doneBtn);
     expect(handleClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("displays custom organization timezone and converts facility-local time to UTC ISO string", () => {
+    const handleConfirm = vi.fn();
+    const nyOrg = {
+      id: "org-ny",
+      name: "New York Clinic",
+      timezone: "America/New_York",
+    };
+
+    render(
+      <BookAppointmentDialog
+        isOpen={true}
+        service={mockService}
+        organization={nyOrg}
+        isSubmitting={false}
+        error={null}
+        successData={null}
+        onConfirm={handleConfirm}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Appointment time: America\/New_York/),
+    ).toBeDefined();
+
+    const input = screen.getByLabelText(/appointment date and time/i);
+    // 2026-11-20 10:00 EST (UTC-5) -> 15:00 UTC
+    fireEvent.change(input, { target: { value: "2026-11-20T10:00" } });
+
+    const submitBtn = screen.getByRole("button", { name: /confirm booking/i });
+    fireEvent.click(submitBtn);
+
+    expect(handleConfirm).toHaveBeenCalledWith("2026-11-20T15:00:00.000Z");
+  });
+
+  it("shows validation error and prevents submission for nonexistent DST spring-forward time", () => {
+    const handleConfirm = vi.fn();
+    const nyOrg = {
+      id: "org-ny",
+      name: "New York Clinic",
+      timezone: "America/New_York",
+    };
+
+    render(
+      <BookAppointmentDialog
+        isOpen={true}
+        service={mockService}
+        organization={nyOrg}
+        isSubmitting={false}
+        error={null}
+        successData={null}
+        onConfirm={handleConfirm}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const input = screen.getByLabelText(/appointment date and time/i);
+    // 2027-03-14 02:30 is nonexistent in America/New_York (clocks jump 02:00 -> 03:00)
+    fireEvent.change(input, { target: { value: "2027-03-14T02:30" } });
+
+    const submitBtn = screen.getByRole("button", { name: /confirm booking/i });
+    fireEvent.click(submitBtn);
+
+    expect(handleConfirm).not.toHaveBeenCalled();
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe(
+      "The selected time is invalid or ambiguous in the organization's timezone. Please select another time.",
+    );
+
+    // Clears error when selecting a valid time
+    fireEvent.change(input, { target: { value: "2027-03-14T03:30" } });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

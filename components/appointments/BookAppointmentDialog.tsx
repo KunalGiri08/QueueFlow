@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import { formatDateTime } from "@/lib/formatters/date";
+import {
+  formatDateTime,
+  toZonedDatetimeString,
+  zonedDatetimeToUtc,
+} from "@/lib/formatters/date";
 import type {
   BookAppointmentService,
   BookAppointmentOrganization,
@@ -20,16 +24,6 @@ export interface BookAppointmentDialogProps {
 
 const MAX_DAYS = 365;
 const MAX_MS = MAX_DAYS * 24 * 60 * 60 * 1000;
-
-function toLocalDatetimeString(date: Date): string {
-  const pad = (num: number) => String(num).padStart(2, "0");
-  const year = date.getFullYear();
-  const month = pad(date.getMonth() + 1);
-  const day = pad(date.getDate());
-  const hours = pad(date.getHours());
-  const minutes = pad(date.getMinutes());
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
-}
 
 export function BookAppointmentDialog({
   isOpen,
@@ -77,9 +71,16 @@ export function BookAppointmentDialog({
     return null;
   }
 
+  const orgTimezone = organization.timezone || "Asia/Kolkata";
   const now = new Date();
-  const minLocal = toLocalDatetimeString(new Date(now.getTime() + 60 * 1000));
-  const maxLocal = toLocalDatetimeString(new Date(now.getTime() + MAX_MS));
+  const minLocal = toZonedDatetimeString(
+    new Date(now.getTime() + 60 * 1000),
+    orgTimezone,
+  );
+  const maxLocal = toZonedDatetimeString(
+    new Date(now.getTime() + MAX_MS),
+    orgTimezone,
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,9 +91,11 @@ export function BookAppointmentDialog({
       return;
     }
 
-    const parsedDate = new Date(selectedDatetime);
-    if (Number.isNaN(parsedDate.getTime())) {
-      setValidationError("Please enter a valid date and time.");
+    const parsedDate = zonedDatetimeToUtc(selectedDatetime, orgTimezone);
+    if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
+      setValidationError(
+        "The selected time is invalid or ambiguous in the organization's timezone. Please select another time.",
+      );
       return;
     }
 
@@ -171,8 +174,13 @@ export function BookAppointmentDialog({
 
             <div className="mt-4 rounded-xl bg-gray-50 p-4 border border-gray-100 text-center">
               <span className="text-base font-semibold text-gray-900">
-                {formatDateTime(successData.scheduledAt)}
+                {formatDateTime(successData.scheduledAt, {
+                  timeZone: orgTimezone,
+                })}
               </span>
+              <p className="mt-1 text-xs text-gray-500">
+                Appointment time: {orgTimezone}
+              </p>
             </div>
 
             <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-center">
@@ -217,7 +225,9 @@ export function BookAppointmentDialog({
                 >
                   Book Appointment
                 </h2>
-                <p className="text-xs text-gray-500">{organization.name}</p>
+                <p className="text-xs text-gray-500">
+                  {organization.name} • Appointment time: {orgTimezone}
+                </p>
               </div>
             </div>
 
