@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { getLocalCalendarDayBounds } from "@/lib/services/ticket.service";
 import { evaluateServiceAdmission } from "@/lib/services/schedule.service";
 import { estimateTicketWaitTime } from "@/lib/services/prediction.service";
@@ -71,75 +72,129 @@ export async function GET(
       })
     : null;
 
-  const [currentlyServing, waitingCount, dailyCount, activeCalled] =
-    await Promise.all([
-      prisma.ticket.findFirst({
+  let isStaffOrAdmin = false;
+  try {
+    const currentUser = await getCurrentUser();
+    if (currentUser && org?.id) {
+      const membership = await prisma.organizationMembership.findUnique({
         where: {
-          queueId: queue.id,
-          status: "SERVING",
-          ...(bounds
-            ? {
-                createdAt: {
-                  gte: bounds.start,
-                  lt: bounds.end,
-                },
-              }
-            : {}),
+          userId_organizationId: {
+            userId: currentUser.id,
+            organizationId: org.id,
+          },
         },
-        orderBy: {
-          number: "asc",
-        },
-        select: {
-          number: true,
-          startedAt: true,
-        },
-      }),
+        select: { role: true },
+      });
+      if (
+        membership &&
+        (membership.role === "ADMIN" || membership.role === "STAFF")
+      ) {
+        isStaffOrAdmin = true;
+      }
+    }
+  } catch {
+    isStaffOrAdmin = false;
+  }
 
-      prisma.ticket.count({
-        where: {
-          queueId: queue.id,
-          status: "WAITING",
-          ...(bounds
-            ? {
-                createdAt: {
-                  gte: bounds.start,
-                  lt: bounds.end,
-                },
-              }
-            : {}),
-        },
-      }),
-
-      queue.maxDailyTickets !== null && bounds
-        ? prisma.ticket.count({
-            where: {
-              queueId: queue.id,
+  const [
+    currentlyServing,
+    waitingCount,
+    dailyCount,
+    activeCalled,
+    waitingTickets,
+  ] = await Promise.all([
+    prisma.ticket.findFirst({
+      where: {
+        queueId: queue.id,
+        status: "SERVING",
+        ...(bounds
+          ? {
               createdAt: {
                 gte: bounds.start,
                 lt: bounds.end,
               },
-            },
-          })
-        : Promise.resolve(0),
+            }
+          : {}),
+      },
+      orderBy: {
+        number: "asc",
+      },
+      select: {
+        number: true,
+        startedAt: true,
+      },
+    }),
 
-      prisma.ticket.findFirst({
-        where: {
-          queueId: queue.id,
-          status: "CALLED",
-          ...(bounds
-            ? {
-                createdAt: {
-                  gte: bounds.start,
-                  lt: bounds.end,
-                },
-              }
-            : {}),
-        },
-        select: {
-          calledAt: true,
-        },
-      }),
-    ]);
+    prisma.ticket.count({
+      where: {
+        queueId: queue.id,
+        status: "WAITING",
+        ...(bounds
+          ? {
+              createdAt: {
+                gte: bounds.start,
+                lt: bounds.end,
+              },
+            }
+          : {}),
+      },
+    }),
+
+    queue.maxDailyTickets !== null && bounds
+      ? prisma.ticket.count({
+          where: {
+            queueId: queue.id,
+            createdAt: {
+              gte: bounds.start,
+              lt: bounds.end,
+            },
+          },
+        })
+      : Promise.resolve(0),
+
+    prisma.ticket.findFirst({
+      where: {
+        queueId: queue.id,
+        status: "CALLED",
+        ...(bounds
+          ? {
+              createdAt: {
+                gte: bounds.start,
+                lt: bounds.end,
+              },
+            }
+          : {}),
+      },
+      select: {
+        calledAt: true,
+      },
+    }),
+
+    isStaffOrAdmin
+      ? prisma.ticket.findMany({
+          where: {
+            queueId: queue.id,
+            status: "WAITING",
+            ...(bounds
+              ? {
+                  createdAt: {
+                    gte: bounds.start,
+                    lt: bounds.end,
+                  },
+                }
+              : {}),
+          },
+          orderBy: {
+            number: "asc",
+          },
+          select: {
+            id: true,
+            number: true,
+            createdAt: true,
+          },
+        })
+      : Promise.resolve(undefined),
+  ]);
 
   const activeTicketInfo = currentlyServing
     ? { status: "SERVING" as const, startedAt: currentlyServing.startedAt }
@@ -217,6 +272,7 @@ export async function GET(
     isJoinable,
     unavailabilityReason,
     unavailabilityCode,
+    ...(waitingTickets ? { waitingTickets } : {}),
     organizationStatus: admission
       ? {
           isOpen: admission.operatingHours.isOpen,

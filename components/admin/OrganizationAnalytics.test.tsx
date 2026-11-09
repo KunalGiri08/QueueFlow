@@ -21,6 +21,7 @@ const mockAnalyticsData: OrganizationAnalyticsData = {
   currentlyWaiting: 6,
   currentlyServing: 2,
   averageWaitMinutes: 14.5,
+  averageServiceDurationMinutes: 8.2,
   skippedToday: 3,
   cancelledToday: 1,
 };
@@ -90,7 +91,12 @@ describe("components/admin/OrganizationAnalytics", () => {
     expect(screen.getByText("14.5 min")).toBeDefined();
     expect(screen.getByText("Time in line before being called")).toBeDefined();
 
-    // 6. Skipped and Cancelled (separate numbers within one card)
+    // 6. Average Service Duration
+    expect(screen.getByText("Avg Service Duration")).toBeDefined();
+    expect(screen.getByText("8.2 min")).toBeDefined();
+    expect(screen.getByText("Time spent at service counter")).toBeDefined();
+
+    // 7. Skipped and Cancelled (separate numbers within one card)
     expect(screen.getByText("Skipped & Cancelled")).toBeDefined();
     expect(screen.getByText("3")).toBeDefined();
     expect(screen.getByText("skipped")).toBeDefined();
@@ -105,6 +111,7 @@ describe("components/admin/OrganizationAnalytics", () => {
         JSON.stringify({
           ...mockAnalyticsData,
           averageWaitMinutes: null,
+          averageServiceDurationMinutes: null,
         }),
         {
           status: 200,
@@ -120,7 +127,8 @@ describe("components/admin/OrganizationAnalytics", () => {
     });
 
     expect(screen.getByText("Avg Actual Wait")).toBeDefined();
-    expect(screen.getByText("—")).toBeDefined();
+    expect(screen.getByText("Avg Service Duration")).toBeDefined();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
   });
 
   it("renders error alert with retry button on API failure, and recovers on retry", async () => {

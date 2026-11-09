@@ -35,9 +35,49 @@ export async function PATCH(
 
         const ticket = await tx.ticket.findUniqueOrThrow({
           where: { id },
+          include: {
+            queue: {
+              include: {
+                service: {
+                  select: {
+                    organizationId: true,
+                  },
+                },
+              },
+            },
+          },
         });
 
-        if (ticket.userId !== currentUser.id) {
+        const isOwner = Boolean(
+          ticket.userId && ticket.userId === currentUser.id,
+        );
+        let isAuthorizedStaffOrAdmin = false;
+
+        if (!isOwner) {
+          const organizationId = ticket.queue?.service?.organizationId;
+          if (organizationId) {
+            const membership = await tx.organizationMembership.findUnique({
+              where: {
+                userId_organizationId: {
+                  userId: currentUser.id,
+                  organizationId,
+                },
+              },
+              select: {
+                role: true,
+              },
+            });
+
+            if (
+              membership &&
+              (membership.role === "ADMIN" || membership.role === "STAFF")
+            ) {
+              isAuthorizedStaffOrAdmin = true;
+            }
+          }
+        }
+
+        if (!isOwner && !isAuthorizedStaffOrAdmin) {
           throw new Error("TICKET_FORBIDDEN");
         }
 
@@ -48,7 +88,6 @@ export async function PATCH(
         const result = await tx.ticket.updateMany({
           where: {
             id,
-            userId: currentUser.id,
             status: "WAITING",
           },
           data: {

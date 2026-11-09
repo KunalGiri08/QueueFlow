@@ -84,6 +84,7 @@ export async function GET(
       currentlyWaiting,
       currentlyServing,
       calledTicketsToday,
+      completedTicketsToday,
     ] = await Promise.all([
       // Total created today (event: createdAt)
       prisma.ticket.count({
@@ -161,6 +162,23 @@ export async function GET(
           calledAt: true,
         },
       }),
+      // Tickets completed today for calculating average service duration: (completedAt - startedAt)
+      prisma.ticket.findMany({
+        where: {
+          ...orgFilter,
+          completedAt: {
+            gte: bounds.start,
+            lt: bounds.end,
+          },
+          startedAt: {
+            not: null,
+          },
+        },
+        select: {
+          startedAt: true,
+          completedAt: true,
+        },
+      }),
     ]);
 
     // Calculate average actual wait time: (calledAt - createdAt)
@@ -192,6 +210,37 @@ export async function GET(
       }
     }
 
+    // Calculate average actual service duration: (completedAt - startedAt)
+    let averageServiceDurationMinutes: number | null = null;
+
+    if (completedTicketsToday.length > 0) {
+      let totalDurationMs = 0;
+      let eligibleDurationCount = 0;
+
+      for (const ticket of completedTicketsToday) {
+        if (ticket.startedAt && ticket.completedAt) {
+          const startTime = new Date(ticket.startedAt).getTime();
+          const completeTime = new Date(ticket.completedAt).getTime();
+
+          if (
+            !isNaN(startTime) &&
+            !isNaN(completeTime) &&
+            completeTime >= startTime
+          ) {
+            totalDurationMs += completeTime - startTime;
+            eligibleDurationCount++;
+          }
+        }
+      }
+
+      if (eligibleDurationCount > 0) {
+        const avgDurationMinutes =
+          totalDurationMs / (eligibleDurationCount * 60 * 1000);
+        averageServiceDurationMinutes =
+          Math.round(avgDurationMinutes * 10) / 10;
+      }
+    }
+
     return Response.json({
       date: bounds.dateStr,
       timezone,
@@ -200,6 +249,7 @@ export async function GET(
       currentlyWaiting,
       currentlyServing,
       averageWaitMinutes,
+      averageServiceDurationMinutes,
       skippedToday,
       cancelledToday,
     });

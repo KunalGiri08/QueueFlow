@@ -65,6 +65,7 @@ describe("GET /api/organizations/[organizationId]/analytics", () => {
       id: organizationId,
       timezone: "America/New_York",
     });
+    mockTicketFindMany.mockResolvedValue([]);
   });
 
   it("returns 401 when the caller is unauthenticated", async () => {
@@ -156,16 +157,30 @@ describe("GET /api/organizations/[organizationId]/analytics", () => {
     // Mock called tickets for average actual wait calculation:
     // Ticket 1: waited 10 minutes (600,000 ms)
     // Ticket 2: waited 20 minutes (1,200,000 ms)
-    mockTicketFindMany.mockResolvedValueOnce([
-      {
-        createdAt: new Date("2026-10-24T10:00:00.000Z"),
-        calledAt: new Date("2026-10-24T10:10:00.000Z"),
-      },
-      {
-        createdAt: new Date("2026-10-24T11:00:00.000Z"),
-        calledAt: new Date("2026-10-24T11:20:00.000Z"),
-      },
-    ]);
+    mockTicketFindMany
+      .mockResolvedValueOnce([
+        {
+          createdAt: new Date("2026-10-24T10:00:00.000Z"),
+          calledAt: new Date("2026-10-24T10:10:00.000Z"),
+        },
+        {
+          createdAt: new Date("2026-10-24T11:00:00.000Z"),
+          calledAt: new Date("2026-10-24T11:20:00.000Z"),
+        },
+      ])
+      // Mock completed tickets for average service duration calculation:
+      // Ticket 1: served for 8 minutes (480,000 ms)
+      // Ticket 2: served for 12 minutes (720,000 ms)
+      .mockResolvedValueOnce([
+        {
+          startedAt: new Date("2026-10-24T10:12:00.000Z"),
+          completedAt: new Date("2026-10-24T10:20:00.000Z"),
+        },
+        {
+          startedAt: new Date("2026-10-24T11:22:00.000Z"),
+          completedAt: new Date("2026-10-24T11:34:00.000Z"),
+        },
+      ]);
 
     const response = await GET(
       new Request("http://localhost/api/organizations/org-123/analytics"),
@@ -183,6 +198,7 @@ describe("GET /api/organizations/[organizationId]/analytics", () => {
       currentlyWaiting: 8,
       currentlyServing: 2,
       averageWaitMinutes: 15, // (10 + 20) / 2 = 15.0
+      averageServiceDurationMinutes: 10, // (8 + 12) / 2 = 10.0
       skippedToday: 3,
       cancelledToday: 2,
     });
@@ -270,7 +286,7 @@ describe("GET /api/organizations/[organizationId]/analytics", () => {
     });
 
     // Verify 7: Called tickets queries calledAt within bounds
-    expect(mockTicketFindMany).toHaveBeenCalledWith({
+    expect(mockTicketFindMany).toHaveBeenNthCalledWith(1, {
       where: {
         ...expectedOrgFilter,
         calledAt: {
@@ -283,14 +299,32 @@ describe("GET /api/organizations/[organizationId]/analytics", () => {
         calledAt: true,
       },
     });
+
+    // Verify 8: Completed tickets queries completedAt within bounds and non-null startedAt
+    expect(mockTicketFindMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        ...expectedOrgFilter,
+        completedAt: {
+          gte: mockBounds.start,
+          lt: mockBounds.end,
+        },
+        startedAt: {
+          not: null,
+        },
+      },
+      select: {
+        startedAt: true,
+        completedAt: true,
+      },
+    });
   });
 
-  it("returns null for averageWaitMinutes when no tickets have been called today", async () => {
+  it("returns null for averageWaitMinutes and averageServiceDurationMinutes when no tickets are called or completed today", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
     mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
 
     mockTicketCount.mockResolvedValue(0);
-    mockTicketFindMany.mockResolvedValueOnce([]);
+    mockTicketFindMany.mockResolvedValue([]);
 
     const response = await GET(
       new Request("http://localhost/api/organizations/org-123/analytics"),
@@ -300,6 +334,49 @@ describe("GET /api/organizations/[organizationId]/analytics", () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.averageWaitMinutes).toBeNull();
+    expect(data.averageServiceDurationMinutes).toBeNull();
+  });
+
+  it("calculates averageServiceDurationMinutes accurately for multiple completed tickets and ignores corrupted timestamps", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+
+    mockTicketCount.mockResolvedValue(5);
+    // 1st call for called tickets (empty)
+    mockTicketFindMany.mockResolvedValueOnce([]);
+    // 2nd call for completed tickets:
+    // Ticket 1: 5 minutes (300,000 ms)
+    // Ticket 2: 15 minutes (900,000 ms)
+    // Ticket 3: corrupted: completedAt before startedAt -> excluded
+    // Ticket 4: missing startedAt -> excluded
+    mockTicketFindMany.mockResolvedValueOnce([
+      {
+        startedAt: new Date("2026-10-24T10:00:00.000Z"),
+        completedAt: new Date("2026-10-24T10:05:00.000Z"),
+      },
+      {
+        startedAt: new Date("2026-10-24T11:00:00.000Z"),
+        completedAt: new Date("2026-10-24T11:15:00.000Z"),
+      },
+      {
+        startedAt: new Date("2026-10-24T12:30:00.000Z"),
+        completedAt: new Date("2026-10-24T12:00:00.000Z"),
+      },
+      {
+        startedAt: null,
+        completedAt: new Date("2026-10-24T13:00:00.000Z"),
+      },
+    ]);
+
+    const response = await GET(
+      new Request("http://localhost/api/organizations/org-123/analytics"),
+      createParams(),
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    // (5 + 15) / 2 = 10.0
+    expect(data.averageServiceDurationMinutes).toBe(10);
   });
 
   it("ignores corrupted tickets where calledAt is before createdAt when calculating average wait", async () => {

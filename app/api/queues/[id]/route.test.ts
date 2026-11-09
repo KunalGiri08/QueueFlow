@@ -4,12 +4,22 @@ const {
   mockQueueFindUnique,
   mockTicketFindFirst,
   mockTicketCount,
+  mockTicketFindMany,
+  mockMembershipFindUnique,
+  mockGetCurrentUser,
   mockEstimateTicketWaitTime,
 } = vi.hoisted(() => ({
   mockQueueFindUnique: vi.fn(),
   mockTicketFindFirst: vi.fn(),
   mockTicketCount: vi.fn(),
+  mockTicketFindMany: vi.fn(),
+  mockMembershipFindUnique: vi.fn(),
+  mockGetCurrentUser: vi.fn(),
   mockEstimateTicketWaitTime: vi.fn(),
+}));
+
+vi.mock("@/lib/auth/current-user", () => ({
+  getCurrentUser: mockGetCurrentUser,
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -20,6 +30,10 @@ vi.mock("@/lib/prisma", () => ({
     ticket: {
       findFirst: mockTicketFindFirst,
       count: mockTicketCount,
+      findMany: mockTicketFindMany,
+    },
+    organizationMembership: {
+      findUnique: mockMembershipFindUnique,
     },
   },
 }));
@@ -52,6 +66,9 @@ const defaultOpenOrg = {
 describe("GET /api/queues/[id]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockMembershipFindUnique.mockResolvedValue(null);
+    mockTicketFindMany.mockResolvedValue([]);
     mockEstimateTicketWaitTime.mockResolvedValue(null);
   });
 
@@ -370,5 +387,68 @@ describe("GET /api/queues/[id]", () => {
         }),
       }),
     );
+  });
+
+  it("omits waitingTickets for anonymous or customer callers", async () => {
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      name: "Main Queue",
+      isActive: true,
+      service: {
+        id: "svc-1",
+        name: "Main Service",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
+    });
+
+    mockTicketFindFirst.mockResolvedValue(null);
+    mockTicketCount.mockResolvedValue(2);
+
+    const response = await GET(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.waitingTickets).toBeUndefined();
+    expect(mockTicketFindMany).not.toHaveBeenCalled();
+  });
+
+  it("includes waitingTickets for authenticated organization staff/admin", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "staff-1" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "STAFF" });
+
+    mockQueueFindUnique.mockResolvedValue({
+      id: queueId,
+      name: "Main Queue",
+      isActive: true,
+      service: {
+        id: "svc-1",
+        name: "Main Service",
+        isActive: true,
+        organization: defaultOpenOrg,
+      },
+    });
+
+    mockTicketFindFirst.mockResolvedValue(null);
+    mockTicketCount.mockResolvedValue(2);
+    mockTicketFindMany.mockResolvedValue([
+      { id: "ticket-1", number: 101, createdAt: new Date().toISOString() },
+      { id: "ticket-2", number: 102, createdAt: new Date().toISOString() },
+    ]);
+
+    const response = await GET(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.waitingTickets).toHaveLength(2);
+    expect(data.waitingTickets[0]).toMatchObject({ id: "ticket-1", number: 101 });
+    expect(mockTicketFindMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        queueId,
+        status: "WAITING",
+      }),
+      orderBy: { number: "asc" },
+      select: { id: true, number: true, createdAt: true },
+    });
   });
 });

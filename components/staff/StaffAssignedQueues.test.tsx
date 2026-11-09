@@ -288,4 +288,54 @@ describe("StaffAssignedQueues", () => {
     }) as HTMLButtonElement;
     expect(q2Btn.disabled).toBe(false);
   });
+
+  it("renders 'Cancel Ticket' button only for queues with waitingCount > 0", () => {
+    render(
+      <StaffAssignedQueues
+        assignedQueues={mockQueues}
+        isRefreshingQueues={false}
+        onRefreshQueues={vi.fn()}
+        callingQueueId={null}
+        onCallNext={vi.fn()}
+        canCallNext={() => true}
+      />,
+    );
+
+    // Queue 1 has waitingCount: 5 -> Cancel Ticket button is rendered
+    expect(
+      screen.getByRole("button", {
+        name: "Cancel waiting ticket in General Line",
+      }),
+    ).toBeDefined();
+
+    // Queue 2 has waitingCount: 0 -> Cancel Ticket button is NOT rendered
+    expect(
+      screen.queryByRole("button", {
+        name: "Cancel waiting ticket in Priority Line",
+      }),
+    ).toBeNull();
+  });
+
+  it("opens CancelStaffTicketDialog when Cancel Ticket button is clicked", () => {
+    render(
+      <StaffAssignedQueues
+        assignedQueues={mockQueues}
+        isRefreshingQueues={false}
+        onRefreshQueues={vi.fn()}
+        callingQueueId={null}
+        onCallNext={vi.fn()}
+        canCallNext={() => true}
+      />,
+    );
+
+    const cancelBtn = screen.getByRole("button", {
+      name: "Cancel waiting ticket in General Line",
+    });
+    fireEvent.click(cancelBtn);
+
+    expect(
+      screen.getByRole("dialog", { name: /cancel waiting ticket/i }),
+    ).toBeDefined();
+    expect(screen.getByText(/Queue: General Line/i)).toBeDefined();
+  });
 });

@@ -10,6 +10,7 @@ export interface OrganizationAnalyticsData {
   currentlyWaiting: number;
   currentlyServing: number;
   averageWaitMinutes: number | null;
+  averageServiceDurationMinutes: number | null;
   skippedToday: number;
   cancelledToday: number;
 }
@@ -35,7 +36,7 @@ function AnalyticsSkeleton() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 6 }).map((_, idx) => (
+        {Array.from({ length: 7 }).map((_, idx) => (
           <div
             key={idx}
             className="rounded-xl border border-gray-200 bg-white p-5 text-center shadow-sm space-y-3"
@@ -354,7 +355,22 @@ export function OrganizationAnalytics({
           </p>
         </div>
 
-        {/* Card 6: Skipped and Cancelled Tickets Today */}
+        {/* Card 6: Average Service Duration */}
+        <div className="flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-5 text-center shadow-sm">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+              Avg Service Duration
+            </p>
+            <p className="mt-2 text-3xl font-bold tracking-tight text-gray-900">
+              {formatWaitMinutes(data.averageServiceDurationMinutes)}
+            </p>
+          </div>
+          <p className="mt-2 text-xs text-gray-500">
+            Time spent at service counter
+          </p>
+        </div>
+
+        {/* Card 7: Skipped and Cancelled Tickets Today */}
         <div className="flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-5 text-center shadow-sm">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">

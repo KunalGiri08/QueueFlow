@@ -1,4 +1,11 @@
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
+import { CancelStaffTicketDialog } from "./CancelStaffTicketDialog";
+
+export interface WaitingTicketItem {
+  id: string;
+  number: number;
+  createdAt: string;
+}
 
 export interface OperatorQueueItem {
   id: string;
@@ -10,6 +17,7 @@ export interface OperatorQueueItem {
   };
   waitingCount: number;
   currentlyServing: number | null;
+  waitingTickets?: WaitingTicketItem[];
 }
 
 export interface StaffAssignedQueuesProps {
@@ -39,6 +47,8 @@ export function StaffAssignedQueues({
   canCallNext,
   organizationName,
 }: StaffAssignedQueuesProps): ReactElement {
+  const [cancellingQueue, setCancellingQueue] =
+    useState<OperatorQueueItem | null>(null);
   return (
     <div className="space-y-4 pt-2">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-gray-200 pb-4">
@@ -238,11 +248,43 @@ export function StaffAssignedQueues({
                     <span>Call Next Ticket</span>
                   )}
                 </button>
+
+                {q.waitingCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setCancellingQueue(q)}
+                    className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-all hover:bg-red-50 hover:border-red-300 hover:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 active:scale-[0.98]"
+                    aria-label={`Cancel waiting ticket in ${q.name}`}
+                  >
+                    <svg
+                      className="h-3.5 w-3.5 text-gray-400 group-hover:text-red-500"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      strokeWidth="2"
+                      stroke="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
+                    <span>Cancel Ticket</span>
+                  </button>
+                )}
               </div>
             </div>
           ))}
         </div>
       )}
+
+      <CancelStaffTicketDialog
+        isOpen={Boolean(cancellingQueue)}
+        queue={cancellingQueue}
+        onClose={() => setCancellingQueue(null)}
+        onSuccess={onRefreshQueues}
+      />
     </div>
   );
 }

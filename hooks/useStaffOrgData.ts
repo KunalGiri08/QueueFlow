@@ -4,7 +4,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { AssignedCounterItem } from "@/components/staff/StaffCounterSelector";
 import type { ActiveTicket } from "@/components/staff/StaffActiveTicketCard";
-import type { OperatorQueueItem } from "@/components/staff/StaffAssignedQueues";
+import type {
+  OperatorQueueItem,
+  WaitingTicketItem,
+} from "@/components/staff/StaffAssignedQueues";
 
 interface AssignedQueueItem {
   id: string;
@@ -306,6 +309,9 @@ export function useStaffOrgData(
               typeof rec.currentlyServing === "number"
                 ? (rec.currentlyServing as number)
                 : null,
+            waitingTickets: Array.isArray(rec.waitingTickets)
+              ? (rec.waitingTickets as WaitingTicketItem[])
+              : undefined,
           };
         }),
       );
