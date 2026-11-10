@@ -118,7 +118,7 @@ export function EditQueueDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="edit-queue-dialog-title"
-        className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-6 shadow-xl transition-all space-y-4"
+        className="w-full max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-gray-200 bg-white p-4 sm:p-6 shadow-xl transition-all space-y-4"
       >
         <div className="flex items-center justify-between border-b border-gray-100 pb-3">
           <div>

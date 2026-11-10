@@ -6,19 +6,19 @@ export default function Home() {
     <>
       <Navbar />
       <main className="min-h-screen bg-white text-gray-900">
-        <section className="flex min-h-[80vh] flex-col items-center justify-center px-6 text-center">
-          <h2 className="max-w-3xl text-5xl font-bold tracking-tight">
+        <section className="flex min-h-[80vh] flex-col items-center justify-center px-4 py-12 sm:px-6 sm:py-16 text-center">
+          <h2 className="max-w-3xl text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight">
             No More Waiting in Physical Queues
           </h2>
 
-          <p className="mt-6 max-w-2xl text-lg text-gray-600">
+          <p className="mt-4 sm:mt-6 max-w-2xl text-base sm:text-lg text-gray-600">
             QueueFlow helps organizations manage virtual queues and appointments
             while customers track their position in real time.
           </p>
 
           <Link
             href="/organizations"
-            className="mt-8 inline-flex items-center justify-center rounded-lg bg-black px-6 py-3 text-white shadow-sm transition-all hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
+            className="mt-6 sm:mt-8 inline-flex items-center justify-center rounded-lg bg-black px-6 py-3 text-white shadow-sm transition-all hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
           >
             Join Queue
           </Link>
@@ -26,11 +26,11 @@ export default function Home() {
 
         <section
           id="features"
-          className="border-t border-gray-100 bg-gray-50/50 px-6 py-24 sm:px-8 lg:px-12 scroll-mt-16"
+          className="border-t border-gray-100 bg-gray-50/50 px-4 py-16 sm:px-8 sm:py-24 lg:px-12 scroll-mt-16"
         >
           <div className="mx-auto max-w-7xl">
             <div className="mx-auto max-w-2xl text-center">
-              <h2 className="text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
+              <h2 className="text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl md:text-4xl">
                 Streamlined Queue Management
               </h2>
               <p className="mt-4 text-base text-gray-600 sm:text-lg">
@@ -38,8 +38,8 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="mt-16 grid grid-cols-1 gap-8 md:grid-cols-3">
-              <div className="rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
+            <div className="mt-12 sm:mt-16 grid grid-cols-1 gap-6 sm:gap-8 md:grid-cols-3">
+              <div className="rounded-xl border border-gray-200 bg-white p-6 sm:p-8 shadow-sm">
                 <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gray-100 text-gray-900">
                   <svg
                     className="h-6 w-6"
@@ -64,7 +64,7 @@ export default function Home() {
                 </p>
               </div>
 
-              <div className="rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
+              <div className="rounded-xl border border-gray-200 bg-white p-6 sm:p-8 shadow-sm">
                 <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gray-100 text-gray-900">
                   <svg
                     className="h-6 w-6"
@@ -89,7 +89,7 @@ export default function Home() {
                 </p>
               </div>
 
-              <div className="rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
+              <div className="rounded-xl border border-gray-200 bg-white p-6 sm:p-8 shadow-sm">
                 <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gray-100 text-gray-900">
                   <svg
                     className="h-6 w-6"
@@ -119,11 +119,11 @@ export default function Home() {
 
         <section
           id="how-it-works"
-          className="border-t border-gray-100 bg-white px-6 py-24 sm:px-8 lg:px-12 scroll-mt-16"
+          className="border-t border-gray-100 bg-white px-4 py-16 sm:px-8 sm:py-24 lg:px-12 scroll-mt-16"
         >
           <div className="mx-auto max-w-7xl">
             <div className="mx-auto max-w-2xl text-center">
-              <h2 className="text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
+              <h2 className="text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl md:text-4xl">
                 How It Works
               </h2>
               <p className="mt-4 text-base text-gray-600 sm:text-lg">
@@ -131,8 +131,8 @@ export default function Home() {
               </p>
             </div>
 
-            <ol className="mt-16 grid grid-cols-1 gap-8 md:grid-cols-3 list-none">
-              <li className="relative rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
+            <ol className="mt-12 sm:mt-16 grid grid-cols-1 gap-6 sm:gap-8 md:grid-cols-3 list-none">
+              <li className="relative rounded-xl border border-gray-200 bg-white p-6 sm:p-8 shadow-sm">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-900 text-sm font-bold text-white">
                   1
                 </div>
@@ -144,7 +144,7 @@ export default function Home() {
                 </p>
               </li>
 
-              <li className="relative rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
+              <li className="relative rounded-xl border border-gray-200 bg-white p-6 sm:p-8 shadow-sm">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-900 text-sm font-bold text-white">
                   2
                 </div>
@@ -156,7 +156,7 @@ export default function Home() {
                 </p>
               </li>
 
-              <li className="relative rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
+              <li className="relative rounded-xl border border-gray-200 bg-white p-6 sm:p-8 shadow-sm">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-900 text-sm font-bold text-white">
                   3
                 </div>

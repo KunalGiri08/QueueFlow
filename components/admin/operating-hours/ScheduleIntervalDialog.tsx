@@ -152,7 +152,7 @@ export function ScheduleIntervalDialog({
       aria-labelledby="interval-modal-title"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 animate-fade-in"
     >
-      <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-xl">
+      <div className="w-full max-w-md max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-gray-200 bg-white p-4 sm:p-6 shadow-xl">
         <div className="flex items-center justify-between border-b border-gray-100 pb-3">
           <h4 id="interval-modal-title" className="text-base font-bold text-gray-900">
             {editingInterval ? "Edit Operating Hours" : "Add Operating Hours"}
@@ -199,7 +199,7 @@ export function ScheduleIntervalDialog({
             </select>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label
                 htmlFor="interval-start-time"

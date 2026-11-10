@@ -219,7 +219,7 @@ function OrganizationsContent() {
       ) : error ? (
         <div
           role="alert"
-          className="rounded-xl border border-red-200 bg-red-50/70 p-8 text-center text-red-800 shadow-sm"
+          className="rounded-xl border border-red-200 bg-red-50/70 p-6 sm:p-8 text-center text-red-800 shadow-sm"
         >
           <p className="text-base font-medium">{error}</p>
           <button
@@ -231,7 +231,7 @@ function OrganizationsContent() {
           </button>
         </div>
       ) : organizations.length === 0 ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-12 text-center shadow-sm">
+        <div className="rounded-xl border border-gray-200 bg-white p-6 sm:p-12 text-center shadow-sm">
           <h2 className="text-lg font-semibold text-gray-900">
             No organizations found
           </h2>
@@ -258,17 +258,17 @@ function OrganizationsContent() {
               className="flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md"
             >
               <div>
-                <h2 className="text-xl font-semibold tracking-tight text-gray-900">
+                <h2 className="text-xl font-semibold tracking-tight text-gray-900 break-words">
                   {org.name}
                 </h2>
-                <span className="mt-2 inline-flex items-center rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">
+                <span className="mt-2 inline-flex items-center rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600 break-all">
                   @{org.slug}
                 </span>
               </div>
               <div className="mt-6 flex items-center justify-end border-t border-gray-100 pt-4">
                 <Link
                   href={`/organizations/${org.id}`}
-                  className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
+                  className="inline-flex w-full sm:w-auto items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
                   aria-label={`View services at ${org.name}`}
                 >
                   View services

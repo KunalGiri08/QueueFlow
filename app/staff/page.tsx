@@ -185,7 +185,7 @@ export default function StaffOperatorPage() {
               </button>
             </div>
           ) : organizations.length === 0 ? (
-            <div className="rounded-xl border border-gray-200 bg-white p-12 text-center shadow-sm">
+            <div className="rounded-xl border border-gray-200 bg-white p-6 sm:p-12 text-center shadow-sm">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-amber-50 text-amber-600">
                 <svg
                   className="h-6 w-6"

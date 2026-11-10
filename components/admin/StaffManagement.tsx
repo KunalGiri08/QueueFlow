@@ -744,11 +744,11 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
                 {/* Member Header */}
                 <div className="space-y-1">
                   <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h4 className="text-base font-semibold text-gray-900">
+                    <div className="min-w-0 flex-1">
+                      <h4 className="text-base font-semibold text-gray-900 break-words">
                         {member.name || "Unnamed Operator"}
                       </h4>
-                      <p className="text-xs text-gray-500">{member.email}</p>
+                      <p className="text-xs text-gray-500 break-words">{member.email}</p>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span
@@ -1017,7 +1017,7 @@ export function StaffManagement({ organizationId }: StaffManagementProps) {
             <button
               type="submit"
               disabled={isOnboarding}
-              className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 active:scale-[0.98] disabled:opacity-50"
+              className="inline-flex w-full sm:w-auto items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 active:scale-[0.98] disabled:opacity-50"
             >
               {isOnboarding ? (
                 <>

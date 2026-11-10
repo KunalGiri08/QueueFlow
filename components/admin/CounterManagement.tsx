@@ -487,7 +487,7 @@ export function CounterManagement({ organizationId }: CounterManagementProps) {
             <button
               type="submit"
               disabled={isCreatingCounter || !newCounterName.trim()}
-              className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none sm:w-auto"
+              className="inline-flex w-full sm:w-auto items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
             >
               {isCreatingCounter ? (
                 <>
@@ -690,28 +690,28 @@ export function CounterManagement({ organizationId }: CounterManagementProps) {
                   className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-gray-300 flex flex-col justify-between gap-4"
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <div className="space-y-1">
-                      <h4 className="text-base font-semibold text-gray-900">
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <h4 className="text-base font-semibold text-gray-900 break-words">
                         {counter.name}
                       </h4>
-                      <span className="block font-mono text-xs text-gray-400">
+                      <span className="block font-mono text-xs text-gray-400 break-all">
                         ID: {counter.id}
                       </span>
                     </div>
                     {counter.isActive ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200/80">
+                      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200/80">
                         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                         Active
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-600 border border-gray-200">
+                      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-600 border border-gray-200">
                         <span className="h-1.5 w-1.5 rounded-full bg-gray-400" />
                         Inactive
                       </span>
                     )}
                   </div>
 
-                  <div className="flex items-center justify-between gap-2 border-t border-gray-100 pt-3 text-xs text-gray-400">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3 text-xs text-gray-400">
                     <span>{formatCreationDate(counter.createdAt)}</span>
                     <button
                       type="button"

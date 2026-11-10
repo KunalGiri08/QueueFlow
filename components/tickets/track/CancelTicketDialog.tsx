@@ -56,7 +56,7 @@ export function CancelTicketDialog({
         aria-modal="true"
         aria-labelledby="cancel-ticket-dialog-title"
         aria-describedby="cancel-ticket-dialog-description"
-        className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-xl transition-all"
+        className="w-full max-w-md max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-gray-200 bg-white p-4 sm:p-6 shadow-xl transition-all"
       >
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-600">
