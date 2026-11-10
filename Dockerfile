@@ -55,11 +55,10 @@ RUN test -n "$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" || ( \
 # build-time environment validation in next.config.ts. Real production secrets must
 # NEVER be provided during image build or baked into image layers.
 ENV DATABASE_URL="postgresql://build-placeholder:build-placeholder@localhost:5432/build_placeholder"
-ENV CLERK_SECRET_KEY="sk_test_build_placeholder_secret_key"
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-RUN npm run build
+RUN CLERK_SECRET_KEY="sk_test_build_placeholder_secret_key" npm run build
 
 # -----------------------------------------------------------------------------
 # Stage 3: Minimal Production Runner
