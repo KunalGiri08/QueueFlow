@@ -45,7 +45,7 @@ export function QueueCatalogItem({
           : "border-gray-200/80 bg-gray-50/60 hover:border-gray-300"
       }`}
     >
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span
             className={`h-2 w-2 shrink-0 rounded-full ${
@@ -57,7 +57,7 @@ export function QueueCatalogItem({
             }`}
             aria-hidden="true"
           />
-          <span className="truncate text-sm font-semibold text-gray-900">
+          <span className="text-sm font-semibold text-gray-900 break-words sm:truncate">
             {queue.name}
           </span>
 
@@ -118,7 +118,7 @@ export function QueueCatalogItem({
             isSubmitting ||
             isAnyQueueSubmitting
           }
-          className={`inline-flex shrink-0 items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+          className={`inline-flex w-full shrink-0 items-center justify-center rounded-lg px-3 py-2 text-xs font-medium transition-all sm:w-auto sm:py-1.5 ${
             isKnownUnavailable
               ? "cursor-not-allowed bg-gray-200 text-gray-500 shadow-none"
               : "bg-gray-900 text-white shadow-sm hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"

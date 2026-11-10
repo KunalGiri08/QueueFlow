@@ -26,21 +26,21 @@ export function CustomerTicketCard({
     ticket.trackingToken.trim() !== "";
 
   return (
-    <article className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
+    <article className="rounded-xl border border-gray-200 bg-white p-4 sm:p-6 shadow-sm transition-shadow hover:shadow-md">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
             <span className="text-2xl font-black tracking-tight text-gray-900 sm:text-3xl">
               #{ticket.number}
             </span>
             <StatusBadge status={ticket.status} audience="customer" />
           </div>
 
-          <p className="mt-1 text-sm font-semibold text-gray-800">
+          <p className="mt-1 text-sm font-semibold text-gray-800 break-words">
             {ticket.queue.service.organization.name}
           </p>
 
-          <p className="mt-0.5 text-xs text-gray-500">
+          <p className="mt-0.5 text-xs text-gray-500 break-words">
             {ticket.queue.service.name} &bull; {ticket.queue.name}
           </p>
 
@@ -49,16 +49,16 @@ export function CustomerTicketCard({
           </p>
         </div>
 
-        <div className="flex sm:flex-col sm:items-end justify-between items-center gap-2 pt-3 sm:pt-0 border-t sm:border-t-0 border-gray-100 flex-wrap">
+        <div className="flex w-full flex-col gap-2 pt-3 border-t border-gray-100 sm:w-auto sm:border-t-0 sm:pt-0 sm:items-end">
           {hasValidToken ? (
             <Link
               href={`/tickets/track/${encodeURIComponent(ticket.trackingToken!)}`}
-              className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
+              className="inline-flex w-full items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 sm:py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] sm:w-auto"
             >
               Track Status &rarr;
             </Link>
           ) : (
-            <span className="text-xs text-gray-400 italic">
+            <span className="text-xs text-gray-400 italic text-center sm:text-right">
               Tracking unavailable
             </span>
           )}
@@ -68,7 +68,7 @@ export function CustomerTicketCard({
               type="button"
               onClick={() => onCancel(ticket)}
               disabled={isCancelling}
-              className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 shadow-sm transition-all hover:bg-red-50 hover:border-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex w-full items-center justify-center rounded-lg border border-red-200 bg-white px-3 py-2 sm:py-1.5 text-xs font-medium text-red-700 shadow-sm transition-all hover:bg-red-50 hover:border-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed sm:w-auto"
             >
               {isCancelling ? (
                 <>

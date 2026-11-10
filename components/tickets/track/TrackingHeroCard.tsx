@@ -24,8 +24,8 @@ export function TrackingHeroCard({
   counter,
 }: TrackingHeroCardProps) {
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-sm">
-      <p className="text-sm font-medium text-gray-500">
+    <div className="rounded-2xl border border-gray-200 bg-white p-5 sm:p-8 text-center shadow-sm">
+      <p className="text-sm font-medium text-gray-500 break-words">
         {organizationName} &bull; {serviceName}
       </p>
 
@@ -33,7 +33,7 @@ export function TrackingHeroCard({
         <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
           Your Ticket Number
         </span>
-        <h1 className="mt-1 text-6xl font-black tracking-tight text-gray-900 sm:text-7xl">
+        <h1 className="mt-1 text-5xl font-black tracking-tight text-gray-900 sm:text-6xl md:text-7xl break-words">
           #{ticketNumber}
         </h1>
       </div>
@@ -42,14 +42,14 @@ export function TrackingHeroCard({
         <StatusBadge status={status} size="lg" audience="customer" />
       </div>
 
-      <p className="mt-3 text-sm text-gray-600">{statusMessage}</p>
+      <p className="mt-3 text-sm text-gray-600 break-words">{statusMessage}</p>
 
       {counter && (
-        <div className="mt-5 rounded-lg border border-blue-200 bg-blue-50/80 p-3.5 text-center">
+        <div className="mt-5 rounded-lg border border-blue-200 bg-blue-50/80 p-3 sm:p-3.5 text-center">
           <span className="text-xs font-semibold uppercase tracking-wider text-blue-700">
             Assigned Counter
           </span>
-          <p className="mt-0.5 text-base font-bold text-blue-900">
+          <p className="mt-0.5 text-base font-bold text-blue-900 break-words">
             {counter.name}
           </p>
         </div>
