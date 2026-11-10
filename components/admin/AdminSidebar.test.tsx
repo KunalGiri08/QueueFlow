@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
-import { AdminSidebar, ADMIN_SECTIONS, type AdminSectionId } from "./AdminSidebar";
+import { AdminSidebar, ADMIN_SECTIONS } from "./AdminSidebar";
 
 describe("AdminSidebar Component", () => {
   afterEach(() => {
@@ -95,6 +95,22 @@ describe("AdminSidebar Component", () => {
 
     expect(handleSelect).toHaveBeenCalledWith("operating-hours");
     // Mobile menu should be closed after selection
+    expect(toggleBtn.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("closes mobile navigation menu when pressing Escape key", () => {
+    const handleSelect = vi.fn();
+    render(
+      <AdminSidebar activeSection="overview" onSelectSection={handleSelect} />,
+    );
+
+    const toggleBtn = screen.getByRole("button", {
+      name: /toggle navigation menu/i,
+    });
+    fireEvent.click(toggleBtn);
+    expect(toggleBtn.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.keyDown(window, { key: "Escape" });
     expect(toggleBtn.getAttribute("aria-expanded")).toBe("false");
   });
 });

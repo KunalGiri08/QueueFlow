@@ -101,6 +101,30 @@ describe("StaffActiveTicketCard", () => {
     ).toBeNull();
   });
 
+  it("renders responsive card padding and full-width action button classes for mobile viewports", () => {
+    const { container } = render(
+      <StaffActiveTicketCard
+        activeTicket={mockCalledTicket}
+        activeTicketAction={null}
+        onStartService={vi.fn()}
+        onCompleteService={vi.fn()}
+        onSkipTicket={vi.fn()}
+      />,
+    );
+
+    const card = container.firstElementChild as HTMLElement;
+    expect(card.className).toContain("p-4");
+    expect(card.className).toContain("sm:p-6");
+
+    const startBtn = screen.getByRole("button", { name: /Start service/i });
+    expect(startBtn.className).toContain("w-full");
+    expect(startBtn.className).toContain("sm:w-auto");
+
+    const skipBtn = screen.getByRole("button", { name: /Skip ticket/i });
+    expect(skipBtn.className).toContain("w-full");
+    expect(skipBtn.className).toContain("sm:w-auto");
+  });
+
   it("renders SERVING ticket details, status badge, and only Complete Service and Skip Ticket actions", () => {
     render(
       <StaffActiveTicketCard

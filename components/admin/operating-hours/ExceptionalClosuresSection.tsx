@@ -109,21 +109,21 @@ export function ExceptionalClosuresSection({
           </p>
         </div>
       ) : (
-        <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white">
+        <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 text-left text-xs sm:text-sm">
               <thead className="bg-gray-50 text-gray-600 font-semibold">
                 <tr>
-                  <th scope="col" className="px-4 py-3 sm:px-6">
+                  <th scope="col" className="px-3.5 py-3 sm:px-6">
                     Date Range
                   </th>
-                  <th scope="col" className="px-4 py-3 sm:px-6">
+                  <th scope="col" className="px-3.5 py-3 sm:px-6">
                     Status
                   </th>
-                  <th scope="col" className="px-4 py-3 sm:px-6">
+                  <th scope="col" className="px-3.5 py-3 sm:px-6">
                     Reason / Note
                   </th>
-                  <th scope="col" className="px-4 py-3 sm:px-6 text-right">
+                  <th scope="col" className="px-3.5 py-3 sm:px-6 text-right">
                     Actions
                   </th>
                 </tr>
@@ -138,7 +138,7 @@ export function ExceptionalClosuresSection({
 
                   return (
                     <tr key={closure.id} className="hover:bg-gray-50/50 transition-colors">
-                      <td className="px-4 py-3.5 sm:px-6 whitespace-nowrap font-medium text-gray-900 font-mono text-xs">
+                      <td className="px-3.5 py-3 sm:px-6 whitespace-nowrap font-medium text-gray-900 font-mono text-xs">
                         {isSingleDay ? (
                           <span>{closure.startDate}</span>
                         ) : (
@@ -154,7 +154,7 @@ export function ExceptionalClosuresSection({
                               )}`}
                         </span>
                       </td>
-                      <td className="px-4 py-3.5 sm:px-6 whitespace-nowrap">
+                      <td className="px-3.5 py-3 sm:px-6 whitespace-nowrap">
                         {isActiveNow ? (
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-2.5 py-0.5 text-xs font-semibold text-red-700 border border-red-200">
                             <span className="h-1.5 w-1.5 rounded-full bg-red-600 animate-pulse" />
@@ -170,7 +170,7 @@ export function ExceptionalClosuresSection({
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3.5 sm:px-6 text-gray-700">
+                      <td className="px-3.5 py-3 sm:px-6 text-gray-700 break-words min-w-[120px] max-w-[200px] sm:max-w-none">
                         {closure.reason ? (
                           <span>{closure.reason}</span>
                         ) : (
@@ -179,14 +179,14 @@ export function ExceptionalClosuresSection({
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3.5 sm:px-6 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-2">
+                      <td className="px-3.5 py-3 sm:px-6 text-right whitespace-nowrap">
+                        <div className="flex flex-col sm:flex-row items-end sm:items-center justify-end gap-1.5 sm:gap-2">
                           <button
                             type="button"
                             onClick={() => onOpenEditClosure(closure)}
                             disabled={isDeleting}
                             aria-label={`Edit closure for ${closure.startDate}`}
-                            className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 disabled:opacity-50"
+                            className="w-full sm:w-auto text-center rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 disabled:opacity-50"
                           >
                             Edit
                           </button>
@@ -195,7 +195,7 @@ export function ExceptionalClosuresSection({
                             onClick={() => onDeleteClosure(closure)}
                             disabled={isDeleting}
                             aria-label={`Delete closure for ${closure.startDate}`}
-                            className="rounded-lg border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 shadow-sm hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 disabled:opacity-50"
+                            className="w-full sm:w-auto text-center rounded-lg border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 shadow-sm hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 disabled:opacity-50"
                           >
                             {isDeleting ? "Deleting..." : "Delete"}
                           </button>

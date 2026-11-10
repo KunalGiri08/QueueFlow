@@ -366,7 +366,7 @@ export default function OrganizationAdminPage() {
             </div>
           ) : organizations.length === 0 ? (
             /* Empty State: user belongs to no organizations */
-            <div className="rounded-xl border border-gray-200 bg-white p-12 text-center shadow-sm">
+            <div className="rounded-xl border border-gray-200 bg-white p-6 sm:p-12 text-center shadow-sm">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-gray-500">
                 <svg
                   className="h-6 w-6"
@@ -416,7 +416,7 @@ export default function OrganizationAdminPage() {
                 /* 403 Forbidden State: User is a member, but not ADMIN */
                 <div
                   role="alert"
-                  className="rounded-xl border border-amber-200 bg-amber-50/70 p-8 text-center shadow-sm"
+                  className="rounded-xl border border-amber-200 bg-amber-50/70 p-6 sm:p-8 text-center shadow-sm"
                 >
                   <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-amber-700">
                     <svg

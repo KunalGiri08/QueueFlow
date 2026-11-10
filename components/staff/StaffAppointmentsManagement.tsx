@@ -489,13 +489,13 @@ export function StaffAppointmentsManagement({
 
                     {/* Right: Actions for BOOKED appointments */}
                     {isBooked ? (
-                      <div className="flex items-center gap-2 self-start sm:self-auto">
+                      <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full sm:w-auto pt-2.5 sm:pt-0 border-t border-gray-100 sm:border-t-0">
                         <button
                           type="button"
                           onClick={() => handleOpenConfirm(app, "COMPLETED")}
                           disabled={Boolean(updatingId)}
                           aria-label={`Mark appointment for ${app.user.name || app.user.email} as completed`}
-                          className="inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 disabled:opacity-50"
+                          className="inline-flex flex-1 sm:flex-initial items-center justify-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 sm:py-1.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 disabled:opacity-50"
                         >
                           Complete
                         </button>
@@ -505,7 +505,7 @@ export function StaffAppointmentsManagement({
                           onClick={() => handleOpenConfirm(app, "NO_SHOW")}
                           disabled={Boolean(updatingId)}
                           aria-label={`Mark appointment for ${app.user.name || app.user.email} as no show`}
-                          className="inline-flex items-center justify-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 shadow-sm transition-all hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 disabled:opacity-50"
+                          className="inline-flex flex-1 sm:flex-initial items-center justify-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-2 sm:py-1.5 text-xs font-semibold text-gray-700 shadow-sm transition-all hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 disabled:opacity-50"
                         >
                           No Show
                         </button>
@@ -515,7 +515,7 @@ export function StaffAppointmentsManagement({
                           onClick={() => handleOpenConfirm(app, "CANCELLED")}
                           disabled={Boolean(updatingId)}
                           aria-label={`Cancel appointment for ${app.user.name || app.user.email}`}
-                          className="inline-flex items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 shadow-sm transition-all hover:bg-red-50 hover:border-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 disabled:opacity-50"
+                          className="inline-flex flex-1 sm:flex-initial items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-3 py-2 sm:py-1.5 text-xs font-semibold text-red-700 shadow-sm transition-all hover:bg-red-50 hover:border-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 disabled:opacity-50"
                         >
                           Cancel
                         </button>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 export type AdminSectionId =
   | "overview"
@@ -181,6 +181,15 @@ export function AdminSidebar({
 }: AdminSidebarProps) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
+  useEffect(() => {
+    if (!isMobileMenuOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsMobileMenuOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isMobileMenuOpen]);
+
   const activeItem =
     ADMIN_SECTIONS.find((s) => s.id === activeSection) ?? ADMIN_SECTIONS[0];
   const ActiveIcon = activeItem.icon;
@@ -190,7 +199,7 @@ export function AdminSidebar({
       {/* Mobile Collapsible Navigation (screens < lg) */}
       <div className="block lg:hidden w-full">
         <div className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-sm">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2.5">
             <div className="flex items-center gap-3 min-w-0">
               <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100 text-gray-900 shrink-0">
                 <ActiveIcon className="h-5 w-5" />
@@ -211,7 +220,7 @@ export function AdminSidebar({
               aria-expanded={isMobileMenuOpen}
               aria-controls="admin-mobile-nav"
               aria-label="Toggle navigation menu"
-              className="inline-flex items-center justify-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-semibold text-gray-700 shadow-sm transition-colors hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900"
+              className="inline-flex shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-semibold text-gray-700 shadow-sm transition-colors hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900"
             >
               <span>{isMobileMenuOpen ? "Close Menu" : "Switch Section"}</span>
               <svg

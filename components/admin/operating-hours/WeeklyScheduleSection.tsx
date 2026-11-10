@@ -105,7 +105,7 @@ export function WeeklyScheduleSection({
           </button>
         </div>
       ) : (
-        <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-7">
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-7">
           {DAYS_OF_WEEK.map(({ day, name, short }) => {
             const dayIntervals = intervalsByDay[day] || [];
             const hasActiveIntervals = dayIntervals.some((i) => i.isActive);
@@ -186,7 +186,7 @@ export function WeeklyScheduleSection({
                           </div>
 
                           {/* Interval Actions */}
-                          <div className="mt-2 flex items-center justify-end gap-1.5 pt-1.5 border-t border-gray-100">
+                          <div className="mt-2 flex flex-wrap items-center justify-end gap-1.5 pt-1.5 border-t border-gray-100">
                             <button
                               type="button"
                               onClick={() => onToggleIntervalActive(interval)}
