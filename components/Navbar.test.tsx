@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { Navbar, extractUserRoles } from "./Navbar";
 
 let mockUserState: {
@@ -362,7 +362,7 @@ describe("components/Navbar", () => {
   });
 
   describe("Responsive Navigation Layout", () => {
-    it("renders both Main navigation (desktop) and Mobile navigation (mobile)", () => {
+    it("renders desktop navigation and accessible mobile hamburger button", () => {
       render(<Navbar />);
 
       const mainNav = screen.getByLabelText("Main navigation");
@@ -370,17 +370,125 @@ describe("components/Navbar", () => {
       expect(mainNav.className).toContain("hidden");
       expect(mainNav.className).toContain("md:flex");
 
+      const hamburger = screen.getByRole("button", {
+        name: /open navigation menu/i,
+      });
+      expect(hamburger).toBeDefined();
+      expect(hamburger.getAttribute("aria-expanded")).toBe("false");
+      expect(hamburger.getAttribute("aria-controls")).toBe(
+        "mobile-navigation-menu",
+      );
+      expect(hamburger.className).toContain("md:hidden");
+
+      // Mobile menu is closed by default
+      expect(screen.queryByLabelText("Mobile navigation")).toBeNull();
+    });
+
+    it("toggles mobile menu open and closed when clicking hamburger button", () => {
+      render(<Navbar />);
+
+      const hamburger = screen.getByRole("button", {
+        name: /open navigation menu/i,
+      });
+      fireEvent.click(hamburger);
+
+      // Menu is now open
+      expect(hamburger.getAttribute("aria-expanded")).toBe("true");
+      expect(
+        screen.getByRole("button", { name: /close navigation menu/i }),
+      ).toBeDefined();
+
       const mobileNav = screen.getByLabelText("Mobile navigation");
       expect(mobileNav).toBeDefined();
-      expect(mobileNav.className).toContain("md:hidden");
 
-      // Verify both navigations contain Explore Organizations
+      // Mobile navigation contains explore organizations
       const allExploreLinks = screen.getAllByRole("link", {
         name: /explore organizations/i,
       });
       expect(allExploreLinks.length).toBe(2);
-      expect(allExploreLinks[0].getAttribute("href")).toBe("/organizations");
-      expect(allExploreLinks[1].getAttribute("href")).toBe("/organizations");
+
+      // Click again to close
+      fireEvent.click(
+        screen.getByRole("button", { name: /close navigation menu/i }),
+      );
+      expect(hamburger.getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByLabelText("Mobile navigation")).toBeNull();
+    });
+
+    it("closes mobile menu when pressing Escape key", () => {
+      render(<Navbar />);
+
+      const hamburger = screen.getByRole("button", {
+        name: /open navigation menu/i,
+      });
+      fireEvent.click(hamburger);
+      expect(screen.getByLabelText("Mobile navigation")).toBeDefined();
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.queryByLabelText("Mobile navigation")).toBeNull();
+      expect(hamburger.getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("closes mobile menu when a navigation link is clicked", () => {
+      render(<Navbar />);
+
+      const hamburger = screen.getByRole("button", {
+        name: /open navigation menu/i,
+      });
+      fireEvent.click(hamburger);
+
+      const allExploreLinks = screen.getAllByRole("link", {
+        name: /explore organizations/i,
+      });
+      // Click the mobile link (the second one)
+      fireEvent.click(allExploreLinks[1]);
+
+      expect(screen.queryByLabelText("Mobile navigation")).toBeNull();
+      expect(hamburger.getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("renders role-specific links in mobile menu for authenticated staff and admin users", () => {
+      mockUserState = {
+        isLoaded: true,
+        isSignedIn: true,
+        user: {
+          id: "admin-1",
+          organizationMemberships: [
+            {
+              role: "ADMIN",
+              organization: { id: "org-1", name: "Demo Bank" },
+            },
+          ],
+        },
+      };
+
+      render(<Navbar />);
+
+      const hamburger = screen.getByRole("button", {
+        name: /open navigation menu/i,
+      });
+      fireEvent.click(hamburger);
+
+      // Verify both desktop and mobile contain Admin Dashboard and Staff Console
+      const adminLinks = screen.getAllByRole("link", {
+        name: /admin dashboard/i,
+      });
+      expect(adminLinks.length).toBe(2);
+
+      const staffLinks = screen.getAllByRole("link", {
+        name: /staff console/i,
+      });
+      expect(staffLinks.length).toBe(2);
+
+      const ticketsLinks = screen.getAllByRole("link", {
+        name: /my tickets/i,
+      });
+      expect(ticketsLinks.length).toBe(2);
+
+      const appointmentsLinks = screen.getAllByRole("link", {
+        name: /my appointments/i,
+      });
+      expect(appointmentsLinks.length).toBe(2);
     });
   });
 
