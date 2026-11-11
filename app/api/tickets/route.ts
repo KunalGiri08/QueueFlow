@@ -16,6 +16,7 @@ import { randomBytes } from "node:crypto";
 import {
   executeWithPostCommit,
   stageCustomerQueueInvalidated,
+  stageStaffQueueInvalidated,
 } from "@/lib/realtime/post-commit";
 
 export async function GET() {
@@ -293,6 +294,9 @@ export async function POST(request: Request) {
       });
 
       stageCustomerQueueInvalidated(collector, queueId, {
+        reason: "TICKET_CREATED",
+      });
+      stageStaffQueueInvalidated(collector, queueId, {
         reason: "TICKET_CREATED",
       });
 

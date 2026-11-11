@@ -28,6 +28,7 @@ import { broker as defaultBroker, RealtimeBroker } from "./broker";
 import {
   customerTicketChannel,
   customerQueueChannel,
+  staffQueueChannel,
   createRealtimeEnvelope,
   type RealtimeEnvelope,
   type CustomerTicketCalledPayload,
@@ -246,6 +247,30 @@ export function stageCustomerQueueInvalidated(
     createRealtimeEnvelope<CustomerQueueInvalidatedPayload>(
       "QUEUE_INVALIDATED",
       customerQueueChannel(trimmedQueueId),
+      {
+        queueId: trimmedQueueId,
+        reason: data?.reason,
+        timestamp: Date.now(),
+      },
+    ),
+  );
+}
+
+/**
+ * Stages a staff QUEUE_INVALIDATED event for queue-level real-time invalidation
+ * dispatched on the staff queue channel.
+ */
+export function stageStaffQueueInvalidated(
+  collector: PostCommitCollector,
+  queueId: string | null | undefined,
+  data?: { reason?: string },
+): void {
+  const trimmedQueueId = queueId?.trim();
+  if (!trimmedQueueId) return;
+  collector.stage(
+    createRealtimeEnvelope<CustomerQueueInvalidatedPayload>(
+      "QUEUE_INVALIDATED",
+      staffQueueChannel(trimmedQueueId),
       {
         queueId: trimmedQueueId,
         reason: data?.reason,

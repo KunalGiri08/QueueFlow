@@ -49,6 +49,7 @@ describe("setup-local-admin script", () => {
       upsert: ReturnType<typeof vi.fn>;
     };
     $transaction: ReturnType<typeof vi.fn>;
+    $disconnect: ReturnType<typeof vi.fn>;
   }
 
   let mockPrisma: MockPrismaClient;

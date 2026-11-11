@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { useStaffRealtime } from "./useStaffRealtime";
 import type { AssignedCounterItem } from "@/components/staff/StaffCounterSelector";
 import type { ActiveTicket } from "@/components/staff/StaffActiveTicketCard";
 import type {
@@ -98,6 +99,8 @@ export interface UseStaffOrgDataOptions {
   staffId: string | null;
   /** Optional custom sign-in redirect URL for 401 responses */
   signInRedirectUrl?: string;
+  /** Optional custom fetch implementation for real-time SSE testing */
+  realtimeFetchFn?: typeof fetch;
 }
 
 export interface UseStaffOrgDataReturn {
@@ -107,6 +110,7 @@ export interface UseStaffOrgDataReturn {
   activeTicket: ActiveTicket | null;
   counterWarning: string | null;
   assignedQueues: OperatorQueueItem[];
+  isRealtimeConnected?: boolean;
 
   // Primary Data Loading State
   isOrgDataLoading: boolean;
@@ -165,6 +169,7 @@ export function useStaffOrgData(
   const orgDataAbortControllerRef = useRef<AbortController | null>(null);
   const orgDataGenerationRef = useRef(0);
   const queueRefreshAbortControllerRef = useRef<AbortController | null>(null);
+  const realtimeAbortControllerRef = useRef<AbortController | null>(null);
 
   const backgroundPollAbortControllerRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -464,6 +469,8 @@ export function useStaffOrgData(
     orgDataAbortControllerRef.current = null;
     queueRefreshAbortControllerRef.current?.abort();
     queueRefreshAbortControllerRef.current = null;
+    realtimeAbortControllerRef.current?.abort();
+    realtimeAbortControllerRef.current = null;
     orgDataGenerationRef.current++;
 
     setAssignedCounters([]);
@@ -748,6 +755,7 @@ export function useStaffOrgData(
       backgroundPollAbortControllerRef.current?.abort();
       orgDataAbortControllerRef.current?.abort();
       queueRefreshAbortControllerRef.current?.abort();
+      realtimeAbortControllerRef.current?.abort();
     };
   }, [clearPollTimer]);
 
@@ -966,12 +974,67 @@ export function useStaffOrgData(
     [fetchActiveTicketRecovery],
   );
 
+  const handleRealtimeQueueInvalidation = useCallback(async () => {
+    const currentOrg = orgIdRef.current;
+    const currentStaff = staffIdRef.current;
+    if (!currentOrg || !currentStaff) return;
+    if (isRefreshingQueuesRef.current || isOrgDataLoadingRef.current) return;
+
+    realtimeAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    realtimeAbortControllerRef.current = controller;
+    const realtimeSeq = ++queueUpdateSeqRef.current;
+
+    try {
+      const queues = await fetchQueueStatusesOnly(
+        currentOrg,
+        currentStaff,
+        controller.signal,
+        { skipAuthRedirect: true },
+      );
+
+      if (
+        !controller.signal.aborted &&
+        orgIdRef.current === currentOrg &&
+        staffIdRef.current === currentStaff &&
+        realtimeAbortControllerRef.current === controller &&
+        realtimeSeq >= lastAppliedQueueSeqRef.current &&
+        queues !== null
+      ) {
+        lastAppliedQueueSeqRef.current = realtimeSeq;
+        setAssignedQueues(queues);
+      }
+    } catch {
+      // Non-destructive: transient background errors do not overwrite UI
+    } finally {
+      if (realtimeAbortControllerRef.current === controller) {
+        realtimeAbortControllerRef.current = null;
+      }
+    }
+  }, [fetchQueueStatusesOnly]);
+
+  const { isConnected: isRealtimeConnected } = useStaffRealtime({
+    orgId,
+    staffId,
+    enabled: Boolean(
+      orgId &&
+        staffId &&
+        hasInitialLoaded &&
+        !isOrgDataLoading &&
+        !orgDataError,
+    ),
+    onQueueInvalidated: handleRealtimeQueueInvalidation,
+    onReconnect: handleRealtimeQueueInvalidation,
+    fetchFn: options.realtimeFetchFn,
+  });
+
   return {
     assignedCounters,
     selectedCounterId,
     activeTicket,
     counterWarning,
     assignedQueues,
+    isRealtimeConnected,
     isOrgDataLoading,
     orgDataError,
     isRefreshingQueues,

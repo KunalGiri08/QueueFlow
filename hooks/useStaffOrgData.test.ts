@@ -1129,4 +1129,139 @@ describe("hooks/useStaffOrgData", () => {
       expect(hook.result.current.assignedQueues[0].waitingCount).toBe(8);
     });
   });
+
+  describe("11. Realtime SSE Integration & Fallback Polling", () => {
+    it("triggers immediate queue status refetch upon SSE event without advancing 10s timer", async () => {
+      vi.useFakeTimers();
+      let queueStatusCalls = 0;
+      let currentWaitingCount = 3;
+
+      activeFetchHandler = (url) => {
+        if (url === "/api/queues/queue-1") {
+          queueStatusCalls++;
+          return jsonResponse({
+            id: "queue-1",
+            waitingCount: currentWaitingCount,
+            currentlyServing: null,
+          });
+        }
+        return defaultFetchHandler(url);
+      };
+
+      const encoder = new TextEncoder();
+      let streamController!: ReadableStreamDefaultController<Uint8Array>;
+      const sseStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+          controller.enqueue(encoder.encode(": connected\n\n"));
+        },
+      });
+
+      const sseResponse = new Response(sseStream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+
+      const realtimeFetchFn = vi.fn().mockResolvedValue(sseResponse);
+
+      let hook!: ReturnType<
+        typeof renderHook<UseStaffOrgDataReturn, UseStaffOrgDataOptions>
+      >;
+      await act(async () => {
+        hook = renderHook(() =>
+          useStaffOrgData({
+            orgId: "org-1",
+            staffId: "user-staff-1",
+            realtimeFetchFn,
+          }),
+        );
+      });
+
+      // Initially loaded queue status once
+      expect(queueStatusCalls).toBe(1);
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(3);
+      expect(hook.result.current.isRealtimeConnected).toBe(true);
+
+      // Advance only 100ms (NOT the 10-second polling interval)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(queueStatusCalls).toBe(1);
+
+      // Customer creates a ticket; SSE event arrives
+      currentWaitingCount = 4;
+      await act(async () => {
+        streamController.enqueue(
+          encoder.encode(
+            `event: QUEUE_INVALIDATED\ndata: {"queueId":"queue-1","reason":"TICKET_CREATED"}\n\n`,
+          ),
+        );
+        await Promise.resolve();
+      });
+
+      // Immediate refetch should have been executed without waiting for 10s poll!
+      expect(queueStatusCalls).toBe(2);
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(4);
+
+      try {
+        streamController.close();
+      } catch {}
+    });
+
+    it("retains 10-second polling fallback if realtime stream is disconnected or unavailable", async () => {
+      vi.useFakeTimers();
+      let queueStatusCalls = 0;
+      let currentWaitingCount = 2;
+
+      activeFetchHandler = (url) => {
+        if (url === "/api/queues/queue-1") {
+          queueStatusCalls++;
+          return jsonResponse({
+            id: "queue-1",
+            waitingCount: currentWaitingCount,
+            currentlyServing: null,
+          });
+        }
+        return defaultFetchHandler(url);
+      };
+
+      // Realtime stream fails with 500 error
+      const realtimeFetchFn = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "SSE server unavailable" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      let hook!: ReturnType<
+        typeof renderHook<UseStaffOrgDataReturn, UseStaffOrgDataOptions>
+      >;
+      await act(async () => {
+        hook = renderHook(() =>
+          useStaffOrgData({
+            orgId: "org-1",
+            staffId: "user-staff-1",
+            realtimeFetchFn,
+          }),
+        );
+      });
+
+      expect(queueStatusCalls).toBe(1);
+      expect(hook.result.current.isRealtimeConnected).toBe(false);
+
+      // At 5 seconds, no polling refetch
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(queueStatusCalls).toBe(1);
+
+      // At 10 seconds, fallback polling fires
+      currentWaitingCount = 5;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(queueStatusCalls).toBe(2);
+      expect(hook.result.current.assignedQueues[0].waitingCount).toBe(5);
+    });
+  });
 });
