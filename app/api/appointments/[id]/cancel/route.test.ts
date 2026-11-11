@@ -275,5 +275,67 @@ describe("PATCH /api/appointments/[id]/cancel", () => {
 
     consoleErrorSpy.mockRestore();
   });
+
+  it("rejects customer cancellation when appointment is within cancellation notice window", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: ownerId });
+    mockQueryRaw.mockResolvedValue([{ id: appointmentId }]);
+    // Scheduled 1 hour in the future, notice required is 2 hours
+    const shortNoticeDate = new Date(Date.now() + 1 * 3600 * 1000);
+    mockTxAppointmentFindUniqueOrThrow.mockResolvedValue(
+      createAppointmentRecord({
+        scheduledAt: shortNoticeDate,
+        service: { organizationId: orgId, cancellationNoticeHours: 2 },
+      }),
+    );
+
+    const response = await PATCH(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.code).toBe("CANCELLATION_NOTICE_VIOLATION");
+    expect(mockTxAppointmentUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects customer cancellation when appointment is in the past", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: ownerId });
+    mockQueryRaw.mockResolvedValue([{ id: appointmentId }]);
+    const pastDate = new Date(Date.now() - 3600 * 1000);
+    mockTxAppointmentFindUniqueOrThrow.mockResolvedValue(
+      createAppointmentRecord({
+        scheduledAt: pastDate,
+        service: { organizationId: orgId, cancellationNoticeHours: 2 },
+      }),
+    );
+
+    const response = await PATCH(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.code).toBe("PAST_APPOINTMENT");
+    expect(mockTxAppointmentUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("allows staff to cancel an appointment even within the customer notice window", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: staffId });
+    mockQueryRaw.mockResolvedValue([{ id: appointmentId }]);
+    const shortNoticeDate = new Date(Date.now() + 1 * 3600 * 1000);
+    const appt = createAppointmentRecord({
+      scheduledAt: shortNoticeDate,
+      service: { organizationId: orgId, cancellationNoticeHours: 2 },
+    });
+    mockTxAppointmentFindUniqueOrThrow
+      .mockResolvedValueOnce(appt)
+      .mockResolvedValueOnce({ ...appt, status: "CANCELLED" });
+    mockTxMembershipFindUnique.mockResolvedValue({ role: "STAFF" });
+    mockTxAppointmentUpdateMany.mockResolvedValue({ count: 1 });
+
+    const response = await PATCH(new Request("http://localhost"), { params });
+
+    expect(response.status).toBe(200);
+    expect(mockTxAppointmentUpdateMany).toHaveBeenCalledWith({
+      where: { id: appointmentId, status: "BOOKED" },
+      data: { status: "CANCELLED" },
+    });
+  });
 });
 

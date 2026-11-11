@@ -2,9 +2,21 @@ import { prisma } from "@/lib/prisma";
 import { updateAppointmentSchema } from "@/lib/validations/appointment";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import {
-  evaluateOperatingHours,
   type OperatingHoursEvaluationResult,
 } from "@/lib/services/schedule.service";
+import {
+  validateAppointmentBooking,
+  checkSlotCapacityAndConflicts,
+  checkRescheduleEligibility,
+  type RescheduleEligibilityResult,
+  type ValidateAppointmentBookingResult,
+} from "@/lib/services/appointment.service";
+
+interface RescheduleError extends Error {
+  rescheduleCheck?: RescheduleEligibilityResult;
+  validation?: ValidateAppointmentBookingResult;
+  evaluation?: OperatingHoursEvaluationResult;
+}
 
 export async function GET(
   request: Request,
@@ -106,6 +118,20 @@ export async function PATCH(
 
   try {
     const updatedAppointment = await prisma.$transaction(async (tx) => {
+      // 1. Serialize rescheduling attempts for this customer across all services.
+      // Strict lock hierarchy: User -> Appointment -> Service (prevents cross-service customer booking races and deadlocks).
+      const users = await tx.$queryRaw<{ id: string }[]>`
+        SELECT "id"
+        FROM "User"
+        WHERE "id" = ${currentUser.id}
+        FOR UPDATE
+      `;
+
+      if (!users || users.length === 0) {
+        throw new Error("USER_NOT_FOUND");
+      }
+
+      // 2. Lock the target appointment
       const appointments = await tx.$queryRaw<{ id: string }[]>`
         SELECT "id"
         FROM "Appointment"
@@ -146,6 +172,12 @@ export async function PATCH(
         select: {
           id: true,
           isActive: true,
+          durationMinutes: true,
+          bufferMinutes: true,
+          minNoticeHours: true,
+          maxAdvanceDays: true,
+          slotCapacity: true,
+          cancellationNoticeHours: true,
           organization: {
             select: {
               id: true,
@@ -180,36 +212,71 @@ export async function PATCH(
         throw new Error("SERVICE_NOT_ACTIVE");
       }
 
-      if (service.organization) {
-        const operatingHours = evaluateOperatingHours({
-          timezone: service.organization.timezone,
-          intervals: service.organization.scheduleIntervals,
-          closures: service.organization.closures,
-          instant: result.data.scheduledAt,
+      // Check reschedule eligibility on currently booked appointment
+      if (
+        service.cancellationNoticeHours !== undefined &&
+        service.cancellationNoticeHours !== null
+      ) {
+        const eligibility = checkRescheduleEligibility({
+          appointment,
+          cancellationNoticeHours: service.cancellationNoticeHours,
+          currentUser: { id: currentUser.id },
         });
 
-        if (!operatingHours.isOpen) {
-          const error = new Error("ORGANIZATION_NOT_OPEN");
-          (
-            error as unknown as {
-              evaluation: OperatingHoursEvaluationResult;
-            }
-          ).evaluation = operatingHours;
+        if (!eligibility.canReschedule) {
+          const error = new Error(
+            eligibility.code || "RESCHEDULE_FORBIDDEN",
+          ) as RescheduleError;
+          error.rescheduleCheck = eligibility;
           throw error;
         }
       }
 
-      const existingAppointment = await tx.appointment.findFirst({
-        where: {
-          id: { not: id },
-          serviceId: appointment.serviceId,
+      if (service.organization) {
+        const validation = validateAppointmentBooking({
+          service: {
+            ...service,
+            isActive: service.isActive ?? true,
+          },
           scheduledAt: result.data.scheduledAt,
-          status: { not: "CANCELLED" },
-        },
-        select: { id: true },
+        });
+
+        if (!validation.isValid) {
+          if (
+            validation.code === "ORGANIZATION_CLOSED" ||
+            validation.code === "NO_ACTIVE_SCHEDULE" ||
+            validation.code === "OUTSIDE_WORKING_HOURS" ||
+            validation.code === "INVALID_TIMEZONE"
+          ) {
+            const error = new Error(
+              "ORGANIZATION_NOT_OPEN",
+            ) as RescheduleError;
+            error.evaluation = validation.operatingHours!;
+            throw error;
+          }
+
+          const error = new Error(
+            validation.code || "BOOKING_VALIDATION_FAILED",
+          ) as RescheduleError;
+          error.validation = validation;
+          throw error;
+        }
+      }
+
+      const conflictCheck = await checkSlotCapacityAndConflicts({
+        tx,
+        serviceId: appointment.serviceId,
+        userId: currentUser.id,
+        scheduledAt: result.data.scheduledAt,
+        durationMinutes: service.durationMinutes ?? 30,
+        slotCapacity: service.slotCapacity ?? 1,
+        excludeAppointmentId: id,
       });
 
-      if (existingAppointment) {
+      if (conflictCheck.hasConflict) {
+        if (conflictCheck.code === "CUSTOMER_SCHEDULE_CONFLICT") {
+          throw new Error("CUSTOMER_SCHEDULE_CONFLICT");
+        }
         throw new Error("APPOINTMENT_TIME_CONFLICT");
       }
 
@@ -221,6 +288,9 @@ export async function PATCH(
         },
         data: {
           scheduledAt: result.data.scheduledAt,
+          ...(service.durationMinutes !== undefined && {
+            durationMinutes: service.durationMinutes,
+          }),
         },
       });
 
@@ -236,6 +306,13 @@ export async function PATCH(
     return Response.json(updatedAppointment);
   } catch (error) {
     if (error instanceof Error) {
+      if (error.message === "USER_NOT_FOUND") {
+        return Response.json(
+          { error: "User not found" },
+          { status: 404 },
+        );
+      }
+
       if (error.message === "APPOINTMENT_NOT_FOUND") {
         return Response.json(
           { error: "Appointment not found" },
@@ -310,6 +387,61 @@ export async function PATCH(
             error: "This appointment time slot is already booked",
           },
           { status: 409 },
+        );
+      }
+
+      if (error.message === "CUSTOMER_SCHEDULE_CONFLICT") {
+        return Response.json(
+          {
+            error: "You already have another appointment scheduled during this time window",
+            code: "CUSTOMER_SCHEDULE_CONFLICT",
+          },
+          { status: 409 },
+        );
+      }
+
+      if (error.message === "RESCHEDULE_NOTICE_VIOLATION") {
+        const check = (error as RescheduleError).rescheduleCheck;
+        return Response.json(
+          {
+            error:
+              check?.message ||
+              "Appointments cannot be rescheduled less than notice hours in advance",
+            code: "RESCHEDULE_NOTICE_VIOLATION",
+          },
+          { status: 400 },
+        );
+      }
+
+      if (error.message === "PAST_APPOINTMENT") {
+        return Response.json(
+          {
+            error: "Past appointments cannot be rescheduled",
+            code: "PAST_APPOINTMENT",
+          },
+          { status: 400 },
+        );
+      }
+
+      if (error.message === "MIN_NOTICE_VIOLATION") {
+        const val = (error as RescheduleError).validation;
+        return Response.json(
+          {
+            error: val?.message || "Appointments must be booked in advance",
+            code: "MIN_NOTICE_VIOLATION",
+          },
+          { status: 400 },
+        );
+      }
+
+      if (error.message === "MAX_ADVANCE_EXCEEDED") {
+        const val = (error as RescheduleError).validation;
+        return Response.json(
+          {
+            error: val?.message || "Appointments cannot be booked this far in advance",
+            code: "MAX_ADVANCE_EXCEEDED",
+          },
+          { status: 400 },
         );
       }
     }

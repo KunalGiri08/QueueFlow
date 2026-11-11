@@ -249,6 +249,57 @@ describe("POST /api/organizations/[organizationId]/services", () => {
     });
   });
 
+  it("supports configuring scheduling parameters during service creation", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockServiceCreate.mockResolvedValue({
+      id: "service-sched",
+      name: "Appointment Service",
+      organizationId,
+      isActive: true,
+      durationMinutes: 45,
+      bufferMinutes: 10,
+      minNoticeHours: 4,
+      maxAdvanceDays: 60,
+      slotCapacity: 2,
+      cancellationNoticeHours: 6,
+    });
+
+    const response = await POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Appointment Service",
+          durationMinutes: 45,
+          bufferMinutes: 10,
+          minNoticeHours: 4,
+          maxAdvanceDays: 60,
+          slotCapacity: 2,
+          cancellationNoticeHours: 6,
+        }),
+      }),
+      createParams(),
+    );
+
+    expect(response.status).toBe(201);
+    expect(mockServiceCreate).toHaveBeenCalledWith({
+      data: {
+        name: "Appointment Service",
+        description: undefined,
+        organizationId,
+        isActive: true,
+        admissionCutoffMinutes: undefined,
+        durationMinutes: 45,
+        bufferMinutes: 10,
+        minNoticeHours: 4,
+        maxAdvanceDays: 60,
+        slotCapacity: 2,
+        cancellationNoticeHours: 6,
+      },
+    });
+  });
+
   it("rejects service creation with invalid admissionCutoffMinutes (< 0 or > 480)", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
     mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });

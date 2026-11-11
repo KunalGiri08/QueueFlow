@@ -89,6 +89,24 @@ export async function PATCH(
         ...(result.data.admissionCutoffMinutes !== undefined && {
           admissionCutoffMinutes: result.data.admissionCutoffMinutes,
         }),
+        ...(result.data.durationMinutes !== undefined && {
+          durationMinutes: result.data.durationMinutes,
+        }),
+        ...(result.data.bufferMinutes !== undefined && {
+          bufferMinutes: result.data.bufferMinutes,
+        }),
+        ...(result.data.minNoticeHours !== undefined && {
+          minNoticeHours: result.data.minNoticeHours,
+        }),
+        ...(result.data.maxAdvanceDays !== undefined && {
+          maxAdvanceDays: result.data.maxAdvanceDays,
+        }),
+        ...(result.data.slotCapacity !== undefined && {
+          slotCapacity: result.data.slotCapacity,
+        }),
+        ...(result.data.cancellationNoticeHours !== undefined && {
+          cancellationNoticeHours: result.data.cancellationNoticeHours,
+        }),
       },
     });
 

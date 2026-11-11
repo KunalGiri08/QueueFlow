@@ -77,9 +77,15 @@ model Service {
   name           String
   description    String?
   organizationId String
-  isActive               Boolean  @default(true)
-  admissionCutoffMinutes Int?
-  createdAt              DateTime @default(now())
+  isActive                Boolean  @default(true)
+  admissionCutoffMinutes  Int?
+  durationMinutes         Int      @default(30)
+  bufferMinutes           Int      @default(0)
+  minNoticeHours          Int      @default(2)
+  maxAdvanceDays          Int      @default(30)
+  slotCapacity            Int      @default(1)
+  cancellationNoticeHours Int      @default(2)
+  createdAt               DateTime @default(now())
   updatedAt              DateTime @updatedAt
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -137,19 +143,22 @@ model Ticket {
 }
 
 model Appointment {
-  id          String            @id @default(cuid())
-  scheduledAt DateTime
-  status      AppointmentStatus @default(BOOKED)
-  serviceId   String
-  userId      String
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  id              String            @id @default(cuid())
+  scheduledAt     DateTime
+  durationMinutes Int               @default(30)
+  status          AppointmentStatus @default(BOOKED)
+  serviceId       String
+  userId          String
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, scheduledAt])
   @@index([serviceId, scheduledAt])
+  @@index([userId, scheduledAt, status])
+  @@index([serviceId, scheduledAt, status])
 }
 
 model Counter {

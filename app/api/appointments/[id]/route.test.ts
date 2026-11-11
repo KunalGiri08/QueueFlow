@@ -101,6 +101,19 @@ describe("PATCH /api/appointments/[id]", () => {
     vi.clearAllMocks();
     mockFindUniqueOrThrow.mockReset();
     mockServiceFindUnique.mockResolvedValue(defaultOpenOrg);
+    mockQueryRaw.mockImplementation(async (strings: TemplateStringsArray | string) => {
+      const text = Array.isArray(strings) ? strings.join(" ") : String(strings);
+      if (text.includes('"User"')) {
+        return [{ id: "user-123" }];
+      }
+      if (text.includes('"Appointment"')) {
+        return [{ id: "appointment-123" }];
+      }
+      if (text.includes('"Service"')) {
+        return [{ id: "svc-1", isActive: true }];
+      }
+      return [{ id: "mock-id" }];
+    });
     mockTransaction.mockImplementation(async (callback) => {
       const mockTx = {
         $queryRaw: mockQueryRaw,
@@ -272,9 +285,89 @@ describe("PATCH /api/appointments/[id]", () => {
   });
 
 
+  it("enforces lock ordering: User row lock is acquired before Appointment and Service row locks", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
+    const lockCalls: string[] = [];
+
+    mockQueryRaw.mockImplementation(async (strings: TemplateStringsArray | string) => {
+      const text = Array.isArray(strings) ? strings.join(" ") : String(strings);
+      if (text.includes('"User"')) {
+        lockCalls.push("User");
+        return [{ id: "user-123" }];
+      }
+      if (text.includes('"Appointment"')) {
+        lockCalls.push("Appointment");
+        return [{ id: "appointment-123" }];
+      }
+      if (text.includes('"Service"')) {
+        lockCalls.push("Service");
+        return [{ id: "svc-1", isActive: true }];
+      }
+      return [{ id: "mock-id" }];
+    });
+
+    mockFindUniqueOrThrow.mockResolvedValue({
+      id: "appointment-123",
+      userId: "user-123",
+      status: "BOOKED",
+      serviceId: "svc-1",
+      scheduledAt: new Date(Date.now() + 86_400_000 * 2),
+      durationMinutes: 30,
+    });
+    mockAppointmentFindFirst.mockResolvedValue(null);
+    mockAppointmentUpdateMany.mockResolvedValue({ count: 1 });
+
+    const response = await PATCH(
+      new Request("http://localhost/api/appointments/appointment-123", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduledAt: futureDate }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    expect(lockCalls).toEqual(["User", "Appointment", "Service"]);
+  });
+
+  it("returns 404 when the user does not exist in the database", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-ghost" });
+    mockQueryRaw.mockImplementation(async (strings: TemplateStringsArray | string) => {
+      const text = Array.isArray(strings) ? strings.join(" ") : String(strings);
+      if (text.includes('"User"')) {
+        return [];
+      }
+      if (text.includes('"Appointment"')) {
+        return [{ id: "appointment-123" }];
+      }
+      return [{ id: "svc-1", isActive: true }];
+    });
+
+    const response = await PATCH(
+      new Request("http://localhost/api/appointments/appointment-123", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduledAt: futureDate }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "User not found" });
+  });
+
   it("returns 404 when the appointment does not exist", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
-    mockQueryRaw.mockResolvedValue([]);
+    mockQueryRaw.mockImplementation(async (strings: TemplateStringsArray | string) => {
+      const text = Array.isArray(strings) ? strings.join(" ") : String(strings);
+      if (text.includes('"User"')) {
+        return [{ id: "user-123" }];
+      }
+      if (text.includes('"Appointment"')) {
+        return [];
+      }
+      return [{ id: "svc-1", isActive: true }];
+    });
 
     const response = await PATCH(
       new Request("http://localhost/api/appointments/appointment-123", {
@@ -341,9 +434,19 @@ describe("PATCH /api/appointments/[id]", () => {
 
   it("returns 400 when the appointment's parent service is inactive", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
-    mockQueryRaw
-      .mockResolvedValueOnce([{ id: "appointment-123" }])
-      .mockResolvedValueOnce([{ id: "svc-1", isActive: false }]);
+    mockQueryRaw.mockImplementation(async (strings: TemplateStringsArray | string) => {
+      const text = Array.isArray(strings) ? strings.join(" ") : String(strings);
+      if (text.includes('"User"')) {
+        return [{ id: "user-123" }];
+      }
+      if (text.includes('"Appointment"')) {
+        return [{ id: "appointment-123" }];
+      }
+      if (text.includes('"Service"')) {
+        return [{ id: "svc-1", isActive: false }];
+      }
+      return [{ id: "mock-id" }];
+    });
     mockFindUniqueOrThrow.mockResolvedValue({
       id: "appointment-123",
       userId: "user-123",
@@ -760,6 +863,39 @@ describe("PATCH /api/appointments/[id]", () => {
       expect(await response.json()).toEqual({
         error: "This appointment time slot is already booked",
       });
+      expect(mockAppointmentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("rejects rescheduling when current appointment is within notice window", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
+      mockQueryRaw.mockResolvedValue([{ id: "appointment-123" }]);
+      mockServiceFindUnique.mockResolvedValue({
+        ...defaultOpenOrg,
+        cancellationNoticeHours: 4,
+      });
+
+      // Current appointment is only 1 hour away
+      const currentAppointment = {
+        id: "appointment-123",
+        userId: "user-123",
+        status: "BOOKED",
+        serviceId: "svc-1",
+        scheduledAt: new Date(Date.now() + 1 * 3600 * 1000),
+      };
+      mockFindUniqueOrThrow.mockResolvedValue(currentAppointment);
+
+      const response = await PATCH(
+        new Request("http://localhost/api/appointments/appointment-123", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scheduledAt: futureDate }),
+        }),
+        { params },
+      );
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.code).toBe("RESCHEDULE_NOTICE_VIOLATION");
       expect(mockAppointmentUpdateMany).not.toHaveBeenCalled();
     });
   });

@@ -43,6 +43,22 @@ function getFutureOffsetDate(daysAhead = 1): { offsetDate: string; parsedDate: D
   return { offsetDate, parsedDate: new Date(offsetDate) };
 }
 
+const defaultOpenOrg = {
+  id: "org-1",
+  name: "Test Organization",
+  timezone: "Asia/Kolkata",
+  scheduleIntervals: [
+    { id: "int-0", dayOfWeek: 0, startTime: "00:00", endTime: "23:59", isActive: true },
+    { id: "int-1", dayOfWeek: 1, startTime: "00:00", endTime: "23:59", isActive: true },
+    { id: "int-2", dayOfWeek: 2, startTime: "00:00", endTime: "23:59", isActive: true },
+    { id: "int-3", dayOfWeek: 3, startTime: "00:00", endTime: "23:59", isActive: true },
+    { id: "int-4", dayOfWeek: 4, startTime: "00:00", endTime: "23:59", isActive: true },
+    { id: "int-5", dayOfWeek: 5, startTime: "00:00", endTime: "23:59", isActive: true },
+    { id: "int-6", dayOfWeek: 6, startTime: "00:00", endTime: "23:59", isActive: true },
+  ],
+  closures: [],
+};
+
 describe("POST /api/appointments", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -60,27 +76,22 @@ describe("POST /api/appointments", () => {
       return callback(mockTx);
     });
 
-    const defaultOpenOrg = {
-      id: "org-1",
-      name: "Test Organization",
-      timezone: "Asia/Kolkata",
-      scheduleIntervals: [
-        { id: "int-0", dayOfWeek: 0, startTime: "00:00", endTime: "23:59", isActive: true },
-        { id: "int-1", dayOfWeek: 1, startTime: "00:00", endTime: "23:59", isActive: true },
-        { id: "int-2", dayOfWeek: 2, startTime: "00:00", endTime: "23:59", isActive: true },
-        { id: "int-3", dayOfWeek: 3, startTime: "00:00", endTime: "23:59", isActive: true },
-        { id: "int-4", dayOfWeek: 4, startTime: "00:00", endTime: "23:59", isActive: true },
-        { id: "int-5", dayOfWeek: 5, startTime: "00:00", endTime: "23:59", isActive: true },
-        { id: "int-6", dayOfWeek: 6, startTime: "00:00", endTime: "23:59", isActive: true },
-      ],
-      closures: [],
-    };
-
     mockServiceFindUnique.mockResolvedValue({
       id: "svc-1",
       name: "General Consultation",
       isActive: true,
       organization: defaultOpenOrg,
+    });
+
+    mockQueryRaw.mockImplementation(async (strings: TemplateStringsArray | string) => {
+      const text = Array.isArray(strings) ? strings.join(" ") : String(strings);
+      if (text.includes('"User"')) {
+        return [{ id: "user-123" }];
+      }
+      if (text.includes('"Service"')) {
+        return [{ id: "svc-1", isActive: true }];
+      }
+      return [{ id: "mock-id" }];
     });
   });
 
@@ -255,9 +266,86 @@ describe("POST /api/appointments", () => {
   });
 
 
+  it("enforces lock ordering: User row lock is acquired before Service row lock", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-customer-x" });
+    const lockCalls: string[] = [];
+
+    mockQueryRaw.mockImplementation(async (strings: TemplateStringsArray | string) => {
+      const text = Array.isArray(strings) ? strings.join(" ") : String(strings);
+      if (text.includes('"User"')) {
+        lockCalls.push("User");
+        return [{ id: "user-customer-x" }];
+      }
+      if (text.includes('"Service"')) {
+        lockCalls.push("Service");
+        return [{ id: "svc-1", isActive: true }];
+      }
+      return [{ id: "mock-id" }];
+    });
+
+    const { offsetDate, parsedDate } = getFutureOffsetDate();
+    mockAppointmentFindFirst.mockResolvedValue(null);
+    mockAppointmentCreate.mockResolvedValue({
+      id: "appointment-new",
+      serviceId: "svc-1",
+      userId: "user-customer-x",
+      scheduledAt: parsedDate,
+      status: "BOOKED",
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/appointments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serviceId: "svc-1",
+          scheduledAt: offsetDate,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(lockCalls).toEqual(["User", "Service"]);
+  });
+
+  it("returns 404 when the user does not exist in the database", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-ghost" });
+    mockQueryRaw.mockImplementation(async (strings: TemplateStringsArray | string) => {
+      const text = Array.isArray(strings) ? strings.join(" ") : String(strings);
+      if (text.includes('"User"')) {
+        return [];
+      }
+      return [{ id: "svc-1", isActive: true }];
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/appointments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serviceId: "svc-1",
+          scheduledAt: futureDate,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "User not found" });
+    expect(mockAppointmentFindFirst).not.toHaveBeenCalled();
+  });
+
   it("returns 404 when the service does not exist", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-123" });
-    mockQueryRaw.mockResolvedValue([]);
+    mockQueryRaw.mockImplementation(async (strings: TemplateStringsArray | string) => {
+      const text = Array.isArray(strings) ? strings.join(" ") : String(strings);
+      if (text.includes('"User"')) {
+        return [{ id: "user-123" }];
+      }
+      if (text.includes('"Service"')) {
+        return [];
+      }
+      return [{ id: "mock-id" }];
+    });
 
     const response = await POST(
       new Request("http://localhost/api/appointments", {
@@ -642,6 +730,138 @@ describe("POST /api/appointments", () => {
       expect(response.status).toBe(409);
       const data = await response.json();
       expect(data.error).toBe("This appointment time slot is already booked");
+      expect(mockAppointmentCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects booking when service minNoticeHours is violated", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: "user-cust" });
+      mockQueryRaw.mockResolvedValue([{ id: "svc-1" }]);
+      // Service requires 12 hours notice
+      mockServiceFindUnique.mockResolvedValue({
+        id: "svc-1",
+        name: "General Consultation",
+        isActive: true,
+        minNoticeHours: 12,
+        organization: defaultOpenOrg,
+      });
+
+      // 4 hours in the future
+      const shortNoticeDate = new Date(Date.now() + 4 * 3600 * 1000).toISOString();
+
+      const response = await POST(
+        new Request("http://localhost/api/appointments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            serviceId: "svc-1",
+            scheduledAt: shortNoticeDate,
+          }),
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.code).toBe("MIN_NOTICE_VIOLATION");
+      expect(mockAppointmentCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects booking when service maxAdvanceDays is violated", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: "user-cust" });
+      mockQueryRaw.mockResolvedValue([{ id: "svc-1" }]);
+      // Service only allows booking up to 7 days in advance
+      mockServiceFindUnique.mockResolvedValue({
+        id: "svc-1",
+        name: "General Consultation",
+        isActive: true,
+        maxAdvanceDays: 7,
+        organization: defaultOpenOrg,
+      });
+
+      // 14 days in the future
+      const farAheadDate = new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString();
+
+      const response = await POST(
+        new Request("http://localhost/api/appointments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            serviceId: "svc-1",
+            scheduledAt: farAheadDate,
+          }),
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.code).toBe("MAX_ADVANCE_EXCEEDED");
+      expect(mockAppointmentCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects booking when customer has another overlapping appointment (cross-service conflict)", async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: "user-cust" });
+      mockQueryRaw.mockResolvedValue([{ id: "svc-1" }]);
+      mockServiceFindUnique.mockResolvedValue({
+        id: "svc-1",
+        name: "Service A",
+        isActive: true,
+        durationMinutes: 30,
+        organization: {
+          id: "org-1",
+          timezone: "UTC",
+          scheduleIntervals: [
+            { dayOfWeek: 0, startTime: "00:00", endTime: "23:59", isActive: true },
+            { dayOfWeek: 1, startTime: "00:00", endTime: "23:59", isActive: true },
+            { dayOfWeek: 2, startTime: "00:00", endTime: "23:59", isActive: true },
+            { dayOfWeek: 3, startTime: "00:00", endTime: "23:59", isActive: true },
+            { dayOfWeek: 4, startTime: "00:00", endTime: "23:59", isActive: true },
+            { dayOfWeek: 5, startTime: "00:00", endTime: "23:59", isActive: true },
+            { dayOfWeek: 6, startTime: "00:00", endTime: "23:59", isActive: true },
+          ],
+          closures: [],
+        },
+      });
+
+      const { offsetDate, parsedDate } = getFutureOffsetDate();
+
+      // Custom transaction mock with findMany supporting cross-service user check
+      mockTransaction.mockImplementationOnce(async (callback) => {
+        const mockTx = {
+          $queryRaw: mockQueryRaw,
+          service: { findUnique: mockServiceFindUnique },
+          appointment: {
+            findMany: async (args: { where?: { serviceId?: string; userId?: string } }) => {
+              if (args?.where?.serviceId) return []; // No service conflict
+              if (args?.where?.userId) {
+                return [
+                  {
+                    id: "existing-user-appt",
+                    scheduledAt: parsedDate,
+                    durationMinutes: 30,
+                  },
+                ];
+              }
+              return [];
+            },
+            create: mockAppointmentCreate,
+          },
+        };
+        return callback(mockTx);
+      });
+
+      const response = await POST(
+        new Request("http://localhost/api/appointments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            serviceId: "svc-1",
+            scheduledAt: offsetDate,
+          }),
+        }),
+      );
+
+      expect(response.status).toBe(409);
+      const data = await response.json();
+      expect(data.code).toBe("CUSTOMER_SCHEDULE_CONFLICT");
       expect(mockAppointmentCreate).not.toHaveBeenCalled();
     });
   });

@@ -1,5 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/current-user";
+import {
+  checkCancellationEligibility,
+  type CancellationEligibilityResult,
+} from "@/lib/services/appointment.service";
+
+interface CancellationError extends Error {
+  cancelCheck?: CancellationEligibilityResult;
+}
 
 export async function PATCH(
   request: Request,
@@ -33,6 +41,7 @@ export async function PATCH(
           service: {
             select: {
               organizationId: true,
+              cancellationNoticeHours: true,
             },
           },
         },
@@ -69,6 +78,23 @@ export async function PATCH(
 
       if (!isOwner && !isAuthorizedStaffOrAdmin) {
         throw new Error("APPOINTMENT_FORBIDDEN");
+      }
+
+      const eligibility = checkCancellationEligibility({
+        appointment,
+        cancellationNoticeHours: appointment.service?.cancellationNoticeHours,
+        currentUser: {
+          id: currentUser.id,
+          isStaffOrAdmin: isAuthorizedStaffOrAdmin,
+        },
+      });
+
+      if (!eligibility.canCancel) {
+        const error = new Error(
+          eligibility.code || "CANCELLATION_FORBIDDEN",
+        ) as CancellationError;
+        error.cancelCheck = eligibility;
+        throw error;
       }
 
       if (appointment.status !== "BOOKED") {
@@ -115,6 +141,29 @@ export async function PATCH(
         return Response.json(
           { error: "Appointment cannot be cancelled in its current state" },
           { status: 409 },
+        );
+      }
+
+      if (error.message === "CANCELLATION_NOTICE_VIOLATION") {
+        const check = (error as CancellationError).cancelCheck;
+        return Response.json(
+          {
+            error:
+              check?.message ||
+              "Appointments cannot be cancelled less than notice hours in advance",
+            code: "CANCELLATION_NOTICE_VIOLATION",
+          },
+          { status: 400 },
+        );
+      }
+
+      if (error.message === "PAST_APPOINTMENT") {
+        return Response.json(
+          {
+            error: "Past appointments cannot be cancelled",
+            code: "PAST_APPOINTMENT",
+          },
+          { status: 400 },
         );
       }
     }
