@@ -12,6 +12,7 @@
     "setup:local-staff": "tsx scripts/setup-local-staff.ts",
     "setup:local-admin": "tsx scripts/setup-local-admin.ts",
     "setup:test-db": "tsx scripts/setup-test-db.ts",
+    "reset:org-data": "tsx scripts/reset-organization-data.ts",
     "postinstall": "prisma generate --config prisma7.config.ts"
   },
   "dependencies": {
