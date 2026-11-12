@@ -55,9 +55,10 @@ export default function MyAppointmentsPage() {
   const [reschedulingAppointment, setReschedulingAppointment] =
     useState<CustomerAppointment | null>(null);
   const [isRescheduling, setIsRescheduling] = useState(false);
-  const [rescheduleDialogError, setRescheduleDialogError] = useState<
-    string | null
-  >(null);
+  const [rescheduleDialogError, setRescheduleDialogError] = useState<{
+    message: string;
+    status?: number;
+  } | null>(null);
 
   const [actionError, setActionError] = useState<{
     appointmentId: string;
@@ -262,9 +263,11 @@ export default function MyAppointmentsPage() {
 
       if (response.status === 409) {
         const data = await response.json().catch(() => null);
-        setRescheduleDialogError(
-          data?.error || "This appointment time slot is already booked.",
-        );
+        setRescheduleDialogError({
+          message:
+            data?.error || "This appointment time slot is already booked.",
+          status: 409,
+        });
         if (
           data?.error ===
           "Appointment cannot be rescheduled in its current state"
@@ -276,10 +279,12 @@ export default function MyAppointmentsPage() {
 
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        setRescheduleDialogError(
-          data?.error ||
+        setRescheduleDialogError({
+          message:
+            data?.error ||
             "Unable to reschedule appointment at this time. Please try again.",
-        );
+          status: response.status,
+        });
         return;
       }
 
@@ -301,9 +306,10 @@ export default function MyAppointmentsPage() {
       setReschedulingAppointment(null);
       setRescheduleDialogError(null);
     } catch {
-      setRescheduleDialogError(
-        "Unable to connect to the server. Please check your connection and try again.",
-      );
+      setRescheduleDialogError({
+        message:
+          "Unable to connect to the server. Please check your connection and try again.",
+      });
     } finally {
       isReschedulingRef.current = false;
       setIsRescheduling(false);
@@ -394,7 +400,8 @@ export default function MyAppointmentsPage() {
         isOpen={Boolean(reschedulingAppointment)}
         appointment={reschedulingAppointment}
         isSubmitting={isRescheduling}
-        error={rescheduleDialogError}
+        error={rescheduleDialogError?.message ?? null}
+        errorStatus={rescheduleDialogError?.status ?? null}
         onConfirm={handleConfirmReschedule}
         onClose={handleCloseRescheduleDialog}
       />
