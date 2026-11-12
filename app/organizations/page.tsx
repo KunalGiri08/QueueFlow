@@ -3,7 +3,9 @@
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import Link from "next/link";
+import { useAuth } from "@clerk/nextjs";
 import { Navbar } from "@/components/Navbar";
+import { CreateOrganizationDialog } from "@/components/admin/CreateOrganizationDialog";
 
 interface PublicOrganization {
   id: string;
@@ -53,7 +55,15 @@ function OrganizationsLoadingSkeleton() {
   );
 }
 
-function OrganizationsContent() {
+interface OrganizationsContentProps {
+  onCreateOrg?: () => void;
+  isSignedIn?: boolean;
+}
+
+function OrganizationsContent({
+  onCreateOrg,
+  isSignedIn = false,
+}: OrganizationsContentProps = {}) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -240,7 +250,7 @@ function OrganizationsContent() {
               ? "No organizations found on this page."
               : "There are currently no organizations available on QueueFlow. Please check back later."}
           </p>
-          {currentPage > 1 && (
+          {currentPage > 1 ? (
             <button
               type="button"
               onClick={() => handlePageChange(1)}
@@ -248,7 +258,31 @@ function OrganizationsContent() {
             >
               Back to Page 1
             </button>
-          )}
+          ) : isSignedIn && onCreateOrg ? (
+            <div className="mt-6 flex justify-center">
+              <button
+                type="button"
+                onClick={onCreateOrg}
+                className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
+              >
+                <svg
+                  className="mr-2 h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth="2"
+                  stroke="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 4.5v15m7.5-7.5h-15"
+                  />
+                </svg>
+                Create Organization
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -316,25 +350,70 @@ function OrganizationsContent() {
 }
 
 export default function OrganizationsPage() {
+  const router = useRouter();
+  const { isSignedIn } = useAuth();
+  const [isCreateOrgOpen, setIsCreateOrgOpen] = useState(false);
+
+  const handleOrganizationCreated = () => {
+    setIsCreateOrgOpen(false);
+    router.push("/admin");
+  };
+
   return (
     <>
       <Navbar />
       <main className="min-h-screen bg-gray-50/50 py-12 px-4 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-7xl">
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-              Explore Organizations
-            </h1>
-            <p className="mt-2 text-base text-gray-600 sm:text-lg">
-              Discover organizations using QueueFlow and get started with virtual queuing.
-            </p>
+          <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
+                Explore Organizations
+              </h1>
+              <p className="mt-2 text-base text-gray-600 sm:text-lg">
+                Discover organizations using QueueFlow and get started with virtual queuing.
+              </p>
+            </div>
+            {isSignedIn && (
+              <div className="flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateOrgOpen(true)}
+                  className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
+                >
+                  <svg
+                    className="mr-2 h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    strokeWidth="2"
+                    stroke="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 4.5v15m7.5-7.5h-15"
+                    />
+                  </svg>
+                  Create Organization
+                </button>
+              </div>
+            )}
           </div>
 
           <Suspense fallback={<OrganizationsLoadingSkeleton />}>
-            <OrganizationsContent />
+            <OrganizationsContent
+              onCreateOrg={() => setIsCreateOrgOpen(true)}
+              isSignedIn={Boolean(isSignedIn)}
+            />
           </Suspense>
         </div>
       </main>
+
+      <CreateOrganizationDialog
+        isOpen={isCreateOrgOpen}
+        onClose={() => setIsCreateOrgOpen(false)}
+        onSuccess={handleOrganizationCreated}
+      />
     </>
   );
 }

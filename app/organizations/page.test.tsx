@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, within } from "@testing-library/react";
 import OrganizationsPage from "./page";
 
 // 1. Mock Next.js navigation with dynamic searchParams
@@ -14,7 +14,17 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => mockSearchParams,
 }));
 
-// 2. Mock Navbar to isolate page testing
+// 2. Mock Clerk auth state
+let mockAuthState = {
+  isSignedIn: false,
+  isLoaded: true,
+};
+
+vi.mock("@clerk/nextjs", () => ({
+  useAuth: () => mockAuthState,
+}));
+
+// 3. Mock Navbar to isolate page testing
 vi.mock("@/components/Navbar", () => ({
   Navbar: () => <nav data-testid="navbar" />,
 }));
@@ -67,6 +77,10 @@ describe("app/organizations/page", () => {
 
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    mockAuthState = {
+      isSignedIn: false,
+      isLoaded: true,
+    };
   });
 
   afterEach(() => {
@@ -364,6 +378,134 @@ describe("app/organizations/page", () => {
       unmount();
 
       expect(capturedSignal!.aborted).toBe(true);
+    });
+  });
+
+  describe("Organization creation flow", () => {
+    it("does not display Create Organization button for unauthenticated users", async () => {
+      mockAuthState = { isSignedIn: false, isLoaded: true };
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          organizations: [mockOrgPage1],
+          pagination: { page: 1, limit: 20 },
+        }),
+      );
+
+      render(<OrganizationsPage />);
+      await screen.findByText("Apex Healthcare");
+
+      expect(
+        screen.queryByRole("button", { name: /^create organization$/i }),
+      ).toBeNull();
+    });
+
+    it("displays Create Organization button in header when user is authenticated", async () => {
+      mockAuthState = { isSignedIn: true, isLoaded: true };
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          organizations: [mockOrgPage1],
+          pagination: { page: 1, limit: 20 },
+        }),
+      );
+
+      render(<OrganizationsPage />);
+      await screen.findByText("Apex Healthcare");
+
+      const createBtn = screen.getByRole("button", {
+        name: /^create organization$/i,
+      });
+      expect(createBtn).toBeDefined();
+    });
+
+    it("displays Create Organization button in empty state on page 1 when user is authenticated", async () => {
+      mockAuthState = { isSignedIn: true, isLoaded: true };
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          organizations: [],
+          pagination: { page: 1, limit: 20 },
+        }),
+      );
+
+      render(<OrganizationsPage />);
+      await screen.findByText("No organizations found");
+
+      // Both header and empty state render a Create Organization button
+      const createButtons = screen.getAllByRole("button", {
+        name: /^create organization$/i,
+      });
+      expect(createButtons.length).toBe(2);
+    });
+
+    it("opens CreateOrganizationDialog when clicking Create Organization button", async () => {
+      mockAuthState = { isSignedIn: true, isLoaded: true };
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          organizations: [mockOrgPage1],
+          pagination: { page: 1, limit: 20 },
+        }),
+      );
+
+      render(<OrganizationsPage />);
+      await screen.findByText("Apex Healthcare");
+
+      const createBtn = screen.getByRole("button", {
+        name: /^create organization$/i,
+      });
+      fireEvent.click(createBtn);
+
+      expect(screen.getByRole("dialog")).toBeDefined();
+      expect(screen.getByLabelText(/organization name/i)).toBeDefined();
+    });
+
+    it("successfully creates an organization and redirects to /admin", async () => {
+      mockAuthState = { isSignedIn: true, isLoaded: true };
+      fetchMock.mockImplementation((url: RequestInfo | URL, init?: RequestInit) => {
+        const urlString = typeof url === "string" ? url : url.toString();
+        if (urlString.includes("/api/organizations") && init?.method === "POST") {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "new-org-123",
+                name: "New Clinic",
+                slug: "new-clinic",
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              },
+              201,
+            ),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse({
+            organizations: [mockOrgPage1],
+            pagination: { page: 1, limit: 20 },
+          }),
+        );
+      });
+
+      render(<OrganizationsPage />);
+      await screen.findByText("Apex Healthcare");
+
+      // Open dialog
+      const openBtn = screen.getByRole("button", {
+        name: /^create organization$/i,
+      });
+      fireEvent.click(openBtn);
+
+      const dialog = screen.getByRole("dialog");
+      const nameInput = screen.getByLabelText(/organization name/i);
+      fireEvent.change(nameInput, { target: { value: "New Clinic" } });
+
+      // Inside dialog, click Create Organization submit button
+      const submitBtn = within(dialog).getByRole("button", {
+        name: /^create organization$/i,
+      });
+      fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith("/admin");
+      });
+      expect(screen.queryByRole("dialog")).toBeNull();
     });
   });
 });
