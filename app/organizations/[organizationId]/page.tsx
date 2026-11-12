@@ -155,7 +155,10 @@ function OrganizationServicesContent({
     null,
   );
   const [isBooking, setIsBooking] = useState(false);
-  const [bookingError, setBookingError] = useState<string | null>(null);
+  const [bookingError, setBookingError] = useState<{
+    message: string;
+    status?: number;
+  } | null>(null);
   const [bookingSuccessData, setBookingSuccessData] =
     useState<BookedAppointmentSuccessData | null>(null);
 
@@ -566,9 +569,11 @@ function OrganizationServicesContent({
           return;
         }
 
-        setBookingError(
-          "Appointment was created, but response was invalid. Please check your appointments.",
-        );
+        setBookingError({
+          message:
+            "Appointment was created, but response was invalid. Please check your appointments.",
+          status: 500,
+        });
         return;
       }
 
@@ -596,7 +601,10 @@ function OrganizationServicesContent({
           // fallback to default message
         }
 
-        setBookingError(errorMessage);
+        setBookingError({
+          message: errorMessage,
+          status: 409,
+        });
         return;
       }
 
@@ -631,28 +639,34 @@ function OrganizationServicesContent({
           // fallback to default message
         }
 
-        setBookingError(errorMessage);
+        setBookingError({
+          message: errorMessage,
+          status: 400,
+        });
         return;
       }
 
       if (response.status === 404) {
-        setBookingError(
-          "This service is no longer available. Please refresh the page.",
-        );
+        setBookingError({
+          message: "This service is no longer available. Please refresh the page.",
+          status: 404,
+        });
         return;
       }
 
-      setBookingError(
-        "Unable to book appointment at this time. Please try again.",
-      );
+      setBookingError({
+        message: "Unable to book appointment at this time. Please try again.",
+        status: response.status,
+      });
     } catch {
       if (!isMountedRef.current || bookingGenRef.current !== currentBookingGen) {
         return;
       }
 
-      setBookingError(
-        "Unable to connect to the server. Please check your connection and try again.",
-      );
+      setBookingError({
+        message:
+          "Unable to connect to the server. Please check your connection and try again.",
+      });
     } finally {
       isBookingRef.current = false;
       if (isMountedRef.current && bookingGenRef.current === currentBookingGen) {
@@ -910,7 +924,8 @@ function OrganizationServicesContent({
           service={bookingService}
           organization={data.organization}
           isSubmitting={isBooking || !isLoaded}
-          error={bookingError}
+          error={bookingError?.message ?? null}
+          errorStatus={bookingError?.status ?? null}
           successData={bookingSuccessData}
           onConfirm={handleConfirmBookAppointment}
           onClose={handleCloseBookAppointment}

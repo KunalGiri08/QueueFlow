@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import {
-  formatDateTime,
-  toZonedDatetimeString,
-  zonedDatetimeToUtc,
-} from "@/lib/formatters/date";
+import { formatDateTime } from "@/lib/formatters/date";
+import { useAvailableSlots, getTodayInTimezone } from "@/hooks/useAvailableSlots";
+import { SlotPickerGrid } from "./SlotPickerGrid";
+import type { AvailableSlot } from "@/hooks/useAvailableSlots";
 import type {
   BookAppointmentService,
   BookAppointmentOrganization,
@@ -17,13 +16,11 @@ export interface BookAppointmentDialogProps {
   organization: BookAppointmentOrganization | null;
   isSubmitting: boolean;
   error: string | null;
+  errorStatus?: number | null;
   successData: BookedAppointmentSuccessData | null;
   onConfirm: (scheduledAtIso: string) => void;
   onClose: () => void;
 }
-
-const MAX_DAYS = 365;
-const MAX_MS = MAX_DAYS * 24 * 60 * 60 * 1000;
 
 export function BookAppointmentDialog({
   isOpen,
@@ -31,13 +28,28 @@ export function BookAppointmentDialog({
   organization,
   isSubmitting,
   error,
+  errorStatus,
   successData,
   onConfirm,
   onClose,
 }: BookAppointmentDialogProps) {
-  const [selectedDatetime, setSelectedDatetime] = useState<string>("");
+  const orgTimezone = organization?.timezone || "Asia/Kolkata";
+
+  const {
+    selectedDate,
+    slots,
+    isLoading: isSlotsLoading,
+    error: slotsError,
+    setSelectedDate,
+    refreshSlots,
+  } = useAvailableSlots({
+    organizationId: organization?.id,
+    serviceId: service?.id,
+    timezone: orgTimezone,
+  });
+
+  const [selectedSlot, setSelectedSlot] = useState<AvailableSlot | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   // Synchronize state during render when service or dialog state changes (React 19 pattern)
   const [prevServiceId, setPrevServiceId] = useState<string | null>(null);
@@ -45,15 +57,34 @@ export function BookAppointmentDialog({
   if (activeId !== prevServiceId) {
     setPrevServiceId(activeId);
     setValidationError(null);
-    setSelectedDatetime("");
+    setSelectedSlot(null);
   }
 
-  // Focus input when opened and not showing success
-  useEffect(() => {
-    if (isOpen && !successData) {
-      inputRef.current?.focus();
+  // Clear contested slot during render when an HTTP 409 conflict error arrives (React 19 pattern)
+  const [prevErrorState, setPrevErrorState] = useState<{
+    error: string | null;
+    errorStatus?: number | null;
+  }>({ error: null, errorStatus: null });
+  if (
+    error !== prevErrorState.error ||
+    errorStatus !== prevErrorState.errorStatus
+  ) {
+    setPrevErrorState({ error, errorStatus });
+    if (error && errorStatus === 409) {
+      setSelectedSlot(null);
     }
-  }, [isOpen, successData]);
+  }
+
+  // Refresh slots side-effect ONLY when a server HTTP 409 conflict error arrives
+  const prevConflictRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (error && errorStatus === 409 && error !== prevConflictRef.current) {
+      prevConflictRef.current = error;
+      void refreshSlots();
+    } else if (!error || errorStatus !== 409) {
+      prevConflictRef.current = null;
+    }
+  }, [error, errorStatus, refreshSlots]);
 
   // Handle Escape key to dismiss dialog
   useEffect(() => {
@@ -71,48 +102,38 @@ export function BookAppointmentDialog({
     return null;
   }
 
-  const orgTimezone = organization.timezone || "Asia/Kolkata";
-  const now = new Date();
-  const minLocal = toZonedDatetimeString(
-    new Date(now.getTime() + 60 * 1000),
-    orgTimezone,
-  );
-  const maxLocal = toZonedDatetimeString(
-    new Date(now.getTime() + MAX_MS),
-    orgTimezone,
-  );
+  const minDate = getTodayInTimezone(orgTimezone);
+
+  const handleDateChange = (newDate: string) => {
+    setSelectedDate(newDate);
+    setSelectedSlot(null);
+    setValidationError(null);
+  };
+
+  const handleSelectSlot = (slot: AvailableSlot) => {
+    setSelectedSlot(slot);
+    setValidationError(null);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setValidationError(null);
 
-    if (!selectedDatetime.trim()) {
-      setValidationError("Please select a date and time.");
+    if (isSubmitting) return;
+
+    if (!selectedSlot) {
+      setValidationError("Please select an appointment time slot.");
       return;
     }
 
-    const parsedDate = zonedDatetimeToUtc(selectedDatetime, orgTimezone);
-    if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
+    if (!selectedSlot.isAvailable || selectedSlot.remainingCapacity <= 0) {
       setValidationError(
-        "The selected time is invalid or ambiguous in the organization's timezone. Please select another time.",
+        "The selected time slot is no longer available. Please choose another time.",
       );
       return;
     }
 
-    const currentTime = Date.now();
-    if (parsedDate.getTime() <= currentTime) {
-      setValidationError("Appointment must be scheduled in the future.");
-      return;
-    }
-
-    if (parsedDate.getTime() > currentTime + MAX_MS) {
-      setValidationError(
-        `Appointment cannot be scheduled more than ${MAX_DAYS} days in advance.`,
-      );
-      return;
-    }
-
-    onConfirm(parsedDate.toISOString());
+    onConfirm(selectedSlot.slotStart);
   };
 
   return (
@@ -129,7 +150,7 @@ export function BookAppointmentDialog({
         aria-modal="true"
         aria-labelledby="book-appointment-dialog-title"
         aria-describedby="book-appointment-dialog-description"
-        className="w-full max-w-md max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-gray-200 bg-white p-4 sm:p-6 shadow-xl transition-all"
+        className="w-full max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-gray-200 bg-white p-4 sm:p-6 shadow-xl transition-all"
       >
         {successData ? (
           <div className="text-center">
@@ -226,7 +247,7 @@ export function BookAppointmentDialog({
                   Book Appointment
                 </h2>
                 <p className="text-xs text-gray-500">
-                  {organization.name} • Appointment time: {orgTimezone}
+                  {organization.name} • Timezone: {orgTimezone}
                 </p>
               </div>
             </div>
@@ -243,37 +264,27 @@ export function BookAppointmentDialog({
             </p>
 
             <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-              <div>
-                <label
-                  htmlFor="booking-datetime"
-                  className="block text-xs font-semibold text-gray-700"
+              <SlotPickerGrid
+                selectedDate={selectedDate}
+                onDateChange={handleDateChange}
+                slots={slots}
+                selectedSlot={selectedSlot}
+                onSelectSlot={handleSelectSlot}
+                isLoading={isSlotsLoading}
+                timezone={orgTimezone}
+                minDate={minDate}
+                disabled={isSubmitting}
+                emptyMessage={slotsError || undefined}
+              />
+
+              {validationError && (
+                <p
+                  role="alert"
+                  className="mt-1.5 text-xs font-medium text-red-600"
                 >
-                  Date & Time
-                </label>
-                <input
-                  ref={inputRef}
-                  type="datetime-local"
-                  id="booking-datetime"
-                  aria-label="Appointment date and time"
-                  min={minLocal}
-                  max={maxLocal}
-                  value={selectedDatetime}
-                  onChange={(e) => {
-                    setSelectedDatetime(e.target.value);
-                    if (validationError) setValidationError(null);
-                  }}
-                  disabled={isSubmitting}
-                  className="mt-1.5 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:opacity-50"
-                />
-                {validationError && (
-                  <p
-                    role="alert"
-                    className="mt-1.5 text-xs font-medium text-red-600"
-                  >
-                    {validationError}
-                  </p>
-                )}
-              </div>
+                  {validationError}
+                </p>
+              )}
 
               {error && (
                 <div
@@ -295,7 +306,12 @@ export function BookAppointmentDialog({
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={
+                    isSubmitting ||
+                    !selectedSlot ||
+                    !selectedSlot.isAvailable ||
+                    selectedSlot.remainingCapacity <= 0
+                  }
                   className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isSubmitting ? (
