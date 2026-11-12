@@ -30,6 +30,12 @@ export function EditServiceDialog({
       ? String(service.admissionCutoffMinutes)
       : "",
   );
+  const [editDurationMinutes, setEditDurationMinutes] = useState(
+    service?.durationMinutes != null ? String(service.durationMinutes) : "30",
+  );
+  const [editBufferMinutes, setEditBufferMinutes] = useState(
+    service?.bufferMinutes != null ? String(service.bufferMinutes) : "0",
+  );
   const [isSaving, setIsSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
@@ -47,6 +53,16 @@ export function EditServiceDialog({
       service.admissionCutoffMinutes != null
         ? String(service.admissionCutoffMinutes)
         : "",
+    );
+    setEditDurationMinutes(
+      service.durationMinutes != null
+        ? String(service.durationMinutes)
+        : "30",
+    );
+    setEditBufferMinutes(
+      service.bufferMinutes != null
+        ? String(service.bufferMinutes)
+        : "0",
     );
     setEditError(null);
     setIsSaving(false);
@@ -101,6 +117,42 @@ export function EditServiceDialog({
       parsedCutoff = parsed;
     }
 
+    let parsedDuration = 30;
+    if (editDurationMinutes.trim() !== "") {
+      const parsed = Number(editDurationMinutes.trim());
+      if (!Number.isInteger(parsed)) {
+        setEditError("Duration minutes must be an integer.");
+        return;
+      }
+      if (parsed < 5) {
+        setEditError("Duration must be at least 5 minutes.");
+        return;
+      }
+      if (parsed > 480) {
+        setEditError("Duration cannot exceed 480 minutes (8 hours).");
+        return;
+      }
+      parsedDuration = parsed;
+    }
+
+    let parsedBuffer = 0;
+    if (editBufferMinutes.trim() !== "") {
+      const parsed = Number(editBufferMinutes.trim());
+      if (!Number.isInteger(parsed)) {
+        setEditError("Buffer minutes must be an integer.");
+        return;
+      }
+      if (parsed < 0) {
+        setEditError("Buffer minutes cannot be negative.");
+        return;
+      }
+      if (parsed > 240) {
+        setEditError("Buffer cannot exceed 240 minutes (4 hours).");
+        return;
+      }
+      parsedBuffer = parsed;
+    }
+
     isSavingRef.current = true;
     const editRequestId = ++activeEditRequestIdRef.current;
     setIsSaving(true);
@@ -115,10 +167,14 @@ export function EditServiceDialog({
         name: string;
         description: string;
         admissionCutoffMinutes: number | null;
+        durationMinutes: number;
+        bufferMinutes: number;
       } = {
         name: trimmedName,
         description: trimmedDesc,
         admissionCutoffMinutes: parsedCutoff,
+        durationMinutes: parsedDuration,
+        bufferMinutes: parsedBuffer,
       };
 
       const res = await fetch(
@@ -161,11 +217,15 @@ export function EditServiceDialog({
               name?: string[];
               description?: string[];
               admissionCutoffMinutes?: string[];
+              durationMinutes?: string[];
+              bufferMinutes?: string[];
             };
           };
         };
         const message =
           data.details?.fieldErrors?.name?.[0] ||
+          data.details?.fieldErrors?.durationMinutes?.[0] ||
+          data.details?.fieldErrors?.bufferMinutes?.[0] ||
           data.details?.fieldErrors?.admissionCutoffMinutes?.[0] ||
           data.details?.fieldErrors?.description?.[0] ||
           data.error ||
@@ -228,6 +288,14 @@ export function EditServiceDialog({
             typeof rawUpdated.admissionCutoffMinutes === "number"
               ? rawUpdated.admissionCutoffMinutes
               : null,
+          durationMinutes:
+            typeof rawUpdated.durationMinutes === "number"
+              ? rawUpdated.durationMinutes
+              : parsedDuration,
+          bufferMinutes:
+            typeof rawUpdated.bufferMinutes === "number"
+              ? rawUpdated.bufferMinutes
+              : parsedBuffer,
         };
 
         onSuccess(validUpdated);
@@ -238,6 +306,8 @@ export function EditServiceDialog({
           name: trimmedName,
           description: trimmedDesc || null,
           admissionCutoffMinutes: parsedCutoff,
+          durationMinutes: parsedDuration,
+          bufferMinutes: parsedBuffer,
         });
       }
     } catch {
@@ -387,6 +457,60 @@ export function EditServiceDialog({
             stops. Leave empty for no cutoff (unlimited admission until closing).
             Maximum 480 minutes (8 hours).
           </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label
+                htmlFor="edit-service-duration"
+                className="block text-xs font-semibold text-gray-700 mb-1"
+              >
+                Appointment Duration (Minutes)
+              </label>
+              <input
+                id="edit-service-duration"
+                type="number"
+                min="5"
+                max="480"
+                value={editDurationMinutes}
+                onChange={(e) => {
+                  setEditDurationMinutes(e.target.value);
+                  if (editError) setEditError(null);
+                }}
+                placeholder="30"
+                disabled={isSaving}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
+              />
+              <p className="mt-1 text-[11px] text-gray-500">
+                Expected appointment duration (5–480 mins).
+              </p>
+            </div>
+
+            <div>
+              <label
+                htmlFor="edit-service-buffer"
+                className="block text-xs font-semibold text-gray-700 mb-1"
+              >
+                Buffer Time (Minutes)
+              </label>
+              <input
+                id="edit-service-buffer"
+                type="number"
+                min="0"
+                max="240"
+                value={editBufferMinutes}
+                onChange={(e) => {
+                  setEditBufferMinutes(e.target.value);
+                  if (editError) setEditError(null);
+                }}
+                placeholder="0"
+                disabled={isSaving}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
+              />
+              <p className="mt-1 text-[11px] text-gray-500">
+                Additional time between consecutive appointment slots (0–240 mins).
+              </p>
+            </div>
+          </div>
 
           {editError && (
             <div

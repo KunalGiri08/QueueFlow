@@ -21,6 +21,8 @@ export function CreateServiceCard({
 
   const [newServiceName, setNewServiceName] = useState("");
   const [newServiceDescription, setNewServiceDescription] = useState("");
+  const [newServiceDuration, setNewServiceDuration] = useState("30");
+  const [newServiceBuffer, setNewServiceBuffer] = useState("0");
   const [isCreatingService, setIsCreatingService] = useState(false);
   const [serviceFormError, setServiceFormError] = useState<string | null>(null);
   const [serviceFormSuccess, setServiceFormSuccess] = useState<string | null>(null);
@@ -35,6 +37,8 @@ export function CreateServiceCard({
     setPrevOrgId(organizationId);
     setNewServiceName("");
     setNewServiceDescription("");
+    setNewServiceDuration("30");
+    setNewServiceBuffer("0");
     setServiceFormError(null);
     setServiceFormSuccess(null);
     setIsCreatingService(false);
@@ -56,6 +60,42 @@ export function CreateServiceCard({
       return;
     }
 
+    let parsedDuration = 30;
+    if (newServiceDuration.trim() !== "") {
+      const parsed = Number(newServiceDuration.trim());
+      if (!Number.isInteger(parsed)) {
+        setServiceFormError("Duration minutes must be an integer.");
+        return;
+      }
+      if (parsed < 5) {
+        setServiceFormError("Duration must be at least 5 minutes.");
+        return;
+      }
+      if (parsed > 480) {
+        setServiceFormError("Duration cannot exceed 480 minutes (8 hours).");
+        return;
+      }
+      parsedDuration = parsed;
+    }
+
+    let parsedBuffer = 0;
+    if (newServiceBuffer.trim() !== "") {
+      const parsed = Number(newServiceBuffer.trim());
+      if (!Number.isInteger(parsed)) {
+        setServiceFormError("Buffer minutes must be an integer.");
+        return;
+      }
+      if (parsed < 0) {
+        setServiceFormError("Buffer minutes cannot be negative.");
+        return;
+      }
+      if (parsed > 240) {
+        setServiceFormError("Buffer cannot exceed 240 minutes (4 hours).");
+        return;
+      }
+      parsedBuffer = parsed;
+    }
+
     isCreatingServiceRef.current = true;
     const trimmedDesc = newServiceDescription.trim();
     const creationRequestId = ++activeServiceCreationRequestIdRef.current;
@@ -65,8 +105,15 @@ export function CreateServiceCard({
 
     const targetOrgId = organizationId;
 
-    const payload: { name: string; description?: string } = {
+    const payload: {
+      name: string;
+      description?: string;
+      durationMinutes: number;
+      bufferMinutes: number;
+    } = {
       name: trimmedName,
+      durationMinutes: parsedDuration,
+      bufferMinutes: parsedBuffer,
     };
     if (trimmedDesc) {
       payload.description = trimmedDesc;
@@ -109,11 +156,18 @@ export function CreateServiceCard({
         const data = (await res.json().catch(() => ({}))) as {
           error?: string;
           details?: {
-            fieldErrors?: { name?: string[]; description?: string[] };
+            fieldErrors?: {
+              name?: string[];
+              description?: string[];
+              durationMinutes?: string[];
+              bufferMinutes?: string[];
+            };
           };
         };
         const message =
           data.details?.fieldErrors?.name?.[0] ||
+          data.details?.fieldErrors?.durationMinutes?.[0] ||
+          data.details?.fieldErrors?.bufferMinutes?.[0] ||
           data.details?.fieldErrors?.description?.[0] ||
           data.error ||
           "Invalid service data.";
@@ -172,10 +226,24 @@ export function CreateServiceCard({
               ? (newService as { admissionCutoffMinutes: number })
                   .admissionCutoffMinutes
               : null,
+          durationMinutes:
+            typeof (newService as { durationMinutes?: unknown })
+              .durationMinutes === "number"
+              ? (newService as { durationMinutes: number })
+                  .durationMinutes
+              : parsedDuration,
+          bufferMinutes:
+            typeof (newService as { bufferMinutes?: unknown })
+              .bufferMinutes === "number"
+              ? (newService as { bufferMinutes: number })
+                  .bufferMinutes
+              : parsedBuffer,
         };
 
         setNewServiceName("");
         setNewServiceDescription("");
+        setNewServiceDuration("30");
+        setNewServiceBuffer("0");
         setServiceFormSuccess(
           `Service "${validService.name}" created successfully.`,
         );
@@ -183,6 +251,8 @@ export function CreateServiceCard({
       } else {
         setNewServiceName("");
         setNewServiceDescription("");
+        setNewServiceDuration("30");
+        setNewServiceBuffer("0");
         setServiceFormSuccess(`Service "${trimmedName}" created successfully.`);
         onCreationFallback();
       }
@@ -270,6 +340,62 @@ export function CreateServiceCard({
               disabled={isCreatingService}
               className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
             />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <label
+              htmlFor="new-service-duration"
+              className="block text-xs font-medium text-gray-700 mb-1"
+            >
+              Appointment Duration (Minutes)
+            </label>
+            <input
+              id="new-service-duration"
+              type="number"
+              min="5"
+              max="480"
+              value={newServiceDuration}
+              onChange={(e) => {
+                setNewServiceDuration(e.target.value);
+                if (serviceFormError) setServiceFormError(null);
+                if (serviceFormSuccess) setServiceFormSuccess(null);
+              }}
+              placeholder="30"
+              disabled={isCreatingService}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
+            />
+            <p className="mt-1 text-[11px] text-gray-500">
+              Expected appointment duration (5–480 mins). Default is 30.
+            </p>
+          </div>
+
+          <div>
+            <label
+              htmlFor="new-service-buffer"
+              className="block text-xs font-medium text-gray-700 mb-1"
+            >
+              Buffer Time (Minutes)
+            </label>
+            <input
+              id="new-service-buffer"
+              type="number"
+              min="0"
+              max="240"
+              value={newServiceBuffer}
+              onChange={(e) => {
+                setNewServiceBuffer(e.target.value);
+                if (serviceFormError) setServiceFormError(null);
+                if (serviceFormSuccess) setServiceFormSuccess(null);
+              }}
+              placeholder="0"
+              disabled={isCreatingService}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900 disabled:bg-gray-50 disabled:text-gray-400"
+            />
+            <p className="mt-1 text-[11px] text-gray-500">
+              Additional time between consecutive appointment slots (0–240 mins).
+            </p>
           </div>
         </div>
 

@@ -7,5 +7,7 @@ export interface ServiceItem {
   createdAt: string;
   updatedAt: string;
   admissionCutoffMinutes?: number | null;
+  durationMinutes?: number | null;
+  bufferMinutes?: number | null;
 }
 

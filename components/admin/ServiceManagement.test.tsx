@@ -339,6 +339,8 @@ describe("components/admin/ServiceManagement", () => {
       expect(postPayload).toEqual({
         name: "Cardiology",
         description: "Heart and vascular clinic",
+        durationMinutes: 30,
+        bufferMinutes: 0,
       });
     });
 
@@ -380,7 +382,117 @@ describe("components/admin/ServiceManagement", () => {
       ).toBeDefined();
       expect(postPayload).toEqual({
         name: "Pediatrics",
+        durationMinutes: 30,
+        bufferMinutes: 0,
       });
+    });
+
+    it("submits the new service with custom duration and buffer minutes", async () => {
+      let postPayload: unknown;
+
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          postPayload = JSON.parse(init.body as string);
+          return jsonResponse(
+            {
+              id: "new-srv-custom",
+              name: "Dental Cleaning",
+              description: "Teeth cleaning and oral exam",
+              durationMinutes: 45,
+              bufferMinutes: 15,
+              organizationId: "org-1",
+              isActive: true,
+              createdAt: "2026-03-03T12:00:00.000Z",
+              updatedAt: "2026-03-03T12:00:00.000Z",
+            },
+            201,
+          );
+        }
+        return jsonResponse([]);
+      });
+
+      render(<ServiceManagement organizationId="org-1" />);
+      await screen.findByText("No Service Categories Configured");
+
+      const nameInput = screen.getByPlaceholderText(/e\.g\., Account Services/i);
+      const descInput = screen.getByPlaceholderText(
+        /e\.g\., Assistance with account verification/i,
+      );
+      const durationInput = screen.getByLabelText(/appointment duration/i);
+      const bufferInput = screen.getByLabelText(/buffer time/i);
+      const submitButton = screen.getByRole("button", {
+        name: /create service/i,
+      });
+
+      expect((durationInput as HTMLInputElement).value).toBe("30");
+      expect((bufferInput as HTMLInputElement).value).toBe("0");
+
+      fireEvent.change(nameInput, { target: { value: "Dental Cleaning" } });
+      fireEvent.change(descInput, { target: { value: "Teeth cleaning and oral exam" } });
+      fireEvent.change(durationInput, { target: { value: "45" } });
+      fireEvent.change(bufferInput, { target: { value: "15" } });
+      fireEvent.click(submitButton);
+
+      expect(
+        await screen.findByText('Service "Dental Cleaning" created successfully.'),
+      ).toBeDefined();
+      expect(postPayload).toEqual({
+        name: "Dental Cleaning",
+        description: "Teeth cleaning and oral exam",
+        durationMinutes: 45,
+        bufferMinutes: 15,
+      });
+    });
+
+    it("validates client-side constraints on duration and buffer during service creation", async () => {
+      render(<ServiceManagement organizationId="org-1" />);
+      await screen.findByText("No Service Categories Configured");
+
+      const nameInput = screen.getByPlaceholderText(/e\.g\., Account Services/i);
+      const durationInput = screen.getByLabelText(/appointment duration/i);
+      const bufferInput = screen.getByLabelText(/buffer time/i);
+      const submitButton = screen.getByRole("button", {
+        name: /create service/i,
+      });
+      const form = submitButton.closest("form") as HTMLFormElement;
+
+      fireEvent.change(nameInput, { target: { value: "Test Service" } });
+
+      // Non-integer duration
+      fireEvent.change(durationInput, { target: { value: "15.5" } });
+      fireEvent.submit(form);
+      expect(screen.getByText("Duration minutes must be an integer.")).toBeDefined();
+
+      // Duration < 5
+      fireEvent.change(durationInput, { target: { value: "3" } });
+      fireEvent.submit(form);
+      expect(screen.getByText("Duration must be at least 5 minutes.")).toBeDefined();
+
+      // Duration > 480
+      fireEvent.change(durationInput, { target: { value: "500" } });
+      fireEvent.submit(form);
+      expect(screen.getByText("Duration cannot exceed 480 minutes (8 hours).")).toBeDefined();
+
+      // Reset duration, test non-integer buffer
+      fireEvent.change(durationInput, { target: { value: "30" } });
+      fireEvent.change(bufferInput, { target: { value: "5.5" } });
+      fireEvent.submit(form);
+      expect(screen.getByText("Buffer minutes must be an integer.")).toBeDefined();
+
+      // Negative buffer
+      fireEvent.change(bufferInput, { target: { value: "-5" } });
+      fireEvent.submit(form);
+      expect(screen.getByText("Buffer minutes cannot be negative.")).toBeDefined();
+
+      // Buffer > 240
+      fireEvent.change(bufferInput, { target: { value: "300" } });
+      fireEvent.submit(form);
+      expect(screen.getByText("Buffer cannot exceed 240 minutes (4 hours).")).toBeDefined();
+
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        expect.stringContaining("/services"),
+        expect.objectContaining({ method: "POST" }),
+      );
     });
 
     it("displays Active badge and Deactivate button on newly created service confirmed by server", async () => {
@@ -1225,6 +1337,8 @@ describe("components/admin/ServiceManagement", () => {
         name: "Specialist Consultation",
         description: "Advanced specialty consultations",
         admissionCutoffMinutes: 45,
+        durationMinutes: 30,
+        bufferMinutes: 0,
       });
 
       expect(screen.queryByRole("dialog")).toBeNull();
@@ -1275,6 +1389,8 @@ describe("components/admin/ServiceManagement", () => {
         name: "Consultation",
         description: "Walk-in general consultations",
         admissionCutoffMinutes: null,
+        durationMinutes: 30,
+        bufferMinutes: 0,
       });
     });
 
