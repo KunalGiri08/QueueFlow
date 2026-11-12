@@ -849,6 +849,23 @@ describe("app/organizations/[organizationId]/page", () => {
   });
 
   describe("E. Customer appointment booking", () => {
+    const mockSlotsData = {
+      date: "2026-11-20",
+      service: { id: "srv-1", name: "General Consultation" },
+      slots: [
+        {
+          slotStart: "2026-11-20T11:00:00.000Z",
+          slotEnd: "2026-11-20T11:30:00.000Z",
+          localStartTime: "11:00",
+          localEndTime: "11:30",
+          bookedCount: 0,
+          maxCapacity: 1,
+          remainingCapacity: 1,
+          isAvailable: true,
+        },
+      ],
+    };
+
     it("renders Book Appointment button alongside queues for each service", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse(mockCatalogData));
       await renderPage();
@@ -928,6 +945,9 @@ describe("app/organizations/[organizationId]/page", () => {
         if (url === "/api/public/organizations/org-123/services") {
           return jsonResponse(mockCatalogData);
         }
+        if (url.includes("/slots")) {
+          return jsonResponse(mockSlotsData);
+        }
         if (url === "/api/appointments" && init?.method === "POST") {
           postBody = JSON.parse(init.body as string);
           return jsonResponse(
@@ -951,21 +971,25 @@ describe("app/organizations/[organizationId]/page", () => {
       });
       fireEvent.click(bookBtn);
 
-      const input = screen.getByLabelText(/appointment date and time/i);
-      const future = new Date(Date.now() + 3 * 86_400_000);
-      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
-      fireEvent.change(input, { target: { value: local } });
+      const input = screen.getByLabelText<HTMLInputElement>(/appointment date/i);
+      fireEvent.change(input, { target: { value: "2026-11-20" } });
+
+      const slotBtn = await screen.findByRole("button", {
+        name: /11:00 to 11:30/i,
+      });
+      fireEvent.click(slotBtn);
 
       const confirmBtn = screen.getByRole("button", {
         name: /confirm booking/i,
       });
+      expect(confirmBtn.hasAttribute("disabled")).toBe(false);
       await act(async () => {
         fireEvent.click(confirmBtn);
       });
 
       expect(postBody).toEqual({
         serviceId: "srv-1",
-        scheduledAt: expect.any(String),
+        scheduledAt: "2026-11-20T11:00:00.000Z",
       });
 
       expect(screen.getByText("Appointment Booked!")).toBeDefined();
@@ -979,6 +1003,9 @@ describe("app/organizations/[organizationId]/page", () => {
       fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
         if (url === "/api/public/organizations/org-123/services") {
           return jsonResponse(mockCatalogData);
+        }
+        if (url.includes("/slots")) {
+          return jsonResponse(mockSlotsData);
         }
         if (url === "/api/appointments" && init?.method === "POST") {
           return jsonResponse(
@@ -996,10 +1023,13 @@ describe("app/organizations/[organizationId]/page", () => {
       });
       fireEvent.click(bookBtn);
 
-      const input = screen.getByLabelText(/appointment date and time/i);
-      const future = new Date(Date.now() + 3 * 86_400_000);
-      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
-      fireEvent.change(input, { target: { value: local } });
+      const input = screen.getByLabelText<HTMLInputElement>(/appointment date/i);
+      fireEvent.change(input, { target: { value: "2026-11-20" } });
+
+      const slotBtn = await screen.findByRole("button", {
+        name: /11:00 to 11:30/i,
+      });
+      fireEvent.click(slotBtn);
 
       const confirmBtn = screen.getByRole("button", {
         name: /confirm booking/i,
@@ -1014,15 +1044,17 @@ describe("app/organizations/[organizationId]/page", () => {
       );
       expect(screen.getByRole("dialog")).toBeDefined();
       expect(
-        screen.getByLabelText<HTMLInputElement>(/appointment date and time/i)
-          .value,
-      ).not.toBe("");
+        screen.getByLabelText<HTMLInputElement>(/appointment date/i).value,
+      ).toBe("2026-11-20");
     });
 
     it("handles 400 validation error from server", async () => {
       fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
         if (url === "/api/public/organizations/org-123/services") {
           return jsonResponse(mockCatalogData);
+        }
+        if (url.includes("/slots")) {
+          return jsonResponse(mockSlotsData);
         }
         if (url === "/api/appointments" && init?.method === "POST") {
           return jsonResponse(
@@ -1049,10 +1081,13 @@ describe("app/organizations/[organizationId]/page", () => {
       });
       fireEvent.click(bookBtn);
 
-      const input = screen.getByLabelText(/appointment date and time/i);
-      const future = new Date(Date.now() + 3 * 86_400_000);
-      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
-      fireEvent.change(input, { target: { value: local } });
+      const input = screen.getByLabelText<HTMLInputElement>(/appointment date/i);
+      fireEvent.change(input, { target: { value: "2026-11-20" } });
+
+      const slotBtn = await screen.findByRole("button", {
+        name: /11:00 to 11:30/i,
+      });
+      fireEvent.click(slotBtn);
 
       const confirmBtn = screen.getByRole("button", {
         name: /confirm booking/i,
@@ -1072,6 +1107,9 @@ describe("app/organizations/[organizationId]/page", () => {
         if (url === "/api/public/organizations/org-123/services") {
           return jsonResponse(mockCatalogData);
         }
+        if (url.includes("/slots")) {
+          return jsonResponse(mockSlotsData);
+        }
         if (url === "/api/appointments" && init?.method === "POST") {
           return jsonResponse({ error: "Unauthorized" }, 401);
         }
@@ -1085,10 +1123,13 @@ describe("app/organizations/[organizationId]/page", () => {
       });
       fireEvent.click(bookBtn);
 
-      const input = screen.getByLabelText(/appointment date and time/i);
-      const future = new Date(Date.now() + 3 * 86_400_000);
-      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
-      fireEvent.change(input, { target: { value: local } });
+      const input = screen.getByLabelText<HTMLInputElement>(/appointment date/i);
+      fireEvent.change(input, { target: { value: "2026-11-20" } });
+
+      const slotBtn = await screen.findByRole("button", {
+        name: /11:00 to 11:30/i,
+      });
+      fireEvent.click(slotBtn);
 
       const confirmBtn = screen.getByRole("button", {
         name: /confirm booking/i,
@@ -1107,6 +1148,9 @@ describe("app/organizations/[organizationId]/page", () => {
         if (url === "/api/public/organizations/org-123/services") {
           return jsonResponse(mockCatalogData);
         }
+        if (url.includes("/slots")) {
+          return jsonResponse(mockSlotsData);
+        }
         if (url === "/api/appointments" && init?.method === "POST") {
           throw new Error("Network error");
         }
@@ -1120,10 +1164,13 @@ describe("app/organizations/[organizationId]/page", () => {
       });
       fireEvent.click(bookBtn);
 
-      const input = screen.getByLabelText(/appointment date and time/i);
-      const future = new Date(Date.now() + 3 * 86_400_000);
-      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
-      fireEvent.change(input, { target: { value: local } });
+      const input = screen.getByLabelText<HTMLInputElement>(/appointment date/i);
+      fireEvent.change(input, { target: { value: "2026-11-20" } });
+
+      const slotBtn = await screen.findByRole("button", {
+        name: /11:00 to 11:30/i,
+      });
+      fireEvent.click(slotBtn);
 
       const confirmBtn = screen.getByRole("button", {
         name: /confirm booking/i,
@@ -1144,6 +1191,9 @@ describe("app/organizations/[organizationId]/page", () => {
         if (url === "/api/public/organizations/org-123/services") {
           return jsonResponse(mockCatalogData);
         }
+        if (url.includes("/slots")) {
+          return jsonResponse(mockSlotsData);
+        }
         if (url === "/api/appointments" && init?.method === "POST") {
           postCallCount++;
           return deferredPost.promise;
@@ -1158,10 +1208,13 @@ describe("app/organizations/[organizationId]/page", () => {
       });
       fireEvent.click(bookBtn);
 
-      const input = screen.getByLabelText(/appointment date and time/i);
-      const future = new Date(Date.now() + 3 * 86_400_000);
-      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
-      fireEvent.change(input, { target: { value: local } });
+      const input = screen.getByLabelText<HTMLInputElement>(/appointment date/i);
+      fireEvent.change(input, { target: { value: "2026-11-20" } });
+
+      const slotBtn = await screen.findByRole("button", {
+        name: /11:00 to 11:30/i,
+      });
+      fireEvent.click(slotBtn);
 
       const confirmBtn = screen.getByRole("button", {
         name: /confirm booking/i,
@@ -1177,7 +1230,7 @@ describe("app/organizations/[organizationId]/page", () => {
             {
               id: "appt-1",
               serviceId: "srv-1",
-              scheduledAt: new Date().toISOString(),
+              scheduledAt: "2026-11-20T11:00:00.000Z",
             },
             201,
           ),
@@ -1201,6 +1254,9 @@ describe("app/organizations/[organizationId]/page", () => {
             },
             services: [],
           });
+        }
+        if (url.includes("/slots")) {
+          return jsonResponse(mockSlotsData);
         }
         if (url === "/api/appointments" && init?.method === "POST") {
           return deferredPost.promise;
@@ -1228,10 +1284,13 @@ describe("app/organizations/[organizationId]/page", () => {
 
       expect(screen.getByRole("dialog")).toBeDefined();
 
-      const input = screen.getByLabelText(/appointment date and time/i);
-      const future = new Date(Date.now() + 3 * 86_400_000);
-      const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T11:00`;
-      fireEvent.change(input, { target: { value: local } });
+      const input = screen.getByLabelText<HTMLInputElement>(/appointment date/i);
+      fireEvent.change(input, { target: { value: "2026-11-20" } });
+
+      const slotBtn = await screen.findByRole("button", {
+        name: /11:00 to 11:30/i,
+      });
+      fireEvent.click(slotBtn);
 
       // Submit booking for org-1
       const confirmBtn = screen.getByRole("button", {
@@ -1261,7 +1320,7 @@ describe("app/organizations/[organizationId]/page", () => {
             {
               id: "appt-1",
               serviceId: "srv-1",
-              scheduledAt: new Date().toISOString(),
+              scheduledAt: "2026-11-20T11:00:00.000Z",
             },
             201,
           ),
