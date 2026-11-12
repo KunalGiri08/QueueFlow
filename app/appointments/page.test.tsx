@@ -426,12 +426,29 @@ describe("app/appointments/page (My Appointments Customer Frontend)", () => {
   describe("Appointment rescheduling flow", () => {
     it("opens Reschedule dialog, validates future date, and sends PATCH request on confirmation", async () => {
       let patchBody: unknown = null;
-      const newFutureDate = new Date(Date.now() + 2 * 86_400_000);
-      const newFutureIso = newFutureDate.toISOString();
+      const targetSlotStart = "2026-11-20T14:30:00.000Z";
 
       activeFetchHandler = async (url: string, init?: RequestInit) => {
         if (url === "/api/appointments" && (!init || !init.method || init.method === "GET")) {
           return jsonResponse([mockBookedAppointment]);
+        }
+        if (url.includes("/slots")) {
+          return jsonResponse({
+            date: "2026-11-20",
+            service: { id: "svc-1", name: "General Consultation" },
+            slots: [
+              {
+                slotStart: targetSlotStart,
+                slotEnd: "2026-11-20T15:00:00.000Z",
+                localStartTime: "14:30",
+                localEndTime: "15:00",
+                bookedCount: 0,
+                maxCapacity: 1,
+                remainingCapacity: 1,
+                isAvailable: true,
+              },
+            ],
+          });
         }
         if (
           url === `/api/appointments/${encodeURIComponent(mockBookedAppointment.id)}` &&
@@ -440,7 +457,7 @@ describe("app/appointments/page (My Appointments Customer Frontend)", () => {
           patchBody = JSON.parse(init.body as string);
           return jsonResponse({
             ...mockBookedAppointment,
-            scheduledAt: newFutureIso,
+            scheduledAt: targetSlotStart,
           });
         }
         return jsonResponse({ error: "Not found" }, 404);
@@ -454,20 +471,23 @@ describe("app/appointments/page (My Appointments Customer Frontend)", () => {
       const dialog = screen.getByRole("dialog");
       expect(dialog).toBeDefined();
 
-      const input = screen.getByLabelText(/new appointment date and time/i);
-      // Format as datetime-local string
-      const localString = `${newFutureDate.getFullYear()}-${String(newFutureDate.getMonth() + 1).padStart(2, "0")}-${String(newFutureDate.getDate()).padStart(2, "0")}T14:30`;
-      fireEvent.change(input, { target: { value: localString } });
+      const dateInput = screen.getByLabelText<HTMLInputElement>(/appointment date/i);
+      expect(dateInput.getAttribute("min")).toBeDefined();
+      fireEvent.change(dateInput, { target: { value: "2026-11-20" } });
+
+      const slotBtn = await screen.findByRole("button", { name: /14:30 to 15:00/i });
+      fireEvent.click(slotBtn);
 
       const submitBtn = screen.getByRole("button", { name: /confirm reschedule/i });
+      expect(submitBtn.hasAttribute("disabled")).toBe(false);
       fireEvent.click(submitBtn);
 
       await waitFor(() => {
         expect(patchBody).not.toBeNull();
       });
 
-      // Verify body contained scheduledAt
-      expect((patchBody as { scheduledAt: string }).scheduledAt).toBeDefined();
+      // Verify body contained scheduledAt matching the selected slot
+      expect((patchBody as { scheduledAt: string }).scheduledAt).toBe(targetSlotStart);
 
       // Dialog should close
       await waitFor(() => {
@@ -482,6 +502,14 @@ describe("app/appointments/page (My Appointments Customer Frontend)", () => {
         if (url === "/api/appointments") {
           return jsonResponse([mockBookedAppointment]);
         }
+        if (url.includes("/slots")) {
+          // Empty slots for past or invalid dates
+          return jsonResponse({
+            date: "2020-01-01",
+            service: { id: "svc-1", name: "General Consultation" },
+            slots: [],
+          });
+        }
         if (init?.method === "PATCH") {
           patchCalled = true;
           return jsonResponse({});
@@ -494,21 +522,48 @@ describe("app/appointments/page (My Appointments Customer Frontend)", () => {
       const rescheduleBtn = await screen.findByRole("button", { name: /^reschedule$/i });
       fireEvent.click(rescheduleBtn);
 
-      const input = screen.getByLabelText(/new appointment date and time/i);
-      fireEvent.change(input, { target: { value: "2020-01-01T10:00" } });
+      const dateInput = screen.getByLabelText<HTMLInputElement>(/appointment date/i);
+      // Validates that min date constraint prevents selecting past dates
+      expect(dateInput.getAttribute("min")).toBeDefined();
+      fireEvent.change(dateInput, { target: { value: "2020-01-01" } });
 
+      // Confirm button remains disabled because no valid slot is selected
       const submitBtn = screen.getByRole("button", { name: /confirm reschedule/i });
-      fireEvent.click(submitBtn);
+      expect(submitBtn.hasAttribute("disabled")).toBe(true);
+
+      // Attempting form submission directly triggers client-side validation alert
+      const form = screen.getByRole("dialog").querySelector("form")!;
+      fireEvent.submit(form);
 
       const alert = await screen.findByRole("alert");
-      expect(alert.textContent).toContain("Appointment must be scheduled in the future.");
+      expect(alert.textContent).toContain("Please select an appointment time slot.");
       expect(patchCalled).toBe(false);
     });
 
     it("handles 409 conflict during rescheduling (time slot already booked)", async () => {
+      const conflictSlotStart = "2026-11-20T10:00:00.000Z";
+
       activeFetchHandler = async (url: string, init?: RequestInit) => {
         if (url === "/api/appointments") {
           return jsonResponse([mockBookedAppointment]);
+        }
+        if (url.includes("/slots")) {
+          return jsonResponse({
+            date: "2026-11-20",
+            service: { id: "svc-1", name: "General Consultation" },
+            slots: [
+              {
+                slotStart: conflictSlotStart,
+                slotEnd: "2026-11-20T10:30:00.000Z",
+                localStartTime: "10:00",
+                localEndTime: "10:30",
+                bookedCount: 0,
+                maxCapacity: 1,
+                remainingCapacity: 1,
+                isAvailable: true,
+              },
+            ],
+          });
         }
         if (init?.method === "PATCH") {
           return jsonResponse(
@@ -524,10 +579,11 @@ describe("app/appointments/page (My Appointments Customer Frontend)", () => {
       const rescheduleBtn = await screen.findByRole("button", { name: /^reschedule$/i });
       fireEvent.click(rescheduleBtn);
 
-      const input = screen.getByLabelText(/new appointment date and time/i);
-      const future = new Date(Date.now() + 3 * 86_400_000);
-      const localString = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T10:00`;
-      fireEvent.change(input, { target: { value: localString } });
+      const dateInput = screen.getByLabelText(/appointment date/i);
+      fireEvent.change(dateInput, { target: { value: "2026-11-20" } });
+
+      const slotBtn = await screen.findByRole("button", { name: /10:00 to 10:30/i });
+      fireEvent.click(slotBtn);
 
       const submitBtn = screen.getByRole("button", { name: /confirm reschedule/i });
       fireEvent.click(submitBtn);
