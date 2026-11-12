@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from "@testing-library/react";
 import OrganizationAdminPage from "./page";
 
 // 1. Mock Next.js navigation with a stable router object identity
@@ -217,7 +217,131 @@ describe("OrganizationAdminPage", () => {
       expect(screen.getByRole("link", { name: /explore public organizations/i }).getAttribute("href")).toBe(
         "/organizations",
       );
+      expect(screen.getByRole("button", { name: /create organization/i })).toBeDefined();
       expect(screen.queryByTestId("counter-management")).toBeNull();
+    });
+
+    it("renders Create Organization action in empty state and opens creation dialog", async () => {
+      global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url === "/api/organizations") {
+          return Promise.resolve(jsonResponse([]));
+        }
+        return Promise.reject(new Error(`Unhandled fetch: ${url}`));
+      });
+
+      render(<OrganizationAdminPage />);
+
+      const createBtn = await screen.findByRole("button", { name: /create organization/i });
+      expect(createBtn).toBeDefined();
+
+      fireEvent.click(createBtn);
+
+      expect(screen.getByRole("dialog")).toBeDefined();
+      expect(screen.getByRole("heading", { name: /^create organization$/i })).toBeDefined();
+    });
+
+    it("allows a user with 0 organizations to create their first organization and seamlessly transitions into the admin dashboard", async () => {
+      global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url === "/api/organizations" && (!init || !init.method || init.method === "GET")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url === "/api/organizations" && init?.method === "POST") {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "org-new",
+                name: "Apex Healthcare",
+                slug: "apex-healthcare",
+              },
+              201,
+            ),
+          );
+        }
+        if (url === "/api/staff?organizationId=org-new") {
+          return Promise.resolve(jsonResponse(mockStaffList));
+        }
+        return Promise.reject(new Error(`Unhandled fetch: ${url} (method: ${init?.method})`));
+      });
+
+      render(<OrganizationAdminPage />);
+
+      const createBtn = await screen.findByRole("button", { name: /create organization/i });
+      fireEvent.click(createBtn);
+
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toBeDefined();
+
+      const nameInput = screen.getByLabelText(/organization name/i);
+      fireEvent.change(nameInput, { target: { value: "Apex Healthcare" } });
+
+      const slugInput = screen.getByLabelText(/organization url slug/i) as HTMLInputElement;
+      expect(slugInput.value).toBe("apex-healthcare");
+
+      const submitBtn = within(dialog).getByRole("button", { name: /^create organization$/i });
+      fireEvent.click(submitBtn);
+
+      expect(await screen.findByText("Admin Access Verified")).toBeDefined();
+
+      const select = screen.getByRole("combobox", { name: /active organization/i }) as HTMLSelectElement;
+      expect(select.value).toBe("org-new");
+
+      const counterMgmt = screen.getByTestId("counter-management");
+      expect(counterMgmt.getAttribute("data-org-id")).toBe("org-new");
+    });
+
+    it("allows an existing administrator to create another organization via OrganizationSelector", async () => {
+      global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url === "/api/organizations" && (!init || !init.method || init.method === "GET")) {
+          return Promise.resolve(jsonResponse(mockOrgs));
+        }
+        if (url === "/api/organizations" && init?.method === "POST") {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "org-3",
+                name: "Third Org",
+                slug: "third-org",
+              },
+              201,
+            ),
+          );
+        }
+        if (url === "/api/staff?organizationId=org-1") {
+          return Promise.resolve(jsonResponse(mockStaffList));
+        }
+        if (url === "/api/staff?organizationId=org-3") {
+          return Promise.resolve(jsonResponse(mockStaffList));
+        }
+        return Promise.reject(new Error(`Unhandled fetch: ${url}`));
+      });
+
+      render(<OrganizationAdminPage />);
+
+      await screen.findByText("Admin Access Verified");
+
+      const newOrgBtn = screen.getByRole("button", { name: /new organization/i });
+      fireEvent.click(newOrgBtn);
+
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toBeDefined();
+
+      fireEvent.change(screen.getByLabelText(/organization name/i), {
+        target: { value: "Third Org" },
+      });
+
+      const submitBtn = within(dialog).getByRole("button", { name: /^create organization$/i });
+      fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        const select = screen.getByRole("combobox", { name: /active organization/i }) as HTMLSelectElement;
+        expect(select.value).toBe("org-3");
+      });
+
+      const counterMgmt = await screen.findByTestId("counter-management");
+      expect(counterMgmt.getAttribute("data-org-id")).toBe("org-3");
     });
 
     it("automatically selects the first organization from the list", async () => {

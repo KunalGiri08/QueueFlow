@@ -14,6 +14,7 @@ import { OperatingHoursManagement } from "@/components/admin/OperatingHoursManag
 import { StaffManagement } from "@/components/admin/StaffManagement";
 import { AdminSidebar, type AdminSectionId } from "@/components/admin/AdminSidebar";
 import { AdminSettings } from "@/components/admin/AdminSettings";
+import { CreateOrganizationDialog } from "@/components/admin/CreateOrganizationDialog";
 
 type AdminAuthResult = "authorized" | "forbidden" | "error";
 
@@ -90,6 +91,7 @@ export default function OrganizationAdminPage() {
   const [adminError, setAdminError] = useState<string | null>(null);
   const [verifyRetryTrigger, setVerifyRetryTrigger] = useState(0);
   const [activeSection, setActiveSection] = useState<AdminSectionId>("overview");
+  const [isCreateOrgOpen, setIsCreateOrgOpen] = useState(false);
 
   // Stale request prevention refs
   const activeOrgControllerRef = useRef<AbortController | null>(null);
@@ -321,6 +323,12 @@ export default function OrganizationAdminPage() {
     setSelectedOrgId(newId);
   };
 
+  const handleOrganizationCreated = (newOrg: OrganizationItem) => {
+    setOrganizations((prev) => [newOrg, ...prev.filter((o) => o.id !== newOrg.id)]);
+    setSelectedOrgId(newOrg.id);
+    setIsCreateOrgOpen(false);
+  };
+
   const selectedOrg = organizations.find((org) => org.id === selectedOrgId) ?? null;
   const isVerifying = Boolean(selectedOrgId && (verifiedOrgId !== selectedOrgId || adminAuthResult === null));
 
@@ -387,9 +395,30 @@ export default function OrganizationAdminPage() {
                 No Organizations Found
               </h2>
               <p className="mt-2 text-sm text-gray-600 max-w-md mx-auto">
-                You are not currently a member of any organization on QueueFlow. Ask an organization administrator to invite you, or browse public organizations.
+                You are not currently a member of any organization on QueueFlow. Create your first organization to get started, or browse public organizations.
               </p>
-              <div className="mt-6">
+              <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateOrgOpen(true)}
+                  className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98]"
+                >
+                  <svg
+                    className="mr-2 h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    strokeWidth="2"
+                    stroke="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 4.5v15m7.5-7.5h-15"
+                    />
+                  </svg>
+                  Create Organization
+                </button>
                 <Link
                   href="/organizations"
                   className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900"
@@ -405,6 +434,7 @@ export default function OrganizationAdminPage() {
                 organizations={organizations}
                 selectedOrgId={selectedOrgId}
                 onSelectOrg={handleSelectOrg}
+                onCreateOrg={() => setIsCreateOrgOpen(true)}
               />
 
               {/* Dynamic State Rendering Based on Admin Authorization */}
@@ -627,6 +657,11 @@ export default function OrganizationAdminPage() {
             </div>
           )}
         </div>
+        <CreateOrganizationDialog
+          isOpen={isCreateOrgOpen}
+          onClose={() => setIsCreateOrgOpen(false)}
+          onSuccess={handleOrganizationCreated}
+        />
       </main>
     </>
   );
