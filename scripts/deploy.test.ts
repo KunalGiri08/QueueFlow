@@ -107,7 +107,7 @@ describe("QueueFlow Deployment Automation Verification", () => {
     });
 
     it("recreates the container using the exact image tag and docker compose", () => {
-      expect(deployScript).toContain("IMAGE_TAG=\"$TARGET_SHA\" docker compose");
+      expect(deployScript).toMatch(/IMAGE_TAG="\$TARGET_SHA".*docker compose/);
       expect(deployScript).toContain("up -d --no-build app");
     });
 
@@ -119,7 +119,7 @@ describe("QueueFlow Deployment Automation Verification", () => {
 
     it("performs automated rollback to the previous image if readiness fails", () => {
       const rollbackBlock = deployScript.slice(deployScript.indexOf("INITIATING AUTOMATIC ROLLBACK"));
-      expect(rollbackBlock).toContain("IMAGE_TAG=\"$PREV_TAG\" docker compose");
+      expect(rollbackBlock).toMatch(/IMAGE_TAG="\$PREV_TAG".*docker compose/);
       expect(rollbackBlock).toContain("up -d --no-build app");
       expect(rollbackBlock).toContain("Rollback container readiness probe passed");
       expect(rollbackBlock).toContain("CRITICAL: Rollback container also failed readiness check");
@@ -360,6 +360,47 @@ describe("QueueFlow Deployment Automation Verification", () => {
 
       expect(result.status).toBe("ERROR_KEY_CONFLICT");
       expect(result.errorDetail).toContain("A different key entry referencing 'queueflow-ssh-command' already exists");
+    });
+  });
+
+  describe("EC2 CD Paths and Environment File Handling", () => {
+    const deployScript = fs.readFileSync(deployScriptPath, "utf-8");
+    const setupScriptPath = path.join(rootDir, "scripts", "setup-ec2-cd.sh");
+    const setupScriptContent = fs.readFileSync(setupScriptPath, "utf-8");
+    const dockerComposePath = path.join(rootDir, "docker-compose.yml");
+    const dockerComposeContent = fs.readFileSync(dockerComposePath, "utf-8");
+
+    it("defaults APP_DIR to /home/ubuntu/queueflow-deploy while supporting QUEUEFLOW_DIR override in deploy.sh", () => {
+      expect(deployScript).toContain('APP_DIR="${QUEUEFLOW_DIR:-/home/ubuntu/queueflow-deploy}"');
+    });
+
+    it("sources production server environment from /root/queueflow.env and exports QUEUEFLOW_ENV_FILE", () => {
+      expect(deployScript).toContain('export QUEUEFLOW_ENV_FILE="/root/queueflow.env"');
+      expect(deployScript).toContain("source /root/queueflow.env");
+    });
+
+    it("exports QUEUEFLOW_ENV_FILE before Docker Compose commands execute (recreate, logs, rollback)", () => {
+      // Recreate
+      expect(deployScript).toMatch(/QUEUEFLOW_ENV_FILE="\$\{QUEUEFLOW_ENV_FILE:-\/root\/queueflow\.env\}" docker compose -f "\$APP_DIR\/docker-compose\.yml" up -d --no-build app/);
+      // Logs
+      expect(deployScript).toMatch(/QUEUEFLOW_ENV_FILE="\$\{QUEUEFLOW_ENV_FILE:-\/root\/queueflow\.env\}" docker compose -f "\$APP_DIR\/docker-compose\.yml" logs/);
+      // Rollback
+      const rollbackSection = deployScript.slice(deployScript.indexOf("INITIATING AUTOMATIC ROLLBACK"));
+      expect(rollbackSection).toMatch(/QUEUEFLOW_ENV_FILE="\$\{QUEUEFLOW_ENV_FILE:-\/root\/queueflow\.env\}" docker compose -f "\$APP_DIR\/docker-compose\.yml" up -d --no-build app/);
+    });
+
+    it("defaults REPO_DIR to /home/ubuntu/queueflow-deploy while supporting QUEUEFLOW_DIR override in setup-ec2-cd.sh", () => {
+      expect(setupScriptContent).toContain('REPO_DIR="${QUEUEFLOW_DIR:-/home/ubuntu/queueflow-deploy}"');
+    });
+
+    it("configures docker-compose.yml env_file to ${QUEUEFLOW_ENV_FILE:-.env} preserving local dev default", () => {
+      expect(dockerComposeContent).toContain("- ${QUEUEFLOW_ENV_FILE:-.env}");
+      expect(dockerComposeContent).not.toMatch(/^\s+-\s+\.env$/m);
+    });
+
+    it("preserves container name queueflow-app and ports 127.0.0.1:3000:3000 in docker-compose.yml", () => {
+      expect(dockerComposeContent).toContain("container_name: queueflow-app");
+      expect(dockerComposeContent).toContain('127.0.0.1:3000:3000');
     });
   });
 });

@@ -4,7 +4,7 @@
 #
 # Usage:
 #   sudo /usr/local/bin/queueflow-deploy <target_commit_sha>
-#   or: sudo /root/queueflow/scripts/deploy.sh <target_commit_sha>
+#   or: sudo /home/ubuntu/queueflow-deploy/scripts/deploy.sh <target_commit_sha>
 #
 # Requirements & Invariants:
 #   1. Acquires a deployment lock to prevent overlapping executions.
@@ -45,7 +45,7 @@ if ! [[ "$TARGET_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
 fi
 
 # 3. Environment & Directory Setup
-APP_DIR="${QUEUEFLOW_DIR:-/root/queueflow}"
+APP_DIR="${QUEUEFLOW_DIR:-/home/ubuntu/queueflow-deploy}"
 if [ ! -d "$APP_DIR" ]; then
   echo "[Deploy] ERROR: Application directory not found at $APP_DIR" >&2
   exit 1
@@ -56,18 +56,21 @@ cd "$APP_DIR" || exit 1
 # 4. Source Production Server Environment Safely
 if [ -f "/root/queueflow.env" ]; then
   echo "[Deploy] Sourcing environment from /root/queueflow.env"
+  export QUEUEFLOW_ENV_FILE="/root/queueflow.env"
   set -a
   # shellcheck disable=SC1091
   source /root/queueflow.env
   set +a
 elif [ -f "$APP_DIR/.env" ]; then
   echo "[Deploy] Sourcing environment from $APP_DIR/.env"
+  export QUEUEFLOW_ENV_FILE="$APP_DIR/.env"
   set -a
   # shellcheck disable=SC1091
   source "$APP_DIR/.env"
   set +a
 else
   echo "[Deploy] WARNING: Neither /root/queueflow.env nor $APP_DIR/.env found. Relying on existing environment."
+  export QUEUEFLOW_ENV_FILE="${QUEUEFLOW_ENV_FILE:-/root/queueflow.env}"
 fi
 
 # 5. Dynamically Capture Currently Running Image Tag
@@ -120,7 +123,7 @@ fi
 
 # 9. Recreate Container with New Image Tag
 echo "[Deploy] Recreating application container with image tag: $TARGET_SHA"
-IMAGE_TAG="$TARGET_SHA" docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-build app
+IMAGE_TAG="$TARGET_SHA" QUEUEFLOW_ENV_FILE="${QUEUEFLOW_ENV_FILE:-/root/queueflow.env}" docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-build app
 
 # 10. Verify Application Readiness Probe
 READINESS_URL="http://127.0.0.1:3000/api/health?probe=ready"
@@ -144,7 +147,7 @@ done
 if [ "$HEALTHY" = "false" ]; then
   echo "[Deploy] ERROR: Application readiness probe failed after $((MAX_ATTEMPTS * SLEEP_SECS))s." >&2
   echo "[Deploy] Container logs (last 50 lines):" >&2
-  docker compose -f "$APP_DIR/docker-compose.yml" logs --tail=50 app >&2 || true
+  QUEUEFLOW_ENV_FILE="${QUEUEFLOW_ENV_FILE:-/root/queueflow.env}" docker compose -f "$APP_DIR/docker-compose.yml" logs --tail=50 app >&2 || true
 
   if [ -n "$PREVIOUS_IMAGE" ]; then
     echo "[Deploy] INITIATING AUTOMATIC ROLLBACK to: $PREVIOUS_IMAGE"
@@ -156,7 +159,7 @@ if [ "$HEALTHY" = "false" ]; then
     fi
 
     echo "[Deploy] Restoring application container with previous image tag: $PREV_TAG"
-    IMAGE_TAG="$PREV_TAG" docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-build app
+    IMAGE_TAG="$PREV_TAG" QUEUEFLOW_ENV_FILE="${QUEUEFLOW_ENV_FILE:-/root/queueflow.env}" docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-build app
 
     echo "[Deploy] Verifying rollback container readiness at $READINESS_URL..."
     ROLLBACK_HEALTHY=false

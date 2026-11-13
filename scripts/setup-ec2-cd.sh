@@ -60,7 +60,7 @@ else
 fi
 
 echo "=== 2. Inspecting and Installing Root-Owned Runner & Wrapper ==="
-REPO_DIR="${QUEUEFLOW_DIR:-/root/queueflow}"
+REPO_DIR="${QUEUEFLOW_DIR:-/home/ubuntu/queueflow-deploy}"
 
 RUNNER_SRC="$REPO_DIR/scripts/deploy.sh"
 RUNNER_DEST="/usr/local/bin/queueflow-deploy"
