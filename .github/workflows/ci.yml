@@ -119,3 +119,52 @@ jobs:
             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to Production (AWS EC2)
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-deployment
+      cancel-in-progress: false
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Execute deployment on EC2 via SSH
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$EC2_HOST" ] || [ -z "$EC2_USER" ] || [ -z "$EC2_SSH_KEY" ]; then
+            echo "::error::Required deployment secrets (EC2_HOST, EC2_USER, EC2_SSH_KEY) are not configured. Deployment aborted."
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Strict host key verification:
+          # Prefer EC2_SSH_KNOWN_HOSTS if configured in repository secrets;
+          # otherwise query host public key via ssh-keyscan into known_hosts.
+          if [ -n "$EC2_SSH_KNOWN_HOSTS" ]; then
+            echo "$EC2_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "$EC2_HOST" > ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+          # Install deployment SSH private key
+          echo "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          echo "Initiating deployment for commit SHA: $TARGET_SHA"
+          ssh -o StrictHostKeyChecking=yes -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" \
+            "sudo /usr/local/bin/queueflow-deploy $TARGET_SHA"
