@@ -9,14 +9,18 @@
 # Requirements & Invariants:
 #   1. Acquires a deployment lock to prevent overlapping executions.
 #   2. Validates target commit SHA format (40-character hex string).
-#   3. Captures existing container name and running image tag for rollback.
-#   4. Checks out exact commit SHA in the deployment repository.
-#   5. Runs Prisma 7 migrations safely using server environment (/root/queueflow.env).
-#   6. Aborts immediately if migrations fail without touching the running container.
-#   7. Pulls the exact GHCR SHA-tagged image.
-#   8. Recreates the application container with the new image tag.
-#   9. Verifies application readiness (/api/health?probe=ready) with bounded retries.
-#  10. On failure, explicitly rolls back to the previous image tag and verifies health.
+#   3. Dynamically detects active container serving port 3000 (including candidate).
+#   4. Strictly protects canary containers (queueflow-app-canary) - never selected or stopped.
+#   5. Captures and validates exact previous image before any changes.
+#   6. Aborts before database migrations if active container/image cannot be identified.
+#   7. Checks out exact commit SHA in the deployment repository.
+#   8. Runs Prisma 7 migrations safely (Pre-flight gate).
+#   9. Pulls the exact GHCR SHA-tagged image.
+#  10. Safely releases port 3000 from candidate container before compose recreate.
+#  11. Documents expected brief downtime during container switchover (not zero-downtime).
+#  12. Recreates application container (queueflow-app) with the new image tag.
+#  13. Verifies application readiness (/api/health?probe=ready) with bounded retries.
+#  14. On failure, restores application container with captured previous image tag.
 # ==============================================================================
 
 set -euo pipefail
@@ -73,18 +77,76 @@ else
   export QUEUEFLOW_ENV_FILE="${QUEUEFLOW_ENV_FILE:-/root/queueflow.env}"
 fi
 
-# 5. Dynamically Capture Currently Running Image Tag
+# 5. Dynamically Detect Active Container Serving Port 3000
+ACTIVE_CONTAINER_ID=""
+ACTIVE_CONTAINER_NAME=""
 PREVIOUS_IMAGE=""
-CONTAINER_NAME="queueflow-app"
-CURRENT_CONTAINER_ID=$(docker ps -q -f "name=$CONTAINER_NAME" | head -n 1 || true)
 
-if [ -n "$CURRENT_CONTAINER_ID" ]; then
-  PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CURRENT_CONTAINER_ID" 2>/dev/null || echo "")
-  echo "[Deploy] Currently running container: $CONTAINER_NAME ($CURRENT_CONTAINER_ID)"
-  echo "[Deploy] Captured previous image: ${PREVIOUS_IMAGE:-[none]}"
-else
-  echo "[Deploy] WARNING: No running container found matching name '$CONTAINER_NAME'."
+echo "[Deploy] Detecting active production container serving port 3000..."
+
+# Inspect running containers to find the one binding host port 3000
+for cid in $(docker ps -q --filter "status=running"); do
+  cname=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||' || true)
+  [ -z "$cname" ] && continue
+
+  # Invariant: Never select or touch the canary container (queueflow-app-canary)
+  if [[ "$cname" =~ canary ]]; then
+    continue
+  fi
+
+  # Check host port mapping for port 3000
+  # docker port <cid> outputs lines like: 3000/tcp -> 127.0.0.1:3000 or 3000/tcp -> 0.0.0.0:3000
+  port_mappings=$(docker port "$cid" 2>/dev/null || true)
+  if echo "$port_mappings" | grep -q -E -- '-> .*:3000($|[^0-9])'; then
+    ACTIVE_CONTAINER_ID="$cid"
+    ACTIVE_CONTAINER_NAME="$cname"
+    break
+  fi
+done
+
+# Fallback: inspect known production candidate containers if port mapping was not exposed via docker port
+if [ -z "$ACTIVE_CONTAINER_ID" ]; then
+  for candidate in "queueflow-app-candidate" "queueflow-app"; do
+    cid=$(docker ps -q --filter "status=running" --filter "name=^/${candidate}$" | head -n 1 || true)
+    if [ -n "$cid" ]; then
+      ACTIVE_CONTAINER_ID="$cid"
+      ACTIVE_CONTAINER_NAME="$candidate"
+      break
+    fi
+  done
 fi
+
+# Hard abort if active container cannot be detected before migrations or changes (Requirement 8)
+if [ -z "$ACTIVE_CONTAINER_ID" ] || [ -z "$ACTIVE_CONTAINER_NAME" ]; then
+  echo "[Deploy] ERROR: Unable to detect active production container serving port 3000." >&2
+  echo "[Deploy] Aborting deployment before migrations or container modifications." >&2
+  exit 1
+fi
+
+# Safeguard check: canary container must never be selected or modified (Requirement 3)
+if [[ "$ACTIVE_CONTAINER_NAME" =~ canary ]]; then
+  echo "[Deploy] ERROR: Detected container '$ACTIVE_CONTAINER_NAME' is a canary container." >&2
+  echo "[Deploy] Canary containers must never be selected or modified. Aborting." >&2
+  exit 1
+fi
+
+# Capture and validate previous image before changing anything (Requirement 2 & 8)
+PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' "$ACTIVE_CONTAINER_ID" 2>/dev/null || true)
+if [ -z "$PREVIOUS_IMAGE" ]; then
+  echo "[Deploy] ERROR: Unable to inspect image for active container '$ACTIVE_CONTAINER_NAME' ($ACTIVE_CONTAINER_ID)." >&2
+  echo "[Deploy] Aborting deployment before migrations or container modifications." >&2
+  exit 1
+fi
+
+PREV_TAG="${PREVIOUS_IMAGE##*:}"
+if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$PREVIOUS_IMAGE" ]; then
+  echo "[Deploy] ERROR: Unable to extract valid image tag from previous image '$PREVIOUS_IMAGE'." >&2
+  echo "[Deploy] Aborting deployment before migrations or container modifications." >&2
+  exit 1
+fi
+
+echo "[Deploy] Active container identified: $ACTIVE_CONTAINER_NAME ($ACTIVE_CONTAINER_ID)"
+echo "[Deploy] Captured previous image: $PREVIOUS_IMAGE (tag: $PREV_TAG)"
 
 # 6. Fetch and Checkout Target Git Commit SHA
 echo "[Deploy] Checking out target commit SHA in deployment clone: $TARGET_SHA"
@@ -121,8 +183,24 @@ if ! docker pull "$TARGET_IMAGE"; then
   exit 1
 fi
 
-# 9. Recreate Container with New Image Tag
-echo "[Deploy] Recreating application container with image tag: $TARGET_SHA"
+# 9. Handle Port 3000 Conflict & Recreate Application Container
+echo "[Deploy] Preparing port 3000 for application container recreate..."
+
+# Invariant: Canary container must never be stopped or modified
+if [[ "$ACTIVE_CONTAINER_NAME" =~ canary ]]; then
+  echo "[Deploy] ERROR: Cannot stop container: '$ACTIVE_CONTAINER_NAME' is a canary container." >&2
+  exit 1
+fi
+
+# If the active container is a candidate container (not managed under compose container_name 'queueflow-app'),
+# stop it first to free port 3000. Document the expected brief downtime during switchover.
+if [ "$ACTIVE_CONTAINER_NAME" != "queueflow-app" ]; then
+  echo "[Deploy] Stopping previous active container '$ACTIVE_CONTAINER_NAME' ($ACTIVE_CONTAINER_ID) to release port 3000..."
+  echo "[Deploy] Note: A brief downtime of a few seconds is expected during container switchover."
+  docker stop "$ACTIVE_CONTAINER_ID"
+fi
+
+echo "[Deploy] Recreating application container (queueflow-app) with image tag: $TARGET_SHA"
 IMAGE_TAG="$TARGET_SHA" QUEUEFLOW_ENV_FILE="${QUEUEFLOW_ENV_FILE:-/root/queueflow.env}" docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-build app
 
 # 10. Verify Application Readiness Probe
@@ -142,6 +220,12 @@ for i in $(seq 1 $MAX_ATTEMPTS); do
   echo "[Deploy] Attempt $i/$MAX_ATTEMPTS: status=$STATUS. Retrying in ${SLEEP_SECS}s..."
   sleep "$SLEEP_SECS"
 done
+
+# If deployment succeeded and previous active container was candidate, remove superseded container
+if [ "$HEALTHY" = "true" ] && [ "$ACTIVE_CONTAINER_NAME" != "queueflow-app" ]; then
+  echo "[Deploy] Removing superseded candidate container '$ACTIVE_CONTAINER_NAME' ($ACTIVE_CONTAINER_ID)..."
+  docker rm "$ACTIVE_CONTAINER_ID" 2>/dev/null || true
+fi
 
 # 11. Rollback on Failure
 if [ "$HEALTHY" = "false" ]; then

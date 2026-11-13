@@ -403,5 +403,194 @@ describe("QueueFlow Deployment Automation Verification", () => {
       expect(dockerComposeContent).toContain('127.0.0.1:3000:3000');
     });
   });
+
+  describe("Candidate Active Container Topology & Canary Protection", () => {
+    const deployScript = fs.readFileSync(deployScriptPath, "utf-8");
+
+    interface MockContainer {
+      id: string;
+      name: string;
+      running: boolean;
+      portMappings: string[];
+      image: string;
+    }
+
+    function simulateContainerDetection(containers: MockContainer[]): {
+      activeContainerId?: string;
+      activeContainerName?: string;
+      previousImage?: string;
+      prevTag?: string;
+      error?: string;
+    } {
+      let activeId: string | undefined;
+      let activeName: string | undefined;
+
+      // Inspect running containers to find the one binding host port 3000
+      for (const c of containers) {
+        if (!c.running) continue;
+        if (c.name.includes("canary")) continue; // Invariant: Canary is never selected
+
+        const hasPort3000 = c.portMappings.some((p) => /-> .*:3000($|[^0-9])/.test(p));
+        if (hasPort3000) {
+          activeId = c.id;
+          activeName = c.name;
+          break;
+        }
+      }
+
+      // Fallback: inspect known production candidate container names
+      if (!activeId) {
+        for (const candidate of ["queueflow-app-candidate", "queueflow-app"]) {
+          const match = containers.find((c) => c.running && c.name === candidate && !c.name.includes("canary"));
+          if (match) {
+            activeId = match.id;
+            activeName = match.name;
+            break;
+          }
+        }
+      }
+
+      if (!activeId || !activeName) {
+        return { error: "Unable to detect active production container serving port 3000." };
+      }
+
+      if (activeName.includes("canary")) {
+        return { error: "Detected container is a canary container. Canary must never be selected or modified." };
+      }
+
+      const container = containers.find((c) => c.id === activeId);
+      const previousImage = container?.image;
+      if (!previousImage) {
+        return { error: `Unable to inspect image for active container '${activeName}' (${activeId}).` };
+      }
+
+      const tagMatch = previousImage.match(/:([^:]+)$/);
+      const prevTag = tagMatch ? tagMatch[1] : undefined;
+      if (!prevTag || prevTag === previousImage) {
+        return { error: `Unable to extract valid image tag from previous image '${previousImage}'.` };
+      }
+
+      return {
+        activeContainerId: activeId,
+        activeContainerName: activeName,
+        previousImage,
+        prevTag,
+      };
+    }
+
+    it("correctly detects queueflow-app-candidate serving port 3000 and captures its exact image", () => {
+      const mockContainers: MockContainer[] = [
+        {
+          id: "cid_candidate_12345",
+          name: "queueflow-app-candidate",
+          running: true,
+          portMappings: ["3000/tcp -> 127.0.0.1:3000"],
+          image: "ghcr.io/kunalgiri08/queueflow:bded9b9334c1453d4587a78f03fc236456ae3132",
+        },
+        {
+          id: "cid_canary_67890",
+          name: "queueflow-app-canary",
+          running: true,
+          portMappings: ["3000/tcp -> 127.0.0.1:3001"],
+          image: "ghcr.io/kunalgiri08/queueflow:canary-sha-abcdef",
+        },
+      ];
+
+      const result = simulateContainerDetection(mockContainers);
+      expect(result.error).toBeUndefined();
+      expect(result.activeContainerId).toBe("cid_candidate_12345");
+      expect(result.activeContainerName).toBe("queueflow-app-candidate");
+      expect(result.previousImage).toBe("ghcr.io/kunalgiri08/queueflow:bded9b9334c1453d4587a78f03fc236456ae3132");
+      expect(result.prevTag).toBe("bded9b9334c1453d4587a78f03fc236456ae3132");
+    });
+
+    it("NEVER selects queueflow-app-canary even if it is the only container running", () => {
+      const mockContainers: MockContainer[] = [
+        {
+          id: "cid_canary_67890",
+          name: "queueflow-app-canary",
+          running: true,
+          portMappings: ["3000/tcp -> 127.0.0.1:3001"],
+          image: "ghcr.io/kunalgiri08/queueflow:canary-sha-abcdef",
+        },
+      ];
+
+      const result = simulateContainerDetection(mockContainers);
+      expect(result.activeContainerId).toBeUndefined();
+      expect(result.activeContainerName).toBeUndefined();
+      expect(result.error).toContain("Unable to detect active production container");
+    });
+
+    it("aborts safely if no active container can be found serving port 3000", () => {
+      const mockContainers: MockContainer[] = [];
+      const result = simulateContainerDetection(mockContainers);
+
+      expect(result.activeContainerId).toBeUndefined();
+      expect(result.error).toContain("Unable to detect active production container serving port 3000.");
+    });
+
+    it("aborts safely if container image cannot be inspected or has an invalid tag format", () => {
+      const mockContainers: MockContainer[] = [
+        {
+          id: "cid_no_tag",
+          name: "queueflow-app-candidate",
+          running: true,
+          portMappings: ["3000/tcp -> 127.0.0.1:3000"],
+          image: "",
+        },
+      ];
+
+      const result = simulateContainerDetection(mockContainers);
+      expect(result.error).toContain("Unable to inspect image");
+    });
+
+    it("verifies deploy.sh aborts before database migrations if active container cannot be detected", () => {
+      const detectSectionIndex = deployScript.indexOf("Detecting active production container");
+      const migrationSectionIndex = deployScript.indexOf("npx prisma migrate deploy");
+
+      expect(detectSectionIndex).toBeGreaterThan(0);
+      expect(migrationSectionIndex).toBeGreaterThan(detectSectionIndex);
+
+      const detectionBlock = deployScript.slice(detectSectionIndex, migrationSectionIndex);
+      expect(detectionBlock).toContain("Unable to detect active production container serving port 3000");
+      expect(detectionBlock).toContain("exit 1");
+      expect(detectionBlock).toContain("Aborting deployment before migrations");
+    });
+
+    it("verifies deploy.sh strictly excludes canary containers in detection and stopping safeguards", () => {
+      expect(deployScript).toContain('if [[ "$cname" =~ canary ]]; then');
+      expect(deployScript).toContain('if [[ "$ACTIVE_CONTAINER_NAME" =~ canary ]]; then');
+      expect(deployScript).toContain("Canary containers must never be selected or modified");
+    });
+
+    it("verifies deploy.sh handles port 3000 conflict by stopping candidate container with brief downtime notice", () => {
+      const recreateSectionIndex = deployScript.indexOf("Handle Port 3000 Conflict");
+      const recreateSection = deployScript.slice(recreateSectionIndex);
+
+      expect(recreateSection).toContain('if [ "$ACTIVE_CONTAINER_NAME" != "queueflow-app" ]; then');
+      expect(recreateSection).toContain('docker stop "$ACTIVE_CONTAINER_ID"');
+      expect(recreateSection).toContain("Note: A brief downtime of a few seconds is expected during container switchover");
+      expect(recreateSection).toContain("up -d --no-build app");
+    });
+
+    it("verifies deploy.sh cleans up candidate container only after readiness probe succeeds", () => {
+      const probeSectionIndex = deployScript.indexOf("Verify Application Readiness Probe");
+      const rollbackSectionIndex = deployScript.indexOf("Rollback on Failure");
+      const probeSuccessBlock = deployScript.slice(probeSectionIndex, rollbackSectionIndex);
+
+      expect(probeSuccessBlock).toContain('if [ "$HEALTHY" = "true" ] && [ "$ACTIVE_CONTAINER_NAME" != "queueflow-app" ]; then');
+      expect(probeSuccessBlock).toContain('docker rm "$ACTIVE_CONTAINER_ID"');
+    });
+
+    it("verifies rollback restores the captured previous image tag using docker compose", () => {
+      const rollbackSectionIndex = deployScript.indexOf("Rollback on Failure");
+      const rollbackSection = deployScript.slice(rollbackSectionIndex);
+
+      expect(rollbackSection).toContain('PREV_TAG="${PREVIOUS_IMAGE##*:}"');
+      expect(rollbackSection).toContain('[ "$PREV_TAG" = "$TARGET_SHA" ]');
+      expect(rollbackSection).toMatch(/IMAGE_TAG="\$PREV_TAG".*docker compose.*up -d --no-build app/);
+      expect(rollbackSection).toContain("Restoring application container with previous image tag: $PREV_TAG");
+    });
+  });
 });
 
