@@ -15,6 +15,11 @@
 
 QueueFlow is a full-stack, multi-tenant SaaS platform built to eliminate physical wait lines and unify walk-in queues with scheduled appointments. Designed for healthcare clinics, government service centers, banks, and educational institutions, QueueFlow enables organizations to manage physical service points (counters), balance walk-in traffic with pre-booked appointments, enforce operational constraints (schedules, buffers, capacities), and stream real-time queue position updates directly to customer smartphones.
 
+### Architecture & Technical Documentation
+Detailed architectural and schema documentation is maintained in the `docs/` directory:
+- 📘 [System Architecture & Engineering Design](docs/system-architecture.md) — Comprehensive guide covering client ingress, auth/RBAC flow, SSE realtime engine, transactional boundaries, and EC2/Docker deployment.
+- 🗄️ [Database Architecture & Entity-Relationship Model](docs/database-erd.md) — Complete ER diagram covering all 11 Prisma models, relationship cardinality, foreign key cascade behaviors, and composite indexes.
+
 ---
 
 ## 2. Problem Statement & Solution
