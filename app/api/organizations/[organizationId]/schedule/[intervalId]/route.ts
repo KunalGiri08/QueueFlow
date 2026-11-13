@@ -210,25 +210,20 @@ export async function DELETE(
     );
   }
 
-  const existing = await prisma.organizationScheduleInterval.findFirst({
-    where: {
-      id: intervalId,
-      organizationId,
-    },
-    select: { id: true },
-  });
-
-  if (!existing) {
-    return Response.json(
-      { error: "Schedule interval not found in this organization" },
-      { status: 404 },
-    );
-  }
-
   try {
-    await prisma.organizationScheduleInterval.delete({
-      where: { id: intervalId },
+    const result = await prisma.organizationScheduleInterval.deleteMany({
+      where: {
+        id: intervalId,
+        organizationId,
+      },
     });
+
+    if (result.count === 0) {
+      return Response.json(
+        { error: "Schedule interval not found in this organization" },
+        { status: 404 },
+      );
+    }
 
     return new Response(null, { status: 204 });
   } catch (error) {

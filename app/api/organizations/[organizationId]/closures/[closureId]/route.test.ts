@@ -5,13 +5,13 @@ const {
   mockMembershipFindUnique,
   mockClosureFindFirst,
   mockClosureUpdate,
-  mockClosureDelete,
+  mockClosureDeleteMany,
 } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
   mockMembershipFindUnique: vi.fn(),
   mockClosureFindFirst: vi.fn(),
   mockClosureUpdate: vi.fn(),
-  mockClosureDelete: vi.fn(),
+  mockClosureDeleteMany: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/current-user", () => ({
@@ -26,7 +26,7 @@ vi.mock("@/lib/prisma", () => ({
     organizationClosure: {
       findFirst: mockClosureFindFirst,
       update: mockClosureUpdate,
-      delete: mockClosureDelete,
+      deleteMany: mockClosureDeleteMany,
     },
   },
 }));
@@ -267,7 +267,7 @@ describe("DELETE /api/organizations/[organizationId]/closures/[closureId]", () =
   it("returns 404 when closure belongs to another organization (cross-tenant safety)", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
     mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
-    mockClosureFindFirst.mockResolvedValue(null);
+    mockClosureDeleteMany.mockResolvedValue({ count: 0 });
 
     const response = await DELETE(
       new Request("http://localhost", { method: "DELETE" }),
@@ -278,14 +278,18 @@ describe("DELETE /api/organizations/[organizationId]/closures/[closureId]", () =
     expect(await response.json()).toEqual({
       error: "Closure not found in this organization",
     });
-    expect(mockClosureDelete).not.toHaveBeenCalled();
+    expect(mockClosureDeleteMany).toHaveBeenCalledWith({
+      where: {
+        id: closureId,
+        organizationId,
+      },
+    });
   });
 
   it("returns 204 when closure is successfully deleted", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
     mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
-    mockClosureFindFirst.mockResolvedValue({ id: closureId });
-    mockClosureDelete.mockResolvedValue({ id: closureId });
+    mockClosureDeleteMany.mockResolvedValue({ count: 1 });
 
     const response = await DELETE(
       new Request("http://localhost", { method: "DELETE" }),
@@ -293,8 +297,11 @@ describe("DELETE /api/organizations/[organizationId]/closures/[closureId]", () =
     );
 
     expect(response.status).toBe(204);
-    expect(mockClosureDelete).toHaveBeenCalledWith({
-      where: { id: closureId },
+    expect(mockClosureDeleteMany).toHaveBeenCalledWith({
+      where: {
+        id: closureId,
+        organizationId,
+      },
     });
   });
 });

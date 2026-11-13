@@ -7,6 +7,8 @@ import {
   type RealtimeEnvelope,
 } from "@/lib/realtime/types";
 
+import { validatePayloadSize } from "@/lib/rate-limit";
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -229,6 +231,11 @@ async function handleStaffStream(request: Request, params: StreamParams) {
 }
 
 export async function POST(request: Request) {
+  const payloadCheck = validatePayloadSize(request, 16 * 1024);
+  if (!payloadCheck.valid) {
+    return payloadCheck.response;
+  }
+
   let body: unknown;
   try {
     body = await request.json();

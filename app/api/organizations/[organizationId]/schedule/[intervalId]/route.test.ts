@@ -4,7 +4,7 @@ const {
   mockGetCurrentUser,
   mockMembershipFindUnique,
   mockIntervalFindFirst,
-  mockIntervalDelete,
+  mockIntervalDeleteMany,
   mockTransaction,
   mockQueryRaw,
   mockTxIntervalFindFirst,
@@ -14,7 +14,7 @@ const {
   mockGetCurrentUser: vi.fn(),
   mockMembershipFindUnique: vi.fn(),
   mockIntervalFindFirst: vi.fn(),
-  mockIntervalDelete: vi.fn(),
+  mockIntervalDeleteMany: vi.fn(),
   mockTransaction: vi.fn(),
   mockQueryRaw: vi.fn(),
   mockTxIntervalFindFirst: vi.fn(),
@@ -33,7 +33,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     organizationScheduleInterval: {
       findFirst: mockIntervalFindFirst,
-      delete: mockIntervalDelete,
+      deleteMany: mockIntervalDeleteMany,
     },
     $transaction: mockTransaction,
   },
@@ -352,7 +352,7 @@ describe("DELETE /api/organizations/[organizationId]/schedule/[intervalId]", () 
   it("returns 404 when interval belongs to another organization (cross-tenant safety)", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
     mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
-    mockIntervalFindFirst.mockResolvedValue(null);
+    mockIntervalDeleteMany.mockResolvedValue({ count: 0 });
 
     const response = await DELETE(
       new Request("http://localhost", { method: "DELETE" }),
@@ -363,14 +363,18 @@ describe("DELETE /api/organizations/[organizationId]/schedule/[intervalId]", () 
     expect(await response.json()).toEqual({
       error: "Schedule interval not found in this organization",
     });
-    expect(mockIntervalDelete).not.toHaveBeenCalled();
+    expect(mockIntervalDeleteMany).toHaveBeenCalledWith({
+      where: {
+        id: intervalId,
+        organizationId,
+      },
+    });
   });
 
   it("returns 204 when interval is successfully deleted", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
     mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
-    mockIntervalFindFirst.mockResolvedValue({ id: intervalId });
-    mockIntervalDelete.mockResolvedValue({ id: intervalId });
+    mockIntervalDeleteMany.mockResolvedValue({ count: 1 });
 
     const response = await DELETE(
       new Request("http://localhost", { method: "DELETE" }),
@@ -378,8 +382,11 @@ describe("DELETE /api/organizations/[organizationId]/schedule/[intervalId]", () 
     );
 
     expect(response.status).toBe(204);
-    expect(mockIntervalDelete).toHaveBeenCalledWith({
-      where: { id: intervalId },
+    expect(mockIntervalDeleteMany).toHaveBeenCalledWith({
+      where: {
+        id: intervalId,
+        organizationId,
+      },
     });
   });
 });

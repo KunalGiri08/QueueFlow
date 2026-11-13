@@ -102,6 +102,25 @@ describe("Staff-Side SSE & Real-Time Ticket Creation", () => {
       expect(await response.json()).toEqual({ error: "Unauthorized" });
     });
 
+    it("returns 413 when request body exceeds maximum payload size", async () => {
+      const largeBody = JSON.stringify({ organizationId: orgId, padding: "x".repeat(20000) });
+      const request = new Request("http://localhost/api/realtime/staff/stream", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(largeBody.length),
+        },
+        body: largeBody,
+      });
+
+      const response = await staffSseEndpoint(request);
+      expect(response.status).toBe(413);
+      expect(await response.json()).toEqual({
+        error: "Payload too large",
+        code: "PAYLOAD_TOO_LARGE",
+      });
+    });
+
     it("returns 400 when organizationId is missing or empty", async () => {
       const request = new Request("http://localhost/api/realtime/staff/stream", {
         method: "POST",

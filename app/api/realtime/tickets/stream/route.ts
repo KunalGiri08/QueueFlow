@@ -9,6 +9,8 @@ import {
 } from "@/lib/realtime/types";
 import { isTicketActive } from "@/lib/formatters/ticket";
 
+import { validatePayloadSize } from "@/lib/rate-limit";
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -97,6 +99,11 @@ export async function POST(request: Request) {
     }
   } catch {
     // If URL parsing fails, proceed to body validation
+  }
+
+  const payloadCheck = validatePayloadSize(request, 16 * 1024);
+  if (!payloadCheck.valid) {
+    return payloadCheck.response;
   }
 
   let body: unknown;

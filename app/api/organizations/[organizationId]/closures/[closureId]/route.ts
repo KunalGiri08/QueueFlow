@@ -144,25 +144,20 @@ export async function DELETE(
     );
   }
 
-  const existing = await prisma.organizationClosure.findFirst({
-    where: {
-      id: closureId,
-      organizationId,
-    },
-    select: { id: true },
-  });
-
-  if (!existing) {
-    return Response.json(
-      { error: "Closure not found in this organization" },
-      { status: 404 },
-    );
-  }
-
   try {
-    await prisma.organizationClosure.delete({
-      where: { id: closureId },
+    const result = await prisma.organizationClosure.deleteMany({
+      where: {
+        id: closureId,
+        organizationId,
+      },
     });
+
+    if (result.count === 0) {
+      return Response.json(
+        { error: "Closure not found in this organization" },
+        { status: 404 },
+      );
+    }
 
     return new Response(null, { status: 204 });
   } catch (error) {

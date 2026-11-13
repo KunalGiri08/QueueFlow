@@ -82,6 +82,23 @@ describe("POST /api/realtime/tickets/stream", () => {
       expect(json).toEqual({ error: "Tracking token must not be passed in the URL" });
     });
 
+    it("returns 413 when request body exceeds maximum payload size", async () => {
+      const largeBody = JSON.stringify({ trackingToken: validToken, padding: "x".repeat(20000) });
+      const request = new Request("http://localhost/api/realtime/tickets/stream", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(largeBody.length),
+        },
+        body: largeBody,
+      });
+
+      const response = await POST(request);
+      expect(response.status).toBe(413);
+      const json = await response.json();
+      expect(json).toEqual({ error: "Payload too large", code: "PAYLOAD_TOO_LARGE" });
+    });
+
     it("returns 405 Method Not Allowed for GET requests", async () => {
       const response = await GET();
       expect(response.status).toBe(405);
