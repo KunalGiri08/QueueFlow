@@ -18,6 +18,22 @@ export async function GET(
 
   const { organizationId } = await params;
 
+  const membership = await prisma.organizationMembership.findUnique({
+    where: {
+      userId_organizationId: {
+        userId: currentUser.id,
+        organizationId,
+      },
+    },
+  });
+
+  if (!membership) {
+    return Response.json(
+      { error: "You are not a member of this organization" },
+      { status: 403 },
+    );
+  }
+
   // Only expose services belonging to an existing organization.
   const organization = await prisma.organization.findUnique({
     where: { id: organizationId },
@@ -28,18 +44,7 @@ export async function GET(
     return Response.json({ error: "Organization not found" }, { status: 404 });
   }
 
-  // Check membership to determine whether inactive services should be visible.
-  // Admins see all services so they can activate/deactivate them; non-admins only see active services.
-  const membership = await prisma.organizationMembership.findUnique({
-    where: {
-      userId_organizationId: {
-        userId: currentUser.id,
-        organizationId,
-      },
-    },
-  });
-
-  const isAdmin = membership?.role === "ADMIN";
+  const isAdmin = membership.role === "ADMIN";
 
   const services = await prisma.service.findMany({
     where: {

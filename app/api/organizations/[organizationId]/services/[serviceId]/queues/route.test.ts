@@ -244,6 +244,7 @@ describe("GET /api/organizations/[organizationId]/services/[serviceId]/queues", 
 
   it("returns 404 when service does not belong to organization", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
     mockServiceFindFirst.mockResolvedValue(null);
 
     const response = await GET(
@@ -255,10 +256,27 @@ describe("GET /api/organizations/[organizationId]/services/[serviceId]/queues", 
     expect(await response.json()).toEqual({ error: "Service not found" });
   });
 
+  it("returns 403 when caller is not an organization member", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-nonmember" });
+    mockMembershipFindUnique.mockResolvedValue(null);
+
+    const response = await GET(
+      new Request("http://localhost"),
+      createParams(),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "You are not a member of this organization",
+    });
+    expect(mockServiceFindFirst).not.toHaveBeenCalled();
+    expect(mockQueueFindMany).not.toHaveBeenCalled();
+  });
+
   it("returns all queues (including inactive) for organization ADMIN callers", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-admin" });
-    mockServiceFindFirst.mockResolvedValue({ id: serviceId, organizationId });
     mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
+    mockServiceFindFirst.mockResolvedValue({ id: serviceId, organizationId });
 
     const allQueues = [
       { id: "q-1", name: "Queue 1", serviceId, isActive: true },
@@ -283,10 +301,10 @@ describe("GET /api/organizations/[organizationId]/services/[serviceId]/queues", 
     });
   });
 
-  it("returns only active queues for non-admin callers", async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: "user-customer" });
+  it("returns only active queues for organization STAFF callers", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-staff" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "STAFF" });
     mockServiceFindFirst.mockResolvedValue({ id: serviceId, organizationId });
-    mockMembershipFindUnique.mockResolvedValue(null);
 
     const activeQueues = [
       { id: "q-1", name: "Queue 1", serviceId, isActive: true },

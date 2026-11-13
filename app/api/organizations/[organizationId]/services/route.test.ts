@@ -343,6 +343,7 @@ describe("GET /api/organizations/[organizationId]/services", () => {
 
   it("returns 404 when organization does not exist", async () => {
     mockGetCurrentUser.mockResolvedValue({ id: "user-1" });
+    mockMembershipFindUnique.mockResolvedValue({ role: "ADMIN" });
     mockOrganizationFindUnique.mockResolvedValue(null);
 
     const response = await GET(
@@ -352,6 +353,23 @@ describe("GET /api/organizations/[organizationId]/services", () => {
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "Organization not found" });
+  });
+
+  it("returns 403 when caller is not an organization member", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: "user-nonmember" });
+    mockMembershipFindUnique.mockResolvedValue(null);
+
+    const response = await GET(
+      new Request("http://localhost"),
+      createParams(),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "You are not a member of this organization",
+    });
+    expect(mockOrganizationFindUnique).not.toHaveBeenCalled();
+    expect(mockServiceFindMany).not.toHaveBeenCalled();
   });
 
   it("returns all services (including inactive) when caller is an organization ADMIN", async () => {
