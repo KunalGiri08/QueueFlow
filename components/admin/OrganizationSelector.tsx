@@ -2,6 +2,7 @@ export interface OrganizationItem {
   id: string;
   name: string;
   slug: string;
+  isOwner?: boolean;
 }
 
 export interface OrganizationSelectorProps {

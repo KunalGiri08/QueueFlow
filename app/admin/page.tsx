@@ -649,6 +649,15 @@ export default function OrganizationAdminPage() {
                       <AdminSettings
                         organization={selectedOrg}
                         onNavigateSection={setActiveSection}
+                        onOrganizationUpdated={(updatedOrg) => {
+                          setOrganizations((prev) =>
+                            prev.map((org) =>
+                              org.id === updatedOrg.id
+                                ? { ...org, name: updatedOrg.name }
+                                : org,
+                            ),
+                          );
+                        }}
                       />
                     </div>
                   </div>

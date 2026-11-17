@@ -36,3 +36,15 @@ export const updateOrganizationSchema = z
   });
 
 export type UpdateOrganizationInput = z.infer<typeof updateOrganizationSchema>;
+
+export const updateOrganizationNameSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, "Organization name is required")
+    .max(100, "Organization name must be 100 characters or fewer"),
+});
+
+export type UpdateOrganizationNameInput = z.infer<
+  typeof updateOrganizationNameSchema
+>;
