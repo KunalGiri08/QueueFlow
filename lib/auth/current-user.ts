@@ -55,6 +55,46 @@ export async function getCurrentUser() {
   });
 
   if (existingUser) {
+    if (existingUser.email.toLowerCase().endsWith("@example.com")) {
+      try {
+        const client = await clerkClient();
+        const clerkUser = await client.users.getUser(clerkUserId);
+
+        const primaryEmail = clerkUser.emailAddresses.find(
+          (address) => address.id === clerkUser.primaryEmailAddressId,
+        );
+
+        if (primaryEmail && primaryEmail.verification?.status === "verified") {
+          const freshEmail = primaryEmail.emailAddress.trim().toLowerCase();
+          const freshName =
+            clerkUser.fullName ?? clerkUser.firstName ?? existingUser.name;
+
+          if (
+            existingUser.email !== freshEmail ||
+            existingUser.name !== freshName
+          ) {
+            return await prisma.user.update({
+              where: { id: existingUser.id },
+              data: {
+                email: freshEmail,
+                name: freshName,
+              },
+            });
+          }
+        }
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          return existingUser;
+        }
+
+        console.error(
+          "[Auth] Failed to reconcile placeholder email with Clerk:",
+          error,
+        );
+        return existingUser;
+      }
+    }
+
     return existingUser;
   }
 
