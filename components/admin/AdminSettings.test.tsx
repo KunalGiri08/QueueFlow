@@ -278,4 +278,236 @@ describe("AdminSettings Component", () => {
       ).toBeDefined();
     });
   });
+
+  describe("Owner Profile Display Name Editing Flow", () => {
+    it("renders Owner Profile section and hides 'Edit Display Name' button for non-owners", () => {
+      render(
+        <AdminSettings
+          organization={mockOrg}
+          onNavigateSection={vi.fn()}
+          isOwner={false}
+          ownerName="Dr. Kunal"
+          ownerEmail="kunal@hospital.com"
+        />,
+      );
+
+      expect(screen.getByText("Owner Profile")).toBeDefined();
+      expect(screen.getByText("Dr. Kunal")).toBeDefined();
+      expect(screen.getByText("kunal@hospital.com")).toBeDefined();
+      expect(
+        screen.queryByRole("button", { name: /edit display name/i }),
+      ).toBeNull();
+    });
+
+    it("shows 'Edit Display Name' button for the organization OWNER", () => {
+      render(
+        <AdminSettings
+          organization={mockOrg}
+          onNavigateSection={vi.fn()}
+          isOwner={true}
+          ownerName="Kunal Giri"
+          ownerEmail="kunalgiri177@gmail.com"
+        />,
+      );
+
+      const editBtn = screen.getByRole("button", {
+        name: /edit display name/i,
+      });
+      expect(editBtn).toBeDefined();
+    });
+
+    it("opens edit mode with pre-filled display name, Save Name, and Cancel buttons", () => {
+      render(
+        <AdminSettings
+          organization={mockOrg}
+          onNavigateSection={vi.fn()}
+          isOwner={true}
+          ownerName="Kunal Giri"
+          ownerEmail="kunalgiri177@gmail.com"
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit display name/i }),
+      );
+
+      const input = screen.getByPlaceholderText(
+        "Display name",
+      ) as HTMLInputElement;
+      expect(input).toBeDefined();
+      expect(input.value).toBe("Kunal Giri");
+
+      expect(
+        screen.getByRole("button", { name: /save name/i }),
+      ).toBeDefined();
+      expect(screen.getByRole("button", { name: /^cancel$/i })).toBeDefined();
+    });
+
+    it("cancels editing and restores previous display name without calling fetch", () => {
+      render(
+        <AdminSettings
+          organization={mockOrg}
+          onNavigateSection={vi.fn()}
+          isOwner={true}
+          ownerName="Original Name"
+          ownerEmail="owner@test.com"
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit display name/i }),
+      );
+
+      const input = screen.getByPlaceholderText("Display name");
+      fireEvent.change(input, { target: { value: "Discarded Name" } });
+
+      fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+      // Form closed, original display name restored
+      expect(screen.queryByPlaceholderText("Display name")).toBeNull();
+      expect(screen.getByText("Original Name")).toBeDefined();
+      expect(screen.queryByText("Discarded Name")).toBeNull();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("validates empty display name on client side and prevents submission", async () => {
+      render(
+        <AdminSettings
+          organization={mockOrg}
+          onNavigateSection={vi.fn()}
+          isOwner={true}
+          ownerName="Kunal"
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit display name/i }),
+      );
+
+      const input = screen.getByPlaceholderText("Display name");
+      fireEvent.change(input, { target: { value: "    " } });
+
+      fireEvent.click(screen.getByRole("button", { name: /save name/i }));
+
+      expect(
+        await screen.findByText("Display name is required"),
+      ).toBeDefined();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("validates display name exceeding 100 characters on client side", async () => {
+      render(
+        <AdminSettings
+          organization={mockOrg}
+          onNavigateSection={vi.fn()}
+          isOwner={true}
+          ownerName="Kunal"
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit display name/i }),
+      );
+
+      const input = screen.getByPlaceholderText("Display name");
+      fireEvent.change(input, { target: { value: "n".repeat(101) } });
+
+      fireEvent.click(screen.getByRole("button", { name: /save name/i }));
+
+      expect(
+        await screen.findByText("Display name must be 100 characters or fewer"),
+      ).toBeDefined();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("successfully saves updated display name and displays success notification", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse({
+          id: "usr_owner_1",
+          name: "Dr. Kunal Giri, MD",
+          email: "kunalgiri177@gmail.com",
+          isOwner: true,
+        }),
+      );
+
+      render(
+        <AdminSettings
+          organization={mockOrg}
+          onNavigateSection={vi.fn()}
+          isOwner={true}
+          ownerName="Kunal Giri"
+          ownerEmail="kunalgiri177@gmail.com"
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit display name/i }),
+      );
+
+      const input = screen.getByPlaceholderText("Display name");
+      fireEvent.change(input, {
+        target: { value: "   Dr. Kunal Giri, MD   " },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: /save name/i }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/organizations/org-123/owner",
+          expect.objectContaining({
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Dr. Kunal Giri, MD" }),
+          }),
+        );
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Dr. Kunal Giri, MD")).toBeDefined();
+        expect(
+          screen.getByText("Display name updated successfully."),
+        ).toBeDefined();
+      });
+    });
+
+    it("handles server error and displays error message in edit mode", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error:
+              "Forbidden: Only the organization owner can edit their display name",
+          },
+          403,
+        ),
+      );
+
+      render(
+        <AdminSettings
+          organization={mockOrg}
+          onNavigateSection={vi.fn()}
+          isOwner={true}
+          ownerName="Original Name"
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /edit display name/i }),
+      );
+
+      const input = screen.getByPlaceholderText("Display name");
+      fireEvent.change(input, { target: { value: "Attacker Custom Name" } });
+
+      fireEvent.click(screen.getByRole("button", { name: /save name/i }));
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            "Forbidden: Only the organization owner can edit their display name",
+          ),
+        ).toBeDefined();
+      });
+
+      expect(screen.getByPlaceholderText("Display name")).toBeDefined();
+    });
+  });
 });
