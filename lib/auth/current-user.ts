@@ -3,6 +3,7 @@ import { verifyToken } from "@clerk/backend";
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env.server";
+import type { Prisma } from "@/app/generated/prisma/client";
 
 function isUniqueConstraintError(error: unknown): boolean {
   return (
@@ -11,6 +12,119 @@ function isUniqueConstraintError(error: unknown): boolean {
     "code" in error &&
     error.code === "P2002"
   );
+}
+
+async function mergeUnlinkedUserIntoCanonicalUser(
+  tx: Prisma.TransactionClient,
+  canonicalUser: { id: string },
+  unlinkedUser: { id: string; email: string },
+  freshEmail: string,
+  freshName: string | null,
+) {
+  // Re-verify unlinked user state under transaction lock
+  const targetUnlinkedUser = await tx.user.findUnique({
+    where: { id: unlinkedUser.id },
+  });
+
+  if (
+    !targetUnlinkedUser ||
+    targetUnlinkedUser.clerkId !== null ||
+    targetUnlinkedUser.email !== freshEmail
+  ) {
+    throw new Error("UNLINKED_USER_STATE_INVALID");
+  }
+
+  // 1. Reassign any owned organizations from unlinked user to canonical user
+  await tx.organization.updateMany({
+    where: { ownerId: targetUnlinkedUser.id },
+    data: { ownerId: canonicalUser.id },
+  });
+
+  // 2. Handle OrganizationMembership deduplication & transfer
+  const canonicalMemberships = await tx.organizationMembership.findMany({
+    where: { userId: canonicalUser.id },
+  });
+  const canonicalOrgIds = new Set(
+    canonicalMemberships.map((m) => m.organizationId),
+  );
+
+  const unlinkedMemberships = await tx.organizationMembership.findMany({
+    where: { userId: targetUnlinkedUser.id },
+  });
+
+  for (const unlinkedMem of unlinkedMemberships) {
+    if (canonicalOrgIds.has(unlinkedMem.organizationId)) {
+      // Canonical user already has a membership in this organization.
+      // Delete duplicate unlinked membership to preserve canonical role (e.g. ADMIN/Owner).
+      await tx.organizationMembership.delete({
+        where: { id: unlinkedMem.id },
+      });
+    } else {
+      // Transfer membership to canonical user
+      await tx.organizationMembership.update({
+        where: { id: unlinkedMem.id },
+        data: { userId: canonicalUser.id },
+      });
+    }
+  }
+
+  // 3. Handle StaffCounterAssignment deduplication & transfer
+  const canonicalAssignments = await tx.staffCounterAssignment.findMany({
+    where: { userId: canonicalUser.id },
+  });
+  const canonicalCounterIds = new Set(
+    canonicalAssignments.map((a) => a.counterId),
+  );
+
+  const unlinkedAssignments = await tx.staffCounterAssignment.findMany({
+    where: { userId: targetUnlinkedUser.id },
+  });
+
+  for (const unlinkedAssign of unlinkedAssignments) {
+    if (canonicalCounterIds.has(unlinkedAssign.counterId)) {
+      // Canonical user already assigned to this counter; delete duplicate
+      await tx.staffCounterAssignment.delete({
+        where: { id: unlinkedAssign.id },
+      });
+    } else {
+      // Transfer counter assignment to canonical user
+      await tx.staffCounterAssignment.update({
+        where: { id: unlinkedAssign.id },
+        data: { userId: canonicalUser.id },
+      });
+    }
+  }
+
+  // 4. Transfer Tickets (customer tickets and staff served tickets)
+  await tx.ticket.updateMany({
+    where: { userId: targetUnlinkedUser.id },
+    data: { userId: canonicalUser.id },
+  });
+
+  await tx.ticket.updateMany({
+    where: { servedById: targetUnlinkedUser.id },
+    data: { servedById: canonicalUser.id },
+  });
+
+  // 5. Transfer Appointments
+  await tx.appointment.updateMany({
+    where: { userId: targetUnlinkedUser.id },
+    data: { userId: canonicalUser.id },
+  });
+
+  // 6. Delete unlinked duplicate user record (frees freshEmail)
+  await tx.user.delete({
+    where: { id: targetUnlinkedUser.id },
+  });
+
+  // 7. Update canonical user with verified email and fresh name
+  return await tx.user.update({
+    where: { id: canonicalUser.id },
+    data: {
+      email: freshEmail,
+      name: freshName,
+    },
+  });
 }
 
 export async function getCurrentUser() {
@@ -73,6 +187,29 @@ export async function getCurrentUser() {
             existingUser.email !== freshEmail ||
             existingUser.name !== freshName
           ) {
+            const collidingUser = await prisma.user.findUnique({
+              where: { email: freshEmail },
+            });
+
+            if (collidingUser && collidingUser.id !== existingUser.id) {
+              // Never merge or take over an account tied to another active Clerk identity.
+              if (collidingUser.clerkId !== null) {
+                return existingUser;
+              }
+
+              // Colliding record is an unlinked placeholder (clerkId === null).
+              // Safely merge it into existingUser within an atomic transaction.
+              return await prisma.$transaction(async (tx) => {
+                return await mergeUnlinkedUserIntoCanonicalUser(
+                  tx,
+                  existingUser,
+                  collidingUser,
+                  freshEmail,
+                  freshName,
+                );
+              });
+            }
+
             return await prisma.user.update({
               where: { id: existingUser.id },
               data: {

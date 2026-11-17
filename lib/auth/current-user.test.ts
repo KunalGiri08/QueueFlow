@@ -25,6 +25,33 @@ vi.mock("@/lib/env.server", () => ({
   },
 }));
 
+const mockTx = {
+  user: {
+    findUnique: vi.fn(),
+    delete: vi.fn(),
+    update: vi.fn(),
+  },
+  organization: {
+    updateMany: vi.fn(),
+  },
+  organizationMembership: {
+    findMany: vi.fn(),
+    delete: vi.fn(),
+    update: vi.fn(),
+  },
+  staffCounterAssignment: {
+    findMany: vi.fn(),
+    delete: vi.fn(),
+    update: vi.fn(),
+  },
+  ticket: {
+    updateMany: vi.fn(),
+  },
+  appointment: {
+    updateMany: vi.fn(),
+  },
+};
+
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     user: {
@@ -33,7 +60,28 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
       create: vi.fn(),
+      delete: vi.fn(),
     },
+    organization: {
+      updateMany: vi.fn(),
+    },
+    organizationMembership: {
+      findMany: vi.fn(),
+      delete: vi.fn(),
+      update: vi.fn(),
+    },
+    staffCounterAssignment: {
+      findMany: vi.fn(),
+      delete: vi.fn(),
+      update: vi.fn(),
+    },
+    ticket: {
+      updateMany: vi.fn(),
+    },
+    appointment: {
+      updateMany: vi.fn(),
+    },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -58,6 +106,11 @@ describe("getCurrentUser", () => {
         getUser: mockGetUser,
       },
     } as unknown as Awaited<ReturnType<typeof clerkClient>>);
+
+    // Default transaction pass-through
+    vi.mocked(prisma.$transaction).mockImplementation(
+      (async (cb: (tx: unknown) => Promise<unknown>) => cb(mockTx)) as never,
+    );
   });
 
   describe("Authentication methods & guard clauses", () => {
@@ -132,7 +185,7 @@ describe("getCurrentUser", () => {
   });
 
   describe("Legacy placeholder reconciliation (@example.com)", () => {
-    it("reconciles placeholder email with verified Clerk primary email and updates name", async () => {
+    it("reconciles placeholder email with verified Clerk primary email when no collision exists", async () => {
       vi.mocked(auth).mockResolvedValueOnce({
         userId: "clerk_kunal_123",
       } as unknown as Awaited<ReturnType<typeof auth>>);
@@ -145,7 +198,10 @@ describe("getCurrentUser", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      vi.mocked(prisma.user.findUnique).mockResolvedValueOnce(existingUser);
+      // 1st call: clerkId lookup, 2nd call: email collision check
+      vi.mocked(prisma.user.findUnique)
+        .mockResolvedValueOnce(existingUser)
+        .mockResolvedValueOnce(null);
 
       mockGetUser.mockResolvedValueOnce({
         primaryEmailAddressId: "email_clerk_1",
@@ -194,7 +250,9 @@ describe("getCurrentUser", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      vi.mocked(prisma.user.findUnique).mockResolvedValueOnce(existingUser);
+      vi.mocked(prisma.user.findUnique)
+        .mockResolvedValueOnce(existingUser)
+        .mockResolvedValueOnce(null);
 
       mockGetUser.mockResolvedValueOnce({
         primaryEmailAddressId: "email_1",
@@ -233,7 +291,9 @@ describe("getCurrentUser", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      vi.mocked(prisma.user.findUnique).mockResolvedValueOnce(existingUser);
+      vi.mocked(prisma.user.findUnique)
+        .mockResolvedValueOnce(existingUser)
+        .mockResolvedValueOnce(null);
 
       mockGetUser.mockResolvedValueOnce({
         primaryEmailAddressId: "email_1",
@@ -279,7 +339,9 @@ describe("getCurrentUser", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      vi.mocked(prisma.user.findUnique).mockResolvedValueOnce(existingUser);
+      vi.mocked(prisma.user.findUnique)
+        .mockResolvedValueOnce(existingUser)
+        .mockResolvedValueOnce(null);
 
       mockGetUser.mockResolvedValueOnce({
         primaryEmailAddressId: "email_1",
@@ -440,6 +502,210 @@ describe("getCurrentUser", () => {
     });
   });
 
+  describe("Duplicate unlinked user record reconciliation & absorption", () => {
+    const canonicalUser = {
+      id: "usr_canonical_owner",
+      clerkId: "clerk_user_kunal",
+      email: "kunal@example.com",
+      name: "Kunal",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const unlinkedDuplicateUser = {
+      id: "usr_unlinked_duplicate",
+      clerkId: null,
+      email: "kunalgiri177@gmail.com",
+      name: "Kunal Giri",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    beforeEach(() => {
+      vi.mocked(auth).mockResolvedValueOnce({
+        userId: "clerk_user_kunal",
+      } as unknown as Awaited<ReturnType<typeof auth>>);
+
+      mockGetUser.mockResolvedValueOnce({
+        primaryEmailAddressId: "email_verified_1",
+        fullName: "Kunal Giri",
+        firstName: "Kunal",
+        emailAddresses: [
+          {
+            id: "email_verified_1",
+            emailAddress: "kunalgiri177@gmail.com",
+            verification: { status: "verified" },
+          },
+        ],
+      });
+    });
+
+    it("safely absorbs an unlinked duplicate record (clerkId === null), migrating all relationships and updating canonical user", async () => {
+      // Step 2: lookup by clerkId returns canonicalUser; lookup by freshEmail returns unlinkedDuplicateUser
+      vi.mocked(prisma.user.findUnique)
+        .mockResolvedValueOnce(canonicalUser)
+        .mockResolvedValueOnce(unlinkedDuplicateUser);
+
+      // Inside transaction:
+      mockTx.user.findUnique.mockResolvedValueOnce(unlinkedDuplicateUser);
+
+      // Memberships: Canonical is ADMIN in org_1. Unlinked is STAFF in org_1 (duplicate) and STAFF in org_2 (non-duplicate).
+      mockTx.organizationMembership.findMany
+        .mockResolvedValueOnce([
+          { id: "mem_canonical_1", userId: "usr_canonical_owner", organizationId: "org_1", role: "ADMIN" },
+        ])
+        .mockResolvedValueOnce([
+          { id: "mem_unlinked_duplicate", userId: "usr_unlinked_duplicate", organizationId: "org_1", role: "STAFF" },
+          { id: "mem_unlinked_org2", userId: "usr_unlinked_duplicate", organizationId: "org_2", role: "STAFF" },
+        ]);
+
+      // Counter assignments: Canonical assigned to counter_1. Unlinked assigned to counter_1 (duplicate) and counter_2.
+      mockTx.staffCounterAssignment.findMany
+        .mockResolvedValueOnce([
+          { id: "assign_canonical_1", userId: "usr_canonical_owner", counterId: "counter_1" },
+        ])
+        .mockResolvedValueOnce([
+          { id: "assign_dup", userId: "usr_unlinked_duplicate", counterId: "counter_1" },
+          { id: "assign_new", userId: "usr_unlinked_duplicate", counterId: "counter_2" },
+        ]);
+
+      const expectedUpdatedUser = {
+        ...canonicalUser,
+        email: "kunalgiri177@gmail.com",
+        name: "Kunal Giri",
+      };
+      mockTx.user.update.mockResolvedValueOnce(expectedUpdatedUser);
+
+      const result = await getCurrentUser();
+
+      // 1. Reassign any owned organizations
+      expect(mockTx.organization.updateMany).toHaveBeenCalledWith({
+        where: { ownerId: "usr_unlinked_duplicate" },
+        data: { ownerId: "usr_canonical_owner" },
+      });
+
+      // 2. OrganizationMembership deduplication & role preservation:
+      // Duplicate membership in org_1 is deleted; canonical ADMIN role is preserved
+      expect(mockTx.organizationMembership.delete).toHaveBeenCalledWith({
+        where: { id: "mem_unlinked_duplicate" },
+      });
+      // Non-duplicate membership in org_2 is transferred
+      expect(mockTx.organizationMembership.update).toHaveBeenCalledWith({
+        where: { id: "mem_unlinked_org2" },
+        data: { userId: "usr_canonical_owner" },
+      });
+
+      // 3. Counter assignment deduplication:
+      expect(mockTx.staffCounterAssignment.delete).toHaveBeenCalledWith({
+        where: { id: "assign_dup" },
+      });
+      expect(mockTx.staffCounterAssignment.update).toHaveBeenCalledWith({
+        where: { id: "assign_new" },
+        data: { userId: "usr_canonical_owner" },
+      });
+
+      // 4. Ticket migration (customer and staff tickets):
+      expect(mockTx.ticket.updateMany).toHaveBeenCalledWith({
+        where: { userId: "usr_unlinked_duplicate" },
+        data: { userId: "usr_canonical_owner" },
+      });
+      expect(mockTx.ticket.updateMany).toHaveBeenCalledWith({
+        where: { servedById: "usr_unlinked_duplicate" },
+        data: { servedById: "usr_canonical_owner" },
+      });
+
+      // 5. Appointment migration:
+      expect(mockTx.appointment.updateMany).toHaveBeenCalledWith({
+        where: { userId: "usr_unlinked_duplicate" },
+        data: { userId: "usr_canonical_owner" },
+      });
+
+      // 6. Unlinked duplicate user deletion:
+      expect(mockTx.user.delete).toHaveBeenCalledWith({
+        where: { id: "usr_unlinked_duplicate" },
+      });
+
+      // 7. Canonical user update:
+      expect(mockTx.user.update).toHaveBeenCalledWith({
+        where: { id: "usr_canonical_owner" },
+        data: {
+          email: "kunalgiri177@gmail.com",
+          name: "Kunal Giri",
+        },
+      });
+
+      expect(result).toEqual(expectedUpdatedUser);
+      expect(result?.id).toBe("usr_canonical_owner");
+      expect(result?.clerkId).toBe("clerk_user_kunal");
+    });
+
+    it("refuses to merge if colliding user is linked to another Clerk identity (clerkId !== null)", async () => {
+      const collidingLinkedUser = {
+        id: "usr_other_clerk",
+        clerkId: "clerk_different_account",
+        email: "kunalgiri177@gmail.com",
+        name: "Different User",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      vi.mocked(prisma.user.findUnique)
+        .mockResolvedValueOnce(canonicalUser)
+        .mockResolvedValueOnce(collidingLinkedUser);
+
+      const result = await getCurrentUser();
+
+      // Must abort and not touch the transaction or either user
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(mockTx.user.delete).not.toHaveBeenCalled();
+      expect(result).toEqual(canonicalUser);
+    });
+
+    it("rolls back transaction and safely preserves both records if an error occurs during merge", async () => {
+      vi.mocked(prisma.user.findUnique)
+        .mockResolvedValueOnce(canonicalUser)
+        .mockResolvedValueOnce(unlinkedDuplicateUser);
+
+      // Transaction throws midway
+      vi.mocked(prisma.$transaction).mockRejectedValueOnce(
+        new Error("Database connection lost during transaction"),
+      );
+
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const result = await getCurrentUser();
+
+      expect(result).toEqual(canonicalUser);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "[Auth] Failed to reconcile placeholder email with Clerk:",
+        expect.any(Error),
+      );
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("aborts merge if unlinked user state changed concurrently (e.g. was linked before tx lock)", async () => {
+      vi.mocked(prisma.user.findUnique)
+        .mockResolvedValueOnce(canonicalUser)
+        .mockResolvedValueOnce(unlinkedDuplicateUser);
+
+      // Under transaction, user is found to have been linked concurrently
+      mockTx.user.findUnique.mockResolvedValueOnce({
+        ...unlinkedDuplicateUser,
+        clerkId: "clerk_race_condition",
+      });
+
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const result = await getCurrentUser();
+
+      expect(result).toEqual(canonicalUser);
+      expect(mockTx.user.delete).not.toHaveBeenCalled();
+
+      consoleErrorSpy.mockRestore();
+    });
+  });
+
   describe("Account linking (Step 4) & First-time provisioning (Step 5)", () => {
     it("links unlinked user account when email matches verified Clerk email", async () => {
       vi.mocked(auth).mockResolvedValueOnce({
@@ -565,4 +831,3 @@ describe("getCurrentUser", () => {
     });
   });
 });
-
