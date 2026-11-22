@@ -1,6 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { estimateTicketWaitTime } from "@/lib/services/prediction.service";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ trackingToken: string }> },
@@ -82,25 +85,34 @@ export async function GET(
     timezone: ticket.queue.service.organization.timezone,
   });
 
-  return Response.json({
-    ticketNumber: ticket.number,
-    status: ticket.status,
-    peopleAhead,
-    currentlyServing: currentlyServing?.number ?? null,
-    estimatedWaitMinutes,
-    queue: {
-      name: ticket.queue.name,
+  return Response.json(
+    {
+      ticketNumber: ticket.number,
+      status: ticket.status,
+      peopleAhead,
+      currentlyServing: currentlyServing?.number ?? null,
+      estimatedWaitMinutes,
+      queue: {
+        name: ticket.queue.name,
+      },
+      service: {
+        name: ticket.queue.service.name,
+      },
+      organization: {
+        name: ticket.queue.service.organization.name,
+      },
+      counter: ticket.counter
+        ? {
+            name: ticket.counter.name,
+          }
+        : null,
     },
-    service: {
-      name: ticket.queue.service.name,
+    {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
     },
-    organization: {
-      name: ticket.queue.service.organization.name,
-    },
-    counter: ticket.counter
-      ? {
-          name: ticket.counter.name,
-        }
-      : null,
-  });
+  );
 }

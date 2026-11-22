@@ -201,7 +201,10 @@ function TicketTrackingView({
       try {
         const response = await fetch(
           `/api/tickets/track/${encodeURIComponent(trackingToken)}`,
-          { signal: controller.signal },
+          {
+            signal: controller.signal,
+            cache: "no-store",
+          },
         );
 
         if (currentGen !== requestGenRef.current) return;
@@ -410,7 +413,10 @@ function TicketTrackingView({
       try {
         const response = await fetch(
           `/api/tickets/track/${encodeURIComponent(trackingToken)}`,
-          { signal: controller.signal },
+          {
+            signal: controller.signal,
+            cache: "no-store",
+          },
         );
 
         if (isCancelled || pollGen !== requestGenRef.current) {

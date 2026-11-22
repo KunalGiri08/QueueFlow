@@ -271,6 +271,89 @@ export function useCustomerRealtime({
         while (!isEffectCancelled && !controller.signal.aborted && !isTerminal) {
           const { done, value } = await reader.read();
           if (done) {
+            // Flush remaining bytes from TextDecoder and parse any trailing SSE frame left in buffer
+            buffer += decoder.decode();
+            if (buffer.trim()) {
+              const flushed = buffer.endsWith("\n\n") ? buffer : `${buffer}\n\n`;
+              const { messages } = parseSSEMessages(flushed);
+              buffer = "";
+
+              let hasQueueInvalidation = false;
+              let hasDirectTicketUpdate = false;
+
+              for (const msg of messages) {
+                if (
+                  msg.event === "QUEUE_INVALIDATED" ||
+                  msg.event === "QUEUE_STATUS_CHANGED"
+                ) {
+                  hasQueueInvalidation = true;
+                } else if (
+                  msg.event === "TICKET_CALLED" ||
+                  msg.event === "TICKET_SERVING" ||
+                  msg.event === "TICKET_COMPLETED" ||
+                  msg.event === "TICKET_SKIPPED" ||
+                  msg.event === "TICKET_CANCELLED"
+                ) {
+                  hasDirectTicketUpdate = true;
+                }
+
+                if (
+                  msg.event === "TICKET_COMPLETED" ||
+                  msg.event === "TICKET_SKIPPED" ||
+                  msg.event === "TICKET_CANCELLED"
+                ) {
+                  isTerminal = true;
+                  shouldRetry = false;
+                  try {
+                    onTerminalStatusRef.current?.(msg.event);
+                  } catch (err) {
+                    console.error(
+                      "[useCustomerRealtime] Error executing onTerminalStatus on trailing frame:",
+                      err,
+                    );
+                  }
+                }
+              }
+
+              if (hasDirectTicketUpdate) {
+                if (pendingRefetchTimerRef.current !== null) {
+                  clearTimeout(pendingRefetchTimerRef.current);
+                  pendingRefetchTimerRef.current = null;
+                }
+                lastRefetchTimeRef.current = Date.now();
+                try {
+                  void onTicketUpdateRef.current();
+                } catch (err) {
+                  console.error(
+                    "[useCustomerRealtime] Error executing onTicketUpdate on trailing frame:",
+                    err,
+                  );
+                }
+              } else if (hasQueueInvalidation) {
+                triggerThrottledRefetch();
+              }
+            }
+
+            // If the server/proxy closed the stream cleanly while isTerminal is still false,
+            // immediately invoke onTicketUpdateRef.current() so UI syncs right away without waiting for fallback poll
+            if (!isTerminal && !isEffectCancelled && !controller.signal.aborted) {
+              if (pendingRefetchTimerRef.current !== null) {
+                clearTimeout(pendingRefetchTimerRef.current);
+                pendingRefetchTimerRef.current = null;
+              }
+              lastRefetchTimeRef.current = Date.now();
+              try {
+                void onTicketUpdateRef.current();
+              } catch (err) {
+                console.error(
+                  "[useCustomerRealtime] Error executing onTicketUpdate on stream closure:",
+                  err,
+                );
+              }
+            } else if (isTerminal) {
+              setIsConnected(false);
+            }
+
             break;
           }
 

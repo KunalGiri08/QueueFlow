@@ -302,8 +302,8 @@ describe("POST /api/realtime/tickets/stream", () => {
         // Subscription remains alive during deferred cleanup window to prevent truncation
         expect(broker.listenerCount(channel)).toBe(1);
 
-        // Advance timers by deferred cleanup window (1500ms)
-        await vi.advanceTimersByTimeAsync(1500);
+        // Advance timers by deferred cleanup window (5000ms)
+        await vi.advanceTimersByTimeAsync(5000);
 
         // Verify broker subscription was cleaned up by fallback timer
         expect(broker.listenerCount(channel)).toBe(0);

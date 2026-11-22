@@ -259,7 +259,7 @@ export async function POST(request: Request) {
             deferredCleanupTimer = setTimeout(() => {
               deferredCleanupTimer = null;
               cleanup();
-            }, 1500);
+            }, 5000);
           }
         }
       };
@@ -319,6 +319,7 @@ export async function POST(request: Request) {
       "Cache-Control": "no-cache, no-transform, no-store",
       "Connection": "keep-alive",
       "X-Accel-Buffering": "no",
+      "Content-Encoding": "identity",
     },
   });
 }

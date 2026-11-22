@@ -271,6 +271,78 @@ describe("useCustomerRealtime", () => {
       expect(result.current.isConnected).toBe(false);
     });
 
+    it("flushes trailing terminal event frames (TICKET_COMPLETED, TICKET_SKIPPED, TICKET_CANCELLED) on done: true", async () => {
+      const terminalEvents = [
+        { type: "TICKET_COMPLETED", status: "COMPLETED" },
+        { type: "TICKET_SKIPPED", status: "SKIPPED" },
+        { type: "TICKET_CANCELLED", status: "CANCELLED" },
+      ];
+
+      for (const { type, status } of terminalEvents) {
+        const { response, controls } = createMockStreamResponse(200);
+        const mockFetch = vi.fn().mockResolvedValue(response);
+        const onTicketUpdate = vi.fn();
+        const onTerminalStatus = vi.fn();
+
+        const { result } = renderHook(() =>
+          useCustomerRealtime({
+            trackingToken: token,
+            onTicketUpdate,
+            onTerminalStatus,
+            fetchFn: mockFetch,
+          }),
+        );
+
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(result.current.isConnected).toBe(true);
+
+        // Send trailing chunk WITHOUT trailing double-newline, then immediately close stream
+        await act(async () => {
+          controls.enqueueText(
+            `event: ${type}\ndata: {"ticketNumber":42,"status":"${status}"}`,
+          );
+          controls.closeStream();
+        });
+
+        expect(onTicketUpdate).toHaveBeenCalledTimes(1);
+        expect(onTerminalStatus).toHaveBeenCalledWith(type);
+        expect(result.current.isConnected).toBe(false);
+      }
+    });
+
+    it("immediately triggers onTicketUpdate when stream ends (done: true) before isTerminal is set", async () => {
+      const { response, controls } = createMockStreamResponse(200);
+      const mockFetch = vi.fn().mockResolvedValue(response);
+      const onTicketUpdate = vi.fn();
+      const onTerminalStatus = vi.fn();
+
+      const { result } = renderHook(() =>
+        useCustomerRealtime({
+          trackingToken: token,
+          onTicketUpdate,
+          onTerminalStatus,
+          fetchFn: mockFetch,
+        }),
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(result.current.isConnected).toBe(true);
+      expect(onTicketUpdate).not.toHaveBeenCalled();
+
+      // Proxy or server cleanly closes stream without a terminal event
+      await act(async () => {
+        controls.closeStream();
+      });
+
+      // Immediate onTicketUpdate is fired to sync state rather than waiting for 10s fallback poll
+      expect(onTicketUpdate).toHaveBeenCalledTimes(1);
+      expect(onTerminalStatus).not.toHaveBeenCalled();
+    });
+
     it("triggers onTicketUpdate upon QUEUE_INVALIDATED and remains connected without terminal notification", async () => {
       const { response, controls } = createMockStreamResponse(200);
       const mockFetch = vi.fn().mockResolvedValue(response);
