@@ -103,7 +103,7 @@ const THROTTLE_REALTIME_REFETCH_MS = 250;
 
 export interface ActiveTicketRealtimeSubscriberProps {
   trackingToken: string;
-  onUpdate: () => void | Promise<void>;
+  onUpdate: (immediate?: boolean) => void | Promise<void>;
   onConnectionChange?: (token: string, isConnected: boolean) => void;
 }
 
@@ -119,8 +119,9 @@ export function ActiveTicketRealtimeSubscriber({
   const { isConnected } = useCustomerRealtime({
     trackingToken,
     enabled: true,
-    onTicketUpdate: onUpdate,
-    onReconnect: onUpdate,
+    onTicketUpdate: () => void onUpdate(false),
+    onTerminalStatus: () => void onUpdate(true),
+    onReconnect: () => void onUpdate(false),
   });
 
   useEffect(() => {
@@ -214,7 +215,7 @@ export default function MyTicketsPage() {
     null,
   );
 
-  const handleRealtimeTicketUpdate = useCallback(() => {
+  const handleRealtimeTicketUpdate = useCallback((immediate = false) => {
     const now = Date.now();
     const elapsed = now - lastRealtimeRefetchRef.current;
 
@@ -223,7 +224,7 @@ export default function MyTicketsPage() {
       void runPollRef.current?.();
     };
 
-    if (elapsed >= THROTTLE_REALTIME_REFETCH_MS) {
+    if (immediate || elapsed >= THROTTLE_REALTIME_REFETCH_MS) {
       if (pendingRealtimeRefetchTimerRef.current !== null) {
         clearTimeout(pendingRealtimeRefetchTimerRef.current);
         pendingRealtimeRefetchTimerRef.current = null;
@@ -304,6 +305,7 @@ export default function MyTicketsPage() {
     try {
       const response = await fetch("/api/tickets", {
         signal: controller.signal,
+        cache: "no-store",
       });
 
       if (isCancelledRef.current || controller.signal.aborted) return;
@@ -375,6 +377,7 @@ export default function MyTicketsPage() {
       try {
         const response = await fetch("/api/tickets", {
           signal: controller.signal,
+          cache: "no-store",
         });
 
         if (currentGen !== fetchGenerationRef.current) return;

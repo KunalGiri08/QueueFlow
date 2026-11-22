@@ -19,6 +19,9 @@ import {
   stageStaffQueueInvalidated,
 } from "@/lib/realtime/post-commit";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET() {
   const currentUser = await getCurrentUser();
 
@@ -66,7 +69,13 @@ export async function GET() {
     },
   });
 
-  return Response.json(tickets);
+  return Response.json(tickets, {
+    headers: {
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
+    },
+  });
 }
 
 export async function POST(request: Request) {
