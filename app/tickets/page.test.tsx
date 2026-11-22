@@ -1377,6 +1377,59 @@ describe("app/tickets/page (My Tickets Customer Frontend)", () => {
       expect(activeTokensSubscribed).toEqual(["tok-1", "tok-2", "tok-3", "tok-4", "tok-5"]);
       expect(activeTokensSubscribed).toHaveLength(5);
     });
+
+    it("immediately updates to COMPLETED when TICKET_COMPLETED arrives and isConnected flips to false, without waiting for poll timer", async () => {
+      vi.useFakeTimers();
+      const sseStream = createMockSSEStream();
+
+      realtimeStreamHandler = async () => sseStream.response;
+
+      let ticketFetchCount = 0;
+      let resolveSecondFetch!: (res: Response) => void;
+      const secondFetchPromise = new Promise<Response>((resolve) => {
+        resolveSecondFetch = resolve;
+      });
+
+      activeFetchHandler = async (url) => {
+        if (url === "/api/tickets") {
+          ticketFetchCount++;
+          if (ticketFetchCount === 1) {
+            return jsonResponse([mockServingTicket]);
+          }
+          return secondFetchPromise;
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(ticketFetchCount).toBe(1);
+      expect(screen.getByText("Now Serving")).toBeDefined();
+
+      // SSE delivers TICKET_COMPLETED event
+      await act(async () => {
+        sseStream.pushEvent("TICKET_COMPLETED", {
+          ticketNumber: 105,
+          status: "COMPLETED",
+        });
+      });
+
+      // Refetch of /api/tickets was triggered immediately in the same tick without advancing 10s poll timer
+      expect(ticketFetchCount).toBe(2);
+
+      // Now resolve the asynchronous GET /api/tickets call
+      await act(async () => {
+        resolveSecondFetch(
+          jsonResponse([{ ...mockServingTicket, status: "COMPLETED" }]),
+        );
+      });
+
+      // The UI immediately reflects Completed without waiting for any poll timer
+      expect(screen.getByText("Completed")).toBeDefined();
+      expect(screen.queryByText("Now Serving")).toBeNull();
+    });
   });
 });
 

@@ -116,12 +116,25 @@ export function ActiveTicketRealtimeSubscriber({
   onUpdate,
   onConnectionChange,
 }: ActiveTicketRealtimeSubscriberProps) {
+  const isTerminalRef = useRef(false);
+
   const { isConnected } = useCustomerRealtime({
     trackingToken,
     enabled: true,
-    onTicketUpdate: () => void onUpdate(false),
-    onTerminalStatus: () => void onUpdate(true),
-    onReconnect: () => void onUpdate(false),
+    onTicketUpdate: () => {
+      if (!isTerminalRef.current) {
+        void onUpdate(false);
+      }
+    },
+    onTerminalStatus: () => {
+      isTerminalRef.current = true;
+      void onUpdate(true);
+    },
+    onReconnect: () => {
+      if (!isTerminalRef.current) {
+        void onUpdate(false);
+      }
+    },
   });
 
   useEffect(() => {
@@ -164,7 +177,9 @@ export default function MyTicketsPage() {
   const isCancellingRef = useRef<boolean>(false);
   const isCancelledRef = useRef<boolean>(false);
   const schedulePollRef = useRef<(() => void) | null>(null);
-  const runPollRef = useRef<(() => Promise<void>) | null>(null);
+  const runPollRef = useRef<
+    ((isImmediateTerminal?: boolean) => Promise<void>) | null
+  >(null);
 
   const [connectedSseTokens, setConnectedSseTokens] = useState<Set<string>>(
     () => new Set(),
@@ -210,6 +225,7 @@ export default function MyTicketsPage() {
     return result;
   }, [tickets]);
 
+  const isTerminalRefetchInFlightRef = useRef<boolean>(false);
   const lastRealtimeRefetchRef = useRef<number>(0);
   const pendingRealtimeRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -219,21 +235,31 @@ export default function MyTicketsPage() {
     const now = Date.now();
     const elapsed = now - lastRealtimeRefetchRef.current;
 
-    const executeRefetch = () => {
+    const executeRefetch = (isImmediate = false) => {
       lastRealtimeRefetchRef.current = Date.now();
-      void runPollRef.current?.();
+      void runPollRef.current?.(isImmediate);
     };
 
-    if (immediate || elapsed >= THROTTLE_REALTIME_REFETCH_MS) {
+    if (immediate) {
       if (pendingRealtimeRefetchTimerRef.current !== null) {
         clearTimeout(pendingRealtimeRefetchTimerRef.current);
         pendingRealtimeRefetchTimerRef.current = null;
       }
-      executeRefetch();
-    } else if (pendingRealtimeRefetchTimerRef.current === null) {
+      isTerminalRefetchInFlightRef.current = true;
+      executeRefetch(true);
+    } else if (elapsed >= THROTTLE_REALTIME_REFETCH_MS) {
+      if (pendingRealtimeRefetchTimerRef.current !== null) {
+        clearTimeout(pendingRealtimeRefetchTimerRef.current);
+        pendingRealtimeRefetchTimerRef.current = null;
+      }
+      executeRefetch(false);
+    } else if (
+      pendingRealtimeRefetchTimerRef.current === null &&
+      !isTerminalRefetchInFlightRef.current
+    ) {
       pendingRealtimeRefetchTimerRef.current = setTimeout(() => {
         pendingRealtimeRefetchTimerRef.current = null;
-        executeRefetch();
+        executeRefetch(false);
       }, THROTTLE_REALTIME_REFETCH_MS - elapsed);
     }
   }, []);
@@ -281,7 +307,7 @@ export default function MyTicketsPage() {
     }
   }, [connectedSseTokens.size, schedulePoll]);
 
-  const runPoll = useCallback(async () => {
+  const runPoll = useCallback(async (isImmediateTerminal = false) => {
     if (isCancelledRef.current) return;
     if (
       typeof document !== "undefined" &&
@@ -293,6 +319,15 @@ export default function MyTicketsPage() {
       if (hasActiveCustomerTickets(ticketsRef.current)) {
         schedulePollRef.current?.();
       }
+      return;
+    }
+
+    // Do not allow background poll to abort an authoritative terminal refetch in flight
+    if (
+      !isImmediateTerminal &&
+      isTerminalRefetchInFlightRef.current &&
+      backgroundPollAbortRef.current
+    ) {
       return;
     }
 
@@ -336,6 +371,9 @@ export default function MyTicketsPage() {
     } finally {
       if (backgroundPollAbortRef.current === controller) {
         backgroundPollAbortRef.current = null;
+      }
+      if (isImmediateTerminal) {
+        isTerminalRefetchInFlightRef.current = false;
       }
       if (
         !isCancelledRef.current &&
