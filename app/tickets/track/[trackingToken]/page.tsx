@@ -124,7 +124,8 @@ function TicketTrackingView({
   const hasAlertedChimeRef = useRef(false);
   const isCancellingRef = useRef(false);
 
-  const activeAbortRef = useRef<AbortController | null>(null);
+  const fetchAbortRef = useRef<AbortController | null>(null);
+  const backgroundPollAbortRef = useRef<AbortController | null>(null);
   const requestGenRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -170,7 +171,8 @@ function TicketTrackingView({
 
   useEffect(() => {
     return () => {
-      activeAbortRef.current?.abort();
+      fetchAbortRef.current?.abort();
+      backgroundPollAbortRef.current?.abort();
       clearPollTimer();
     };
   }, [clearPollTimer]);
@@ -185,9 +187,10 @@ function TicketTrackingView({
       }
 
       clearPollTimer();
-      activeAbortRef.current?.abort();
+      backgroundPollAbortRef.current?.abort();
+      fetchAbortRef.current?.abort();
       const controller = new AbortController();
-      activeAbortRef.current = controller;
+      fetchAbortRef.current = controller;
       const currentGen = ++requestGenRef.current;
 
       if (isManualRefresh) {
@@ -404,9 +407,9 @@ function TicketTrackingView({
     const runPoll = async () => {
       if (isCancelled) return;
 
-      activeAbortRef.current?.abort();
+      backgroundPollAbortRef.current?.abort();
       const controller = new AbortController();
-      activeAbortRef.current = controller;
+      backgroundPollAbortRef.current = controller;
       const pollGen = ++requestGenRef.current;
       let shouldScheduleNext = true;
 
@@ -500,7 +503,7 @@ function TicketTrackingView({
 
     return () => {
       isCancelled = true;
-      activeAbortRef.current?.abort();
+      backgroundPollAbortRef.current?.abort();
       clearPollTimer();
       if (typeof document !== "undefined") {
         document.removeEventListener(
