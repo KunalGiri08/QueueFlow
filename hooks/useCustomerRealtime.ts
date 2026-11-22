@@ -282,7 +282,10 @@ export function useCustomerRealtime({
           let hasDirectTicketUpdate = false;
 
           for (const msg of messages) {
-            if (msg.event === "QUEUE_INVALIDATED") {
+            if (
+              msg.event === "QUEUE_INVALIDATED" ||
+              msg.event === "QUEUE_STATUS_CHANGED"
+            ) {
               hasQueueInvalidation = true;
             } else if (
               msg.event === "TICKET_CALLED" ||

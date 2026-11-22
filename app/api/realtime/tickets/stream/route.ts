@@ -191,6 +191,7 @@ export async function POST(request: Request) {
 
   let isClosed = false;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let deferredCleanupTimer: ReturnType<typeof setTimeout> | null = null;
   const unsubscribers: (() => void)[] = [];
 
   const stream = new ReadableStream({
@@ -198,6 +199,11 @@ export async function POST(request: Request) {
       function cleanup() {
         if (isClosed) return;
         isClosed = true;
+
+        if (deferredCleanupTimer !== null) {
+          clearTimeout(deferredCleanupTimer);
+          deferredCleanupTimer = null;
+        }
 
         if (heartbeatTimer !== null) {
           clearInterval(heartbeatTimer);
@@ -242,13 +248,19 @@ export async function POST(request: Request) {
         const sseData = `event: ${event.type}\ndata: ${JSON.stringify(sanitized)}\n\n`;
         safeEnqueue(sseData);
 
-        // If terminal event received, close stream after delivering
+        // If terminal event received, schedule deferred fallback cleanup so the
+        // client receives the terminal frame cleanly and closes from the client side first.
         if (
           event.type === "TICKET_COMPLETED" ||
           event.type === "TICKET_SKIPPED" ||
           event.type === "TICKET_CANCELLED"
         ) {
-          cleanup();
+          if (deferredCleanupTimer === null) {
+            deferredCleanupTimer = setTimeout(() => {
+              deferredCleanupTimer = null;
+              cleanup();
+            }, 1500);
+          }
         }
       };
 
@@ -283,6 +295,10 @@ export async function POST(request: Request) {
       if (heartbeatTimer !== null) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
+      }
+      if (deferredCleanupTimer !== null) {
+        clearTimeout(deferredCleanupTimer);
+        deferredCleanupTimer = null;
       }
       while (unsubscribers.length > 0) {
         const unsub = unsubscribers.pop();

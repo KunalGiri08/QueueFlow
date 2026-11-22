@@ -304,6 +304,33 @@ describe("useCustomerRealtime", () => {
       expect(result.current.isConnected).toBe(true);
     });
 
+    it("triggers throttled refetch when QUEUE_STATUS_CHANGED event is received", async () => {
+      const { response, controls } = createMockStreamResponse(200);
+      const mockFetch = vi.fn().mockResolvedValue(response);
+      const onTicketUpdate = vi.fn();
+
+      const { result } = renderHook(() =>
+        useCustomerRealtime({
+          trackingToken: token,
+          onTicketUpdate,
+          fetchFn: mockFetch,
+        }),
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        controls.enqueueText(
+          'event: QUEUE_STATUS_CHANGED\ndata: {"queueId":"q1","isActive":false}\n\n',
+        );
+      });
+
+      expect(onTicketUpdate).toHaveBeenCalledTimes(1);
+      expect(result.current.isConnected).toBe(true);
+    });
+
     it("deduplicates and throttles rapid duplicate QUEUE_INVALIDATED bursts", async () => {
       vi.useFakeTimers();
       const { response, controls } = createMockStreamResponse(200);

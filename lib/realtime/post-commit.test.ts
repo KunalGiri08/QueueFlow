@@ -4,14 +4,18 @@ import {
   PostCommitCollector,
   executeWithPostCommit,
   stageCustomerQueueInvalidated,
+  stageStaffQueueInvalidated,
+  stageQueueStatusChanged,
 } from "./post-commit";
 import {
   createRealtimeEnvelope,
   customerTicketChannel,
   customerQueueChannel,
+  staffQueueChannel,
   staffOrgChannel,
   type RealtimeEnvelope,
   type CustomerQueueInvalidatedPayload,
+  type CustomerQueueStatusPayload,
 } from "./types";
 
 describe("Post-Commit Real-Time Dispatcher", () => {
@@ -241,6 +245,85 @@ describe("Post-Commit Real-Time Dispatcher", () => {
       stageCustomerQueueInvalidated(collector, null);
       stageCustomerQueueInvalidated(collector, undefined);
       stageCustomerQueueInvalidated(collector, "   ");
+
+      expect(collector.size).toBe(0);
+    });
+  });
+
+  describe("stageStaffQueueInvalidated", () => {
+    it("stages a QUEUE_INVALIDATED event on the staff queue channel", async () => {
+      const queueId = "queue-staff-123";
+      const channel = staffQueueChannel(queueId);
+      const listener = vi.fn();
+      testBroker.subscribe<CustomerQueueInvalidatedPayload>(channel, listener);
+
+      await executeWithPostCommit(async (collector) => {
+        stageStaffQueueInvalidated(collector, queueId, {
+          reason: "TICKET_CALLED",
+        });
+      }, testBroker);
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      const event = listener.mock.calls[0][0];
+      expect(event.type).toBe("QUEUE_INVALIDATED");
+      expect(event.channel).toBe(channel);
+      expect(event.payload.queueId).toBe(queueId);
+      expect(event.payload.reason).toBe("TICKET_CALLED");
+      expect(typeof event.payload.timestamp).toBe("number");
+    });
+
+    it("ignores null, undefined, or empty queueId without throwing", () => {
+      const collector = new PostCommitCollector();
+
+      stageStaffQueueInvalidated(collector, null);
+      stageStaffQueueInvalidated(collector, undefined);
+      stageStaffQueueInvalidated(collector, "   ");
+
+      expect(collector.size).toBe(0);
+    });
+  });
+
+  describe("stageQueueStatusChanged", () => {
+    it("stages QUEUE_STATUS_CHANGED events on both customer and staff queue channels", async () => {
+      const queueId = "queue-toggle-123";
+      const customerCh = customerQueueChannel(queueId);
+      const staffCh = staffQueueChannel(queueId);
+
+      const customerListener = vi.fn();
+      const staffListener = vi.fn();
+
+      testBroker.subscribe<CustomerQueueStatusPayload>(customerCh, customerListener);
+      testBroker.subscribe<CustomerQueueStatusPayload>(staffCh, staffListener);
+
+      await executeWithPostCommit(async (collector) => {
+        stageQueueStatusChanged(collector, queueId, { isActive: false });
+      }, testBroker);
+
+      expect(customerListener).toHaveBeenCalledTimes(1);
+      const customerEvent = customerListener.mock.calls[0][0];
+      expect(customerEvent.type).toBe("QUEUE_STATUS_CHANGED");
+      expect(customerEvent.channel).toBe(customerCh);
+      expect(customerEvent.payload).toEqual({
+        queueId,
+        isActive: false,
+      });
+
+      expect(staffListener).toHaveBeenCalledTimes(1);
+      const staffEvent = staffListener.mock.calls[0][0];
+      expect(staffEvent.type).toBe("QUEUE_STATUS_CHANGED");
+      expect(staffEvent.channel).toBe(staffCh);
+      expect(staffEvent.payload).toEqual({
+        queueId,
+        isActive: false,
+      });
+    });
+
+    it("ignores null, undefined, or empty queueId without throwing", () => {
+      const collector = new PostCommitCollector();
+
+      stageQueueStatusChanged(collector, null, { isActive: true });
+      stageQueueStatusChanged(collector, undefined, { isActive: true });
+      stageQueueStatusChanged(collector, "   ", { isActive: true });
 
       expect(collector.size).toBe(0);
     });

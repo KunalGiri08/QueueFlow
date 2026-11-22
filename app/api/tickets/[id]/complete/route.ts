@@ -4,6 +4,7 @@ import {
   executeWithPostCommit,
   stageCustomerTicketCompleted,
   stageCustomerQueueInvalidated,
+  stageStaffQueueInvalidated,
 } from "@/lib/realtime/post-commit";
 
 export async function PATCH(
@@ -149,6 +150,10 @@ export async function PATCH(
       });
 
       stageCustomerQueueInvalidated(collector, resultTicket.queueId, {
+        reason: "TICKET_COMPLETED",
+      });
+
+      stageStaffQueueInvalidated(collector, resultTicket.queueId, {
         reason: "TICKET_COMPLETED",
       });
 

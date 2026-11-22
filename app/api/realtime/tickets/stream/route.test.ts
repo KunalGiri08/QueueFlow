@@ -267,7 +267,56 @@ describe("POST /api/realtime/tickets/stream", () => {
       expect(result.done).toBe(true);
     });
 
-    it("closes stream automatically when a terminal event is received", async () => {
+    it("delivers terminal event and cleans up via deferred fallback if client does not cancel", async () => {
+      vi.useFakeTimers();
+      try {
+        mockTicketFindUnique.mockResolvedValue({
+          id: "ticket-1",
+          status: "WAITING",
+          number: 42,
+        });
+
+        const response = await POST(makePostRequest({ trackingToken: validToken }));
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+
+        // Initial comment
+        await reader.read();
+
+        const channel = customerTicketChannel(validToken);
+        expect(broker.listenerCount(channel)).toBe(1);
+
+        // Publish terminal event
+        broker.publish(
+          channel,
+          createRealtimeEnvelope("TICKET_COMPLETED", channel, {
+            ticketNumber: 42,
+          }),
+        );
+
+        // Read terminal event
+        const { value } = await reader.read();
+        const text = decoder.decode(value);
+        expect(text).toContain("event: TICKET_COMPLETED");
+
+        // Subscription remains alive during deferred cleanup window to prevent truncation
+        expect(broker.listenerCount(channel)).toBe(1);
+
+        // Advance timers by deferred cleanup window (1500ms)
+        await vi.advanceTimersByTimeAsync(1500);
+
+        // Verify broker subscription was cleaned up by fallback timer
+        expect(broker.listenerCount(channel)).toBe(0);
+
+        // Next read should report stream is closed
+        const next = await reader.read();
+        expect(next.done).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cleans up immediately and cancels deferred timer when client cancels reader after terminal event", async () => {
       mockTicketFindUnique.mockResolvedValue({
         id: "ticket-1",
         status: "WAITING",
@@ -287,7 +336,7 @@ describe("POST /api/realtime/tickets/stream", () => {
       // Publish terminal event
       broker.publish(
         channel,
-        createRealtimeEnvelope("TICKET_COMPLETED", channel, {
+        createRealtimeEnvelope("TICKET_CANCELLED", channel, {
           ticketNumber: 42,
         }),
       );
@@ -295,12 +344,14 @@ describe("POST /api/realtime/tickets/stream", () => {
       // Read terminal event
       const { value } = await reader.read();
       const text = decoder.decode(value);
-      expect(text).toContain("event: TICKET_COMPLETED");
+      expect(text).toContain("event: TICKET_CANCELLED");
 
-      // Verify broker subscription was cleaned up
+      // Client closes the stream explicitly
+      await reader.cancel();
+
+      // Immediate cleanup of subscription and timer
       expect(broker.listenerCount(channel)).toBe(0);
 
-      // Next read should report stream is closed
       const next = await reader.read();
       expect(next.done).toBe(true);
     });

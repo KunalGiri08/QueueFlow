@@ -37,6 +37,7 @@ import {
   type CustomerTicketSkippedPayload,
   type CustomerTicketCancelledPayload,
   type CustomerQueueInvalidatedPayload,
+  type CustomerQueueStatusPayload,
 } from "./types";
 
 export class PostCommitCollector {
@@ -275,6 +276,38 @@ export function stageStaffQueueInvalidated(
         queueId: trimmedQueueId,
         reason: data?.reason,
         timestamp: Date.now(),
+      },
+    ),
+  );
+}
+
+/**
+ * Stages a QUEUE_STATUS_CHANGED event dispatched to both customer and staff queue channels.
+ */
+export function stageQueueStatusChanged(
+  collector: PostCommitCollector,
+  queueId: string | null | undefined,
+  data: { isActive: boolean },
+): void {
+  const trimmedQueueId = queueId?.trim();
+  if (!trimmedQueueId) return;
+  collector.stage(
+    createRealtimeEnvelope<CustomerQueueStatusPayload>(
+      "QUEUE_STATUS_CHANGED",
+      customerQueueChannel(trimmedQueueId),
+      {
+        queueId: trimmedQueueId,
+        isActive: data.isActive,
+      },
+    ),
+  );
+  collector.stage(
+    createRealtimeEnvelope<CustomerQueueStatusPayload>(
+      "QUEUE_STATUS_CHANGED",
+      staffQueueChannel(trimmedQueueId),
+      {
+        queueId: trimmedQueueId,
+        isActive: data.isActive,
       },
     ),
   );

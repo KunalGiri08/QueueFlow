@@ -252,8 +252,7 @@ export function useStaffRealtime({
           for (const msg of messages) {
             if (
               msg.event === "QUEUE_INVALIDATED" ||
-              msg.event === "QUEUE_STATUS_CHANGED" ||
-              msg.event === "TICKET_CREATED"
+              msg.event === "QUEUE_STATUS_CHANGED"
             ) {
               let payload: { queueId?: string; reason?: string } | undefined;
               try {

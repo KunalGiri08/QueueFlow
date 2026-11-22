@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { updateQueueSchema } from "@/lib/validations/queue";
+import {
+  executeWithPostCommit,
+  stageQueueStatusChanged,
+} from "@/lib/realtime/post-commit";
 
 export async function PATCH(
   request: Request,
@@ -73,24 +77,34 @@ export async function PATCH(
   }
 
   try {
-    const updatedQueue = await prisma.queue.update({
-      where: {
-        id: queueId,
-      },
-      data: {
-        ...(result.data.name !== undefined && {
-          name: result.data.name,
-        }),
-        ...(result.data.isActive !== undefined && {
+    const updatedQueue = await executeWithPostCommit(async (collector) => {
+      const q = await prisma.queue.update({
+        where: {
+          id: queueId,
+        },
+        data: {
+          ...(result.data.name !== undefined && {
+            name: result.data.name,
+          }),
+          ...(result.data.isActive !== undefined && {
+            isActive: result.data.isActive,
+          }),
+          ...(result.data.maxWaitingTickets !== undefined && {
+            maxWaitingTickets: result.data.maxWaitingTickets,
+          }),
+          ...(result.data.maxDailyTickets !== undefined && {
+            maxDailyTickets: result.data.maxDailyTickets,
+          }),
+        },
+      });
+
+      if (result.data.isActive !== undefined) {
+        stageQueueStatusChanged(collector, queueId, {
           isActive: result.data.isActive,
-        }),
-        ...(result.data.maxWaitingTickets !== undefined && {
-          maxWaitingTickets: result.data.maxWaitingTickets,
-        }),
-        ...(result.data.maxDailyTickets !== undefined && {
-          maxDailyTickets: result.data.maxDailyTickets,
-        }),
-      },
+        });
+      }
+
+      return q;
     });
 
     return Response.json(updatedQueue);
