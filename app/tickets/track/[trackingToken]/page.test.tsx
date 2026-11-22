@@ -1491,7 +1491,7 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
       mockTrackingToken = "token-test-123";
     });
 
-    it("connects to SSE endpoint and pauses 10s polling while SSE is healthy for CALLED tickets", async () => {
+    it("connects to SSE endpoint and retains 30s safety polling while SSE is healthy for CALLED tickets", async () => {
       vi.useFakeTimers();
       let fetchCallCount = 0;
       global.fetch = vi
@@ -1538,7 +1538,21 @@ describe("app/tickets/track/[trackingToken]/page (Public Ticket Tracking)", () =
         await vi.advanceTimersByTimeAsync(15000);
       });
 
-      expect(fetchCallCount).toBe(1); // Still 1! Polling paused!
+      expect(fetchCallCount).toBe(1); // Still 1! 10s polling paused!
+
+      // Advance another 15 seconds (total 30s): the 30s background safety poll executes for CALLED tickets
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+
+      expect(fetchCallCount).toBe(2);
+
+      // Advance another 30 seconds: another safety poll executes
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+
+      expect(fetchCallCount).toBe(3);
       vi.useRealTimers();
     });
 

@@ -342,12 +342,12 @@ function TicketTrackingView({
       onReconnect: handleRealtimeTicketUpdate,
     });
 
-  // Automatic background polling every 10 seconds:
-  // - WAITING tickets: Always poll every 10s to keep queue position (peopleAhead)
-  //   accurate, even when SSE is connected (since single-ticket SSE channels do not
-  //   receive updates about other tickets).
-  // - CALLED or SERVING tickets: Polling is safely paused while SSE is connected,
-  //   resuming as a fallback only if SSE disconnects or errors.
+  // Automatic background polling:
+  // - WAITING tickets: Always poll every 10s when disconnected or error,
+  //   or retain a 30s safety poll when SSE is connected.
+  // - CALLED or SERVING tickets: Retain the same 30s background safety poll
+  //   when SSE is connected, falling back to 10s polling if SSE drops or encounters errors.
+  // - Terminal states: Polling stopped and stream closed.
   useEffect(() => {
     if (!trackingToken || isNotFound || error || !isDataActive) {
       clearPollTimer();
@@ -365,7 +365,9 @@ function TicketTrackingView({
       //    When SSE is healthy, retain a 30s safety reconciliation poll as a broker safeguard.
       //    When SSE drops or encounters errors, fall back to authoritative 10s polling.
       // 2. CALLED / SERVING tickets: Changes to ticket status are pushed via customer ticket SSE channel.
-      //    Polling is paused while SSE is connected, falling back to 10s polling if SSE drops.
+      //    When SSE is healthy, retain the 30s safety reconciliation poll so the UI never gets stuck
+      //    if an in-memory event is missed during dev/worker reloads.
+      //    When SSE drops or encounters errors, fall back to authoritative 10s polling.
       // 3. Terminal states: Polling stopped and stream closed.
       if (data?.status === "WAITING") {
         const interval =
@@ -381,15 +383,15 @@ function TicketTrackingView({
       }
 
       if (data?.status === "CALLED" || data?.status === "SERVING") {
-        if (isSseConnected && !isSseError) {
-          // Paused while SSE is healthy
-          return;
-        }
+        const interval =
+          isSseConnected && !isSseError
+            ? WAITING_CONNECTED_SAFETY_POLL_INTERVAL_MS
+            : CALLED_FALLBACK_POLL_INTERVAL_MS;
 
         pollTimerRef.current = setTimeout(async () => {
           if (isCancelled) return;
           await runPoll();
-        }, CALLED_FALLBACK_POLL_INTERVAL_MS);
+        }, interval);
         return;
       }
 

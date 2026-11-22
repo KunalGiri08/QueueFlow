@@ -143,11 +143,13 @@ const mockCalledTicket = {
 describe("app/tickets/page (My Tickets Customer Frontend)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let activeFetchHandler: (url: string, init?: RequestInit) => Promise<Response> | Response;
+  let realtimeStreamHandler: ((url: string, init?: RequestInit) => Promise<Response> | Response) | null = null;
 
   let mockConfirm: ReturnType<typeof vi.fn<() => boolean>>;
 
   beforeEach(() => {
     mockPlayTurnChime.mockClear();
+    realtimeStreamHandler = null;
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
       writable: true,
@@ -169,6 +171,12 @@ describe("app/tickets/page (My Tickets Customer Frontend)", () => {
     };
 
     fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (typeof url === "string" && url.includes("/api/realtime/tickets/stream")) {
+        if (realtimeStreamHandler) {
+          return realtimeStreamHandler(url, init);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      }
       return activeFetchHandler(url, init);
     });
 
@@ -1224,6 +1232,150 @@ describe("app/tickets/page (My Tickets Customer Frontend)", () => {
       expect(screen.queryByText(/Your turn/i)).toBeNull();
       // Polling halts because no active tickets remain
       expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  describe("Real-time SSE synchronization on My Tickets dashboard", () => {
+    function createMockSSEStream() {
+      let controllerRef!: ReadableStreamDefaultController<Uint8Array>;
+      const encoder = new TextEncoder();
+
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controllerRef = controller;
+        },
+      });
+
+      const response = new Response(stream, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+        },
+      });
+
+      return {
+        response,
+        pushEvent(eventName: string, data: Record<string, unknown> = {}) {
+          controllerRef.enqueue(
+            encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`),
+          );
+        },
+      };
+    }
+
+    it("triggers an immediate refetch when an SSE event arrives on an active ticket", async () => {
+      vi.useFakeTimers();
+      const sseStream = createMockSSEStream();
+      let streamRequests = 0;
+
+      realtimeStreamHandler = async (_url, init) => {
+        streamRequests++;
+        const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}");
+        expect(parsed.trackingToken).toBe("token-wait-42");
+        return sseStream.response;
+      };
+
+      let ticketFetchCount = 0;
+      activeFetchHandler = async (url) => {
+        if (url === "/api/tickets") {
+          ticketFetchCount++;
+          if (ticketFetchCount === 1) {
+            return jsonResponse([mockWaitingTicket]);
+          }
+          return jsonResponse([{ ...mockWaitingTicket, status: "CALLED" }]);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(ticketFetchCount).toBe(1);
+      expect(streamRequests).toBe(1);
+
+      // SSE delivers TICKET_CALLED event
+      await act(async () => {
+        sseStream.pushEvent("TICKET_CALLED", { ticketNumber: 42, status: "CALLED" });
+      });
+
+      // Refetch is triggered immediately (throttled to 250ms) without waiting for 10s poll
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300);
+      });
+
+      expect(ticketFetchCount).toBe(2);
+      expect(screen.getByText(/Your turn/i)).toBeDefined();
+      expect(mockPlayTurnChime).toHaveBeenCalledTimes(1);
+    });
+
+    it("uses 30s safety polling when SSE is connected and falls back to 10s when disconnected", async () => {
+      vi.useFakeTimers();
+      const sseStream = createMockSSEStream();
+
+      realtimeStreamHandler = async () => sseStream.response;
+
+      let ticketFetchCount = 0;
+      activeFetchHandler = async (url) => {
+        if (url === "/api/tickets") {
+          ticketFetchCount++;
+          return jsonResponse([mockWaitingTicket]);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(ticketFetchCount).toBe(1);
+
+      // Advance by 15s: 10s polling must NOT fire because SSE is connected
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      expect(ticketFetchCount).toBe(1);
+
+      // Advance another 15s (total 30s): 30s safety poll fires
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      expect(ticketFetchCount).toBe(2);
+    });
+
+    it("caps active ticket subscribers to 5 and ignores terminal or null-token tickets", async () => {
+      const activeTokensSubscribed: string[] = [];
+
+      realtimeStreamHandler = async (_url, init) => {
+        const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}");
+        activeTokensSubscribed.push(parsed.trackingToken);
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      const manyTickets = [
+        { ...mockWaitingTicket, id: "t1", trackingToken: "tok-1" },
+        { ...mockWaitingTicket, id: "t2", trackingToken: "tok-2" },
+        { ...mockWaitingTicket, id: "t3", trackingToken: "tok-3" },
+        { ...mockWaitingTicket, id: "t4", trackingToken: "tok-4" },
+        { ...mockWaitingTicket, id: "t5", trackingToken: "tok-5" },
+        { ...mockWaitingTicket, id: "t6", trackingToken: "tok-6" }, // Exceeds cap
+        { ...mockWaitingTicket, id: "t7", status: "COMPLETED", trackingToken: "tok-7" }, // Terminal
+        { ...mockWaitingTicket, id: "t8", trackingToken: null }, // Null token
+      ];
+
+      activeFetchHandler = async (url) => {
+        if (url === "/api/tickets") {
+          return jsonResponse(manyTickets);
+        }
+        return jsonResponse({ error: "Not found" }, 404);
+      };
+
+      await act(async () => {
+        render(<MyTicketsPage />);
+      });
+
+      expect(activeTokensSubscribed).toEqual(["tok-1", "tok-2", "tok-3", "tok-4", "tok-5"]);
+      expect(activeTokensSubscribed).toHaveLength(5);
     });
   });
 });

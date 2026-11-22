@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import { Navbar } from "@/components/Navbar";
@@ -8,10 +8,16 @@ import { CustomerTicketCard } from "@/components/tickets/CustomerTicketCard";
 import { CustomerTicketsEmptyState } from "@/components/tickets/CustomerTicketsEmptyState";
 import { TurnNotificationBanner } from "@/components/tickets/track/TurnNotificationBanner";
 import { useTicketTurnNotifications } from "@/hooks/useTicketTurnNotifications";
+import { useCustomerRealtime } from "@/hooks/useCustomerRealtime";
 import {
   hasActiveCustomerTickets,
+  isTicketActive,
   type TicketStatus,
 } from "@/lib/formatters/ticket";
+import {
+  WAITING_CONNECTED_SAFETY_POLL_INTERVAL_MS,
+  WAITING_DISCONNECTED_POLL_INTERVAL_MS,
+} from "@/lib/realtime/types";
 
 export type { TicketStatus };
 
@@ -92,6 +98,41 @@ function TicketsLoadingSkeleton() {
   );
 }
 
+const MAX_REALTIME_ACTIVE_SUBSCRIBERS = 5;
+const THROTTLE_REALTIME_REFETCH_MS = 250;
+
+export interface ActiveTicketRealtimeSubscriberProps {
+  trackingToken: string;
+  onUpdate: () => void | Promise<void>;
+  onConnectionChange?: (token: string, isConnected: boolean) => void;
+}
+
+/**
+ * Renderless subscriber component that binds a single active ticket to QueueFlow's
+ * customer SSE stream. When ticket or queue events arrive, onUpdate is fired.
+ */
+export function ActiveTicketRealtimeSubscriber({
+  trackingToken,
+  onUpdate,
+  onConnectionChange,
+}: ActiveTicketRealtimeSubscriberProps) {
+  const { isConnected } = useCustomerRealtime({
+    trackingToken,
+    enabled: true,
+    onTicketUpdate: onUpdate,
+    onReconnect: onUpdate,
+  });
+
+  useEffect(() => {
+    onConnectionChange?.(trackingToken, isConnected);
+    return () => {
+      onConnectionChange?.(trackingToken, false);
+    };
+  }, [trackingToken, isConnected, onConnectionChange]);
+
+  return null;
+}
+
 export default function MyTicketsPage() {
   const router = useRouter();
   const { isSignedIn, isLoaded } = useAuth();
@@ -124,6 +165,87 @@ export default function MyTicketsPage() {
   const schedulePollRef = useRef<(() => void) | null>(null);
   const runPollRef = useRef<(() => Promise<void>) | null>(null);
 
+  const [connectedSseTokens, setConnectedSseTokens] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  const handleSseConnectionChange = useCallback(
+    (token: string, isConnected: boolean) => {
+      setConnectedSseTokens((prev) => {
+        const next = new Set(prev);
+        if (isConnected) {
+          next.add(token);
+        } else {
+          next.delete(token);
+        }
+        if (
+          next.size === prev.size &&
+          Array.from(next).every((t) => prev.has(t))
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const activeTrackableTickets = useMemo(() => {
+    const seenTokens = new Set<string>();
+    const result: Array<{ id: string; trackingToken: string }> = [];
+
+    for (const ticket of tickets) {
+      if (
+        ticket.trackingToken &&
+        isTicketActive(ticket.status) &&
+        !seenTokens.has(ticket.trackingToken)
+      ) {
+        seenTokens.add(ticket.trackingToken);
+        result.push({ id: ticket.id, trackingToken: ticket.trackingToken });
+        if (result.length >= MAX_REALTIME_ACTIVE_SUBSCRIBERS) break;
+      }
+    }
+
+    return result;
+  }, [tickets]);
+
+  const lastRealtimeRefetchRef = useRef<number>(0);
+  const pendingRealtimeRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  const handleRealtimeTicketUpdate = useCallback(() => {
+    const now = Date.now();
+    const elapsed = now - lastRealtimeRefetchRef.current;
+
+    const executeRefetch = () => {
+      lastRealtimeRefetchRef.current = Date.now();
+      void runPollRef.current?.();
+    };
+
+    if (elapsed >= THROTTLE_REALTIME_REFETCH_MS) {
+      if (pendingRealtimeRefetchTimerRef.current !== null) {
+        clearTimeout(pendingRealtimeRefetchTimerRef.current);
+        pendingRealtimeRefetchTimerRef.current = null;
+      }
+      executeRefetch();
+    } else if (pendingRealtimeRefetchTimerRef.current === null) {
+      pendingRealtimeRefetchTimerRef.current = setTimeout(() => {
+        pendingRealtimeRefetchTimerRef.current = null;
+        executeRefetch();
+      }, THROTTLE_REALTIME_REFETCH_MS - elapsed);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pendingRealtimeRefetchTimerRef.current !== null) {
+        clearTimeout(pendingRealtimeRefetchTimerRef.current);
+        pendingRealtimeRefetchTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const clearPollTimer = useCallback(() => {
     if (pollTimerRef.current !== null) {
       clearTimeout(pollTimerRef.current);
@@ -140,11 +262,23 @@ export default function MyTicketsPage() {
     ) {
       return;
     }
+    const interval =
+      connectedSseTokens.size > 0
+        ? WAITING_CONNECTED_SAFETY_POLL_INTERVAL_MS
+        : WAITING_DISCONNECTED_POLL_INTERVAL_MS;
+
     pollTimerRef.current = setTimeout(async () => {
       if (isCancelledRef.current) return;
       await runPollRef.current?.();
-    }, 10000);
-  }, [clearPollTimer]);
+    }, interval);
+  }, [clearPollTimer, connectedSseTokens.size]);
+
+  useEffect(() => {
+    // When SSE connection status transitions, reschedule polling with the updated cadence
+    if (hasActiveCustomerTickets(ticketsRef.current)) {
+      schedulePoll();
+    }
+  }, [connectedSseTokens.size, schedulePoll]);
 
   const runPoll = useCallback(async () => {
     if (isCancelledRef.current) return;
@@ -450,6 +584,14 @@ export default function MyTicketsPage() {
   return (
     <>
       <Navbar />
+      {activeTrackableTickets.map((ticket) => (
+        <ActiveTicketRealtimeSubscriber
+          key={ticket.trackingToken}
+          trackingToken={ticket.trackingToken}
+          onUpdate={handleRealtimeTicketUpdate}
+          onConnectionChange={handleSseConnectionChange}
+        />
+      ))}
       <main className="min-h-screen bg-gray-50/50 py-12 px-4 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-4xl">
           <div className="mb-8">
